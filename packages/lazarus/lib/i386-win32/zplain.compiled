@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CONFIG>
+  <Compiler Value="C:\Programme\lazarus124\fpc\2.6.4\bin\i386-win32\fpc.exe" Date="1154382129"/>
+  <Params Value=" -MDelphi -Scgi -CX -Os1 -g -gl -l -vewnhibq -FuC:\Prometheus\TCS\paradoxtest1\promet\source\components\zeos\src\plain -FuC:\Programme\lazarus\packager\units\i386-win32 -FuC:\Prometheus\TCS\paradoxtest1\promet\source\components\zeos\packages\lazarus\lib\i386-win32 -FuC:\Prometheus\TCS\paradoxtest1\promet\source\components\zeos\packages\lazarus\ -FUC:\Prometheus\TCS\paradoxtest1\promet\source\components\zeos\packages\lazarus\lib\i386-win32\ zplain.pas"/>
+</CONFIG>
