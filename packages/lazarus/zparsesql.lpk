@@ -15,10 +15,6 @@
           <UseAnsiStrings Value="False"/>
         </SyntaxOptions>
       </Parsing>
-      <CodeGeneration>
-        <SmartLinkUnit Value="True"/>
-        <SmallerCode Value="True"/>
-      </CodeGeneration>
     </CompilerOptions>
     <Description Value="Zeos SQL Parsing Classes and Interfaces"/>
     <Version Major="7"/>

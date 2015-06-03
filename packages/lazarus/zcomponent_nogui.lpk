@@ -19,10 +19,6 @@
           <UseAnsiStrings Value="False"/>
         </SyntaxOptions>
       </Parsing>
-      <CodeGeneration>
-        <SmartLinkUnit Value="True"/>
-        <SmallerCode Value="True"/>
-      </CodeGeneration>
       <Other>
         <CustomOptions Value="-dZEOSDEBUG"/>
       </Other>

@@ -15,10 +15,6 @@
           <UseAnsiStrings Value="False"/>
         </SyntaxOptions>
       </Parsing>
-      <CodeGeneration>
-        <SmartLinkUnit Value="True"/>
-        <SmallerCode Value="True"/>
-      </CodeGeneration>
     </CompilerOptions>
     <Description Value="Zeos Plain Database API"/>
     <Version Major="7"/>
