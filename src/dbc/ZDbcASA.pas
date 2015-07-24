@@ -8,7 +8,7 @@
 {*********************************************************}
 
 {@********************************************************}
-{    Copyright (c) 1999-2006 Zeos Development Group       }
+{    Copyright (c) 1999-2012 Zeos Development Group       }
 {                                                         }
 { License Agreement:                                      }
 {                                                         }
@@ -40,12 +40,10 @@
 {                                                         }
 { The project web site is located on:                     }
 {   http://zeos.firmos.at  (FORUM)                        }
-{   http://zeosbugs.firmos.at (BUGTRACKER)                }
-{   svn://zeos.firmos.at/zeos/trunk (SVN Repository)      }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
 {                                                         }
 {   http://www.sourceforge.net/projects/zeoslib.          }
-{   http://www.zeoslib.sourceforge.net                    }
-{                                                         }
 {                                                         }
 {                                                         }
 {                                 Zeos Development Group. }
@@ -58,12 +56,13 @@ interface
 {$I ZDbc.inc}
 
 uses
-  ZCompatibility, Types, Classes, Contnrs, SysUtils, ZDbcIntfs, ZDbcConnection,
-  ZPlainASADriver, ZSysUtils, ZTokenizer, ZDbcGenericResolver, ZURL,
-  ZPlainDriver, ZGenericSqlAnalyser;
+  ZCompatibility, Classes, {$IFDEF MSEgui}mclasses,{$ENDIF} Contnrs, SysUtils,
+  ZDbcIntfs, ZDbcConnection, ZPlainASADriver, ZTokenizer, ZDbcGenericResolver,
+  ZURL, ZPlainDriver, ZGenericSqlAnalyser, ZPlainASAConstants;
 
 type
   {** Implements a ASA Database Driver. }
+  {$WARNINGS OFF}
   TZASADriver = class(TZAbstractDriver)
   public
     constructor Create; override;
@@ -73,6 +72,7 @@ type
     function GetTokenizer: IZTokenizer; override;
     function GetStatementAnalyser: IZStatementAnalyser; override;
   end;
+  {$WARNINGS ON}
 
   {** Represents a ASA specific connection interface. }
   IZASAConnection = interface (IZConnection)
@@ -89,6 +89,7 @@ type
     FHandle: PZASASQLCA;
   private
     procedure StartTransaction; virtual;
+    function DetermineASACharSet: String;
   protected
     procedure InternalCreate; override;
   public
@@ -128,7 +129,7 @@ implementation
 
 uses
   ZDbcASAMetadata, ZDbcASAStatement, ZDbcASAUtils, ZSybaseToken,
-  ZSybaseAnalyser, ZDbcUtils, ZDbcLogging;
+  ZSybaseAnalyser, ZDbcLogging{$IFDEF WITH_UNITANSISTRINGS}, AnsiStrings{$ENDIF};
 
 { TZASADriver }
 
@@ -155,10 +156,12 @@ uses
   @return a <code>Connection</code> object that represents a
     connection to the URL
 }
+{$WARNINGS OFF}
 function TZASADriver.Connect(const Url: TZURL): IZConnection;
 begin
   Result := TZASAConnection.Create(Url);
 end;
+{$WARNINGS ON}
 
 {**
   Constructs this object with default properties.
@@ -169,6 +172,7 @@ begin
   AddSupportedProtocol(AddPlainDriverToCache(TZASA7PlainDriver.Create));
   AddSupportedProtocol(AddPlainDriverToCache(TZASA8PlainDriver.Create));
   AddSupportedProtocol(AddPlainDriverToCache(TZASA9PlainDriver.Create));
+  AddSupportedProtocol(AddPlainDriverToCache(TZASA12PlainDriver.Create));
 end;
 
 {**
@@ -447,6 +451,11 @@ begin
     DriverManager.LogMessage(lcConnect, PlainDriver.GetProtocol,
       Format('CONNECT TO "%s" AS USER "%s"', [Database, User]));
 
+    if ( FClientCodePage <> '' ) then
+      if ( GetPlainDriver.db_change_char_charset(FHandle, PAnsiChar(AnsiString(FClientCodePage))) = 0 ) or
+         ( GetPlainDriver.db_change_nchar_charset(FHandle, PAnsiChar(AnsiString(FClientCodePage))) = 0 ) then
+        CheckASAError( GetPlainDriver, FHandle, lcOther, 'Set client CharacterSet failed.');
+
     StartTransaction;
 
     //SetConnOptions     RowCount;
@@ -462,6 +471,9 @@ begin
   end;
 
   inherited Open;
+
+  if FClientCodePage = ''  then
+    CheckCharEncoding(DetermineASACharSet);
 end;
 
 {**
@@ -497,7 +509,7 @@ begin
     Sz := SizeOf( TASASQLDA) - 32767 * SizeOf( TZASASQLVAR);
     SQLDA := AllocMem( Sz);
     try
-      StrPLCopy( SQLDA.sqldaid, 'SQLDA   ', 8);
+      {$IFDEF WITH_STRPLCOPY_DEPRECATED}AnsiStrings.{$ENDIF}StrPLCopy( SQLDA.sqldaid, 'SQLDA   ', 8);
       SQLDA.sqldabc := Sz;
       SQLDA.sqln := 1;
       SQLDA.sqld := 1;
@@ -531,6 +543,22 @@ begin
   if ASATL > 1 then
     ASATL := ASATL - 1;
   SetOption( 1, nil, 'ISOLATION_LEVEL', IntToStr( ASATL));
+end;
+
+function TZASAConnection.DetermineASACharSet: String;
+var
+  Stmt: IZStatement;
+  RS: IZResultSet;
+begin
+  Stmt := Self.CreateRegularStatement(Info);
+  RS := Stmt.ExecuteQuery('SELECT DB_PROPERTY( ''CharSet'')');
+  if RS.Next then
+    Result := RS.GetString(1)
+  else
+    Result := '';
+  RS := nil;
+  Stmt.Close;
+  Stmt := nil;
 end;
 
 { TZASACachedResolver }

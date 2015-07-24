@@ -8,7 +8,7 @@
 {*********************************************************}
 
 {@********************************************************}
-{    Copyright (c) 1999-2006 Zeos Development Group       }
+{    Copyright (c) 1999-2012 Zeos Development Group       }
 {                                                         }
 { License Agreement:                                      }
 {                                                         }
@@ -40,12 +40,10 @@
 {                                                         }
 { The project web site is located on:                     }
 {   http://zeos.firmos.at  (FORUM)                        }
-{   http://zeosbugs.firmos.at (BUGTRACKER)                }
-{   svn://zeos.firmos.at/zeos/trunk (SVN Repository)      }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
 {                                                         }
 {   http://www.sourceforge.net/projects/zeoslib.          }
-{   http://www.zeoslib.sourceforge.net                    }
-{                                                         }
 {                                                         }
 {                                                         }
 {                                 Zeos Development Group. }
@@ -58,13 +56,15 @@ interface
 {$I ZDbc.inc}
 
 uses
-  Types, ZCompatibility, Classes, SysUtils, ZDbcIntfs, ZDbcConnection,
-  ZPlainPostgreSqlDriver, ZDbcLogging, ZTokenizer, ZGenericSqlAnalyser,
-  ZURL, ZPlainDriver;
+  Types, Classes, {$IFDEF MSEgui}mclasses,{$ENDIF} SysUtils,
+  {$IF defined(DELPHI) and defined(MSWINDOWS)}Windows,{$IFEND}
+  ZDbcIntfs, ZDbcConnection, ZPlainPostgreSqlDriver, ZDbcLogging, ZTokenizer,
+  ZGenericSqlAnalyser, ZURL, ZCompatibility;
 
 type
 
   {** Implements PostgreSQL Database Driver. }
+  {$WARNINGS OFF}
   TZPostgreSQLDriver = class(TZAbstractDriver)
   public
     constructor Create; override;
@@ -75,22 +75,60 @@ type
     function GetTokenizer: IZTokenizer; override;
     function GetStatementAnalyser: IZStatementAnalyser; override;
   end;
+  {$WARNINGS ON}
+
+type
+  PZPGTableInfo = ^TZPGTableInfo;
+  TZPGTableInfo = record
+    OID: Oid;
+    Name: String;
+    Schema: String;
+    ColNames: Array of String;
+    ColCount: Integer;
+  end;
+
+  { TZPGTableInfoCache }
+
+  TZPGTableInfoCache = class(TZCodePagedObject)
+    protected
+      FTblInfo: Array of TZPGTableInfo;
+      FPlainDriver: Pointer;
+      FHandle: PZPostgreSQLConnect;
+      function LoadTblInfo(const TblOid: Oid; out Index: Integer; ZPGTableInfo: PZPGTableInfo): Boolean;
+      function GetTblPos(const TblOid: Oid): Integer;
+    public
+      constructor Create(const ConSettings: PZConSettings;
+        const Handle: PZPostgreSQLConnect; const PlainDriver: IZPostgreSQLPlainDriver);
+      function GetTableInfo(const TblOid: Oid; CurrentFieldCount: Integer): PZPGTableInfo;
+      procedure Clear;
+  end;
 
   {** Defines a PostgreSQL specific connection. }
   IZPostgreSQLConnection = interface(IZConnection)
     ['{8E62EA93-5A49-4F20-928A-0EA44ABCE5DB}']
 
     function IsOidAsBlob: Boolean;
+    function Is_bytea_output_hex: Boolean;
 
     function GetTypeNameByOid(Id: Oid): string;
     function GetPlainDriver: IZPostgreSQLPlainDriver;
     function GetConnectionHandle: PZPostgreSQLConnect;
     function GetServerMajorVersion: Integer;
     function GetServerMinorVersion: Integer;
-    function GetCharactersetCode: TZPgCharactersetType;
+    function EncodeBinary(const Value: RawByteString): RawByteString; overload;
+    function EncodeBinary(const Value: TByteDynArray): RawByteString; overload;
+    procedure RegisterPreparedStmtName(const value: String);
+    procedure UnregisterPreparedStmtName(const value: String);
+    function ClientSettingsChanged: Boolean;
+    function GetUndefinedVarcharAsStringLength: Integer;
+    function GetTableInfo(const TblOid: Oid; CurrentFieldCount: Integer): PZPGTableInfo;
+    function CheckFieldVisibility: Boolean;
   end;
 
   {** Implements PostgreSQL Database Connection. }
+
+  { TZPostgreSQLConnection }
+
   TZPostgreSQLConnection = class(TZAbstractConnection, IZPostgreSQLConnection)
   private
     FStandardConformingStrings: Boolean;
@@ -98,16 +136,29 @@ type
     FBeginRequired: Boolean;
     FTypeList: TStrings;
     FOidAsBlob: Boolean;
-    FCharactersetCode: TZPgCharactersetType;
     FServerMajorVersion: Integer;
     FServerMinorVersion: Integer;
     FServerSubVersion: Integer;
     FNoticeProcessor: TZPostgreSQLNoticeProcessor;
+    FPreparedStmts: TStrings;
+    FClientSettingsChanged: Boolean;
+    FTableInfoCache: TZPGTableInfoCache;
+    FIs_bytea_output_hex: Boolean;
+    FCheckFieldVisibility: Boolean;
   protected
     procedure InternalCreate; override;
+    function GetUndefinedVarcharAsStringLength: Integer;
+    function GetTableInfo(const TblOid: Oid; CurrentFieldCount: Integer): PZPGTableInfo;
     function BuildConnectStr: AnsiString;
     procedure StartTransactionSupport;
     procedure LoadServerVersion;
+    procedure OnPropertiesChange(Sender: TObject); override;
+    procedure SetStandardConformingStrings(const Value: Boolean);
+    function EncodeBinary(const Value: RawByteString): RawByteString; overload;
+    function EncodeBinary(const Value: TByteDynArray): RawByteString; overload;
+    procedure RegisterPreparedStmtName(const value: String);
+    procedure UnregisterPreparedStmtName(const value: String);
+    function ClientSettingsChanged: Boolean;
   public
     destructor Destroy; override;
 
@@ -132,6 +183,8 @@ type
     procedure SetTransactionIsolation(Level: TZTransactIsolationLevel); override;
 
     function IsOidAsBlob: Boolean;
+    function Is_bytea_output_hex: Boolean;
+    function CheckFieldVisibility: Boolean;
 
     function GetTypeNameByOid(Id: Oid): string;
     function GetPlainDriver: IZPostgreSQLPlainDriver;
@@ -143,11 +196,16 @@ type
     function GetServerSubVersion: Integer;
 
     function PingServer: Integer; override;
-    function GetCharactersetCode: TZPgCharactersetType;
-    function GetAnsiEscapeString(const Value: AnsiString;
-      const EscapeMarkSequence: String = '~<|'): String; override;
-    function GetEscapeString(const Value: String;
-      const EscapeMarkSequence: String = '~<|'): String; override;
+    function EscapeString(Value: RawByteString): RawByteString; override;
+    function GetBinaryEscapeString(const Value: RawByteString): String; overload; override;
+    function GetBinaryEscapeString(const Value: TByteDynArray): String; overload; override;
+    function GetEscapeString(const Value: ZWideString): ZWideString; overload; override;
+    function GetEscapeString(const Value: RawByteString): RawByteString; overload; override;
+    function GetServerSetting(const AName: string): string;
+    procedure SetServerSetting(const AName, AValue: string);
+    {$IFDEF ZEOS_TEST_ONLY}
+    constructor Create(const ZUrl: TZURL);
+    {$ENDIF}
   end;
 
   {** Implements a Postgres sequence. }
@@ -169,12 +227,131 @@ implementation
 uses
   ZMessages, ZSysUtils, ZDbcUtils, ZDbcPostgreSqlStatement,
   ZDbcPostgreSqlUtils, ZDbcPostgreSqlMetadata, ZPostgreSqlToken,
-  ZPostgreSqlAnalyser;
+  ZPostgreSqlAnalyser, ZEncoding;
+
+const
+  FON = String('ON');
+  standard_conforming_strings = String('standard_conforming_strings');
 
 procedure DefaultNoticeProcessor(arg: Pointer; message: PAnsiChar); cdecl;
 begin
 DriverManager.LogMessage(lcOther,'Postgres NOTICE',String(message));
 end;
+
+{ TZPGTableInfoCache }
+function TZPGTableInfoCache.LoadTblInfo(const TblOid: Oid; 
+  out Index: Integer; ZPGTableInfo: PZPGTableInfo): Boolean;
+var
+  SQL: String;
+  TblInfo: PZPGTableInfo;
+  RawOid: String;
+  QueryHandle: PZPostgreSQLResult;
+  I: Integer;
+  function GetInt(const Row, Col: Integer): Integer;
+  begin
+    Result := StrToInt(String(IZPostgreSQLPlainDriver(FPlainDriver).GetValue(QueryHandle, Row, Col)));
+  end;
+
+  function GetString(const Row, Col: Integer): String;
+ {$IFDEF UNICODE}
+  var
+    RawTemp: RawByteString;
+ {$ENDIF}
+  begin
+    {$IFDEF UNICODE}
+    ZSetString(IZPostgreSQLPlainDriver(FPlainDriver).GetValue(QueryHandle, Row, Col),
+      IZPostgreSQLPlainDriver(FPlainDriver).GetLength(QueryHandle, Row, Col), RawTemp);
+    Result := ZDbcUnicodeString(RawTemp);
+    {$ELSE}
+    SetString(Result, IZPostgreSQLPlainDriver(FPlainDriver).GetValue(QueryHandle, Row, Col),
+      IZPostgreSQLPlainDriver(FPlainDriver).GetLength(QueryHandle, Row, Col));
+    {$ENDIF}
+  end;
+begin
+  RawOID := IntToStr(TblOid);
+
+  SQL := 'select pc.relname, pns.nspname, pa.attnum, pa.attname from ' +
+    'pg_catalog.pg_class pc ' +
+    'join pg_catalog.pg_namespace pns on pc.relnamespace = pns.oid ' +
+    'join pg_catalog.pg_attribute pa on pa.attrelid = pc.oid ' +
+    'where pc.oid = ' + RawOID + ' and pa.attnum > 0';
+
+  QueryHandle := IZPostgreSQLPlainDriver(FPlainDriver).ExecuteQuery(FHandle, PAnsichar(ZPlainString(SQL)));
+  CheckPostgreSQLError(nil, IZPostgreSQLPlainDriver(FPlainDriver), FHandle, lcExecute, SQL, QueryHandle);
+  DriverManager.LogMessage(lcExecute, IZPostgreSQLPlainDriver(FPlainDriver).GetProtocol, SQL);
+
+  Result := IZPostgreSQLPlainDriver(FPlainDriver).GetRowCount(QueryHandle) > 0;
+  if Result then
+  begin
+    if ZPGTableInfo <> nil then //just overwrite all values
+      tblInfo := ZPGTableInfo
+    else
+    begin //we need a new cache
+      SetLength(FTblInfo, Length(FTblInfo) +1);
+      Index := High(FTblInfo);
+      TblInfo := @FTblInfo[Index];
+    end;
+    TblInfo^.OID := TblOid;
+    TblInfo^.Name := GetString(0, 0);
+    TblInfo^.Schema := GetString(0, 1);
+    TblInfo^.ColCount := IZPostgreSQLPlainDriver(FPlainDriver).GetRowCount(QueryHandle);
+    SetLength(TblInfo^.ColNames, TblInfo^.ColCount);
+
+    for I := 0 to TblInfo^.ColCount - 1 do
+      TblInfo^.ColNames[GetInt(I, 2)-1] := GetString(i, 3);
+    IZPostgreSQLPlainDriver(FPlainDriver).Clear(QueryHandle);
+  end
+  else
+    Index := -1;
+end;
+
+function TZPGTableInfoCache.GetTblPos(const TblOid: Oid): Integer;
+var
+  x: Integer;
+begin
+  Result := -1;
+  if TblOid <> InvalidOid then
+    for x := 0 to Length(FTblInfo) - 1 do
+      if FTblInfo[x].OID = TblOid then
+      begin
+        Result := x;
+        Break;
+      end;
+end;
+
+constructor TZPGTableInfoCache.Create(const ConSettings: PZConSettings;
+  const Handle: PZPostgreSQLConnect; const PlainDriver: IZPostgreSQLPlainDriver);
+begin
+  Self.ConSettings := ConSettings;
+  FPlainDriver := Pointer(PlainDriver);
+  FHandle := Handle;
+
+  Clear;
+end;
+
+function TZPGTableInfoCache.GetTableInfo(const TblOid: Oid;
+  CurrentFieldCount: Integer): PZPGTableInfo;
+var Idx: Integer;
+begin
+  Idx := GetTblPos(TblOid);
+  if (Idx = -1) then
+    if (TblOid <> InvalidOid) and (LoadTblInfo(TblOid, Idx, nil)) then
+      Result := @FTblInfo[Idx]
+    else
+      Result := nil
+  else
+  begin
+    Result := @FTblInfo[Idx];
+    if Result^.ColCount <> CurrentFieldCount then //something changed ?
+      LoadTblInfo(TblOid, Idx, Result); //refresh all data
+  end;
+end;
+
+procedure TZPGTableInfoCache.Clear;
+begin
+  SetLength(FTblInfo, 0);
+end;
+
 { TZPostgreSQLDriver }
 
 {**
@@ -183,9 +360,10 @@ end;
 constructor TZPostgreSQLDriver.Create;
 begin
   inherited Create;
-  AddSupportedProtocol(AddPlainDriverToCache(TZPostgreSQL8PlainDriver.Create, 'postgresql'));
+  AddSupportedProtocol(AddPlainDriverToCache(TZPostgreSQL9PlainDriver.Create, 'postgresql'));
   AddSupportedProtocol(AddPlainDriverToCache(TZPostgreSQL7PlainDriver.Create));
   AddSupportedProtocol(AddPlainDriverToCache(TZPostgreSQL8PlainDriver.Create));
+  AddSupportedProtocol(AddPlainDriverToCache(TZPostgreSQL9PlainDriver.Create));
 end;
 
 {**
@@ -211,10 +389,12 @@ end;
   @return a <code>Connection</code> object that represents a
     connection to the URL
 }
+{$WARNINGS OFF}
 function TZPostgreSQLDriver.Connect(const Url: TZURL): IZConnection;
 begin
   Result := TZPostgreSQLConnection.Create(Url);
 end;
+{$WARNINGS ON}
 
 {**
   Gets the driver's major version number. Initially this should be 1.
@@ -264,6 +444,8 @@ end;
 procedure TZPostgreSQLConnection.InternalCreate;
 begin
   FMetaData := TZPostgreSQLDatabaseMetadata.Create(Self, Url);
+  FPreparedStmts := nil;
+  FTableInfoCache := nil;
 
   { Sets a default PostgreSQL port }
   if Self.Port = 0 then
@@ -283,8 +465,23 @@ begin
   else
     FOidAsBlob := False;
 
-  FCharactersetCode := TZPgCharactersetType(ClientCodePage^.ID);
+  FUndefinedVarcharAsStringLength := StrToIntDef(Info.Values['Undefined_Varchar_AsString_Length'], 0);
+  FCheckFieldVisibility := StrToBoolEx(Info.Values['CheckFieldVisibility']);
+
+  OnPropertiesChange(nil);
+
   FNoticeProcessor := DefaultNoticeProcessor;
+end;
+
+
+function TZPostgreSQLConnection.GetUndefinedVarcharAsStringLength: Integer;
+begin
+  Result := FUndefinedVarcharAsStringLength;
+end;
+
+function TZPostgreSQLConnection.GetTableInfo(const TblOid: Oid; CurrentFieldCount: Integer): PZPGTableInfo;
+begin
+  Result := FTableInfoCache.GetTableInfo(TblOid, CurrentFieldCount);
 end;
 
 {**
@@ -292,9 +489,10 @@ end;
 }
 destructor TZPostgreSQLConnection.Destroy;
 begin
-  if FTypeList <> nil then
-    FTypeList.Free;
+  if FTypeList <> nil then FreeAndNil(FTypeList);
   inherited Destroy;
+  if FTableInfoCache <> nil then FreeAndNil(FTableInfoCache);
+  if FPreparedStmts <> nil then FreeAndNil(FPreparedStmts);
 end;
 
 {**
@@ -346,6 +544,12 @@ begin
     AddParamToResult('requiressl', Info.Values['requiressl']);
   end;
 
+  if Info.Values['sslcompression'] <> '' then AddParamToResult('sslcompression', Info.Values['sslcompression']);
+  if Info.Values['sslcert'] <> '' then AddParamToResult('sslcert', Info.Values['sslcert']);
+  if Info.Values['sslkey'] <> '' then AddParamToResult('sslkey', Info.Values['sslkey']);
+  if Info.Values['sslrootcert'] <> '' then AddParamToResult('sslrootcert', Info.Values['sslrootcert']);
+  if Info.Values['sslcrl'] <> '' then AddParamToResult('sslcrl', Info.Values['sslcrl']);
+
   { Sets a connection timeout. }
   ConnectTimeout := StrToIntDef(Info.Values['timeout'], -1);
   if ConnectTimeout >= 0 then
@@ -359,11 +563,29 @@ end;
 
 {**
   Checks is oid should be treated as Large Object.
-  @return <code>True</code> if oid should represent a Large Object. 
+  @return <code>True</code> if oid should represent a Large Object.
 }
 function TZPostgreSQLConnection.IsOidAsBlob: Boolean;
 begin
   Result := FOidAsBlob;
+end;
+
+{**
+  Checks is bytea_output hex.
+  @return <code>True</code> if hex is set.
+}
+function TZPostgreSQLConnection.Is_bytea_output_hex: Boolean;
+begin
+  Result := FIs_bytea_output_hex;
+end;
+
+{**
+  Checks if DataBaseMetaData should check FieldVisibility too.
+  @return <code>True</code> if user did set it.
+}
+function TZPostgreSQLConnection.CheckFieldVisibility: Boolean;
+begin
+  Result := FCheckFieldVisibility;
 end;
 
 {**
@@ -407,12 +629,54 @@ begin
 end;
 
 {**
+  Encodes a Binary-AnsiString to a PostgreSQL format
+  @param Value the Binary String
+  @result the encoded String
+}
+function TZPostgreSQLConnection.EncodeBinary(const Value: TByteDynArray): RawByteString;
+var Temp: RawByteString;
+begin
+  ZSetString(PAnsiChar(Value), Length(Value), Temp);
+  Result := EncodeBinary(Temp);
+end;
+{**
+  Encodes a Binary-AnsiString to a PostgreSQL format
+  @param Value the Binary String
+  @result the encoded String
+}
+function TZPostgreSQLConnection.EncodeBinary(const Value: RawByteString): RawByteString;
+begin
+  if ( Self.GetServerMajorVersion > 7 ) or
+    ((GetServerMajorVersion = 7) and (GetServerMinorVersion >= 3)) then
+    Result := GetPlainDriver.EncodeBYTEA(Value, GetConnectionHandle)
+  else
+    Result := ZDbcPostgreSqlUtils.EncodeBinaryString(Value);
+end;
+
+procedure TZPostgreSQLConnection.RegisterPreparedStmtName(const value: String);
+begin
+  FPreparedStmts.Add(Value);
+end;
+
+procedure TZPostgreSQLConnection.UnregisterPreparedStmtName(const value: String);
+var Index: Integer;
+begin
+  Index := FPreparedStmts.IndexOf(Value);
+  if Index > -1 then
+    FPreparedStmts.Delete(Index);
+end;
+
+function TZPostgreSQLConnection.ClientSettingsChanged: Boolean;
+begin
+  Result := FClientSettingsChanged;
+end;
+{**
   Opens a connection to database server with specified parameters.
 }
 procedure TZPostgreSQLConnection.Open;
+
 var
-  SQL, LogMessage: string;
-  QueryHandle: PZPostgreSQLResult;
+  SCS, LogMessage, TempClientCodePage: string;
 begin
   if not Closed then
     Exit;
@@ -431,52 +695,41 @@ begin
       DriverManager.LogMessage(lcConnect, PlainDriver.GetProtocol, LogMessage);
 
     { Set the notice processor (default = nil)}
-
     GetPlainDriver.SetNoticeProcessor(FHandle,FNoticeProcessor,nil);
 
-    { Sets a client codepage. }
-    if ( FClientCodePage <> '' ) then
-    begin
-      SQL := Format('SET CLIENT_ENCODING TO ''%s''', [FClientCodePage]);
-      QueryHandle := GetPlainDriver.ExecuteQuery(FHandle, PAnsiChar(AnsiString(SQL)));
-      CheckPostgreSQLError(nil, GetPlainDriver, FHandle, lcExecute,
-                            SQL,QueryHandle);
-      GetPlainDriver.Clear(QueryHandle);
-      DriverManager.LogMessage(lcExecute, PlainDriver.GetProtocol, SQL);
-    end;
+    { Gets the current codepage }
+    TempClientCodePage := GetPlainDriver.ValidateCharEncoding(GetPlainDriver.GetClientEncoding(FHandle)).Name;
+
+    { Sets a client codepage if necessary }
+    if ( FClientCodePage <> '' ) and (TempClientCodePage <> FClientCodePage) then
+      SetServerSetting('CLIENT_ENCODING', FClientCodePage);
 
     { Turn on transaction mode }
     StartTransactionSupport;
-    { Setup notification mechanism }
-    //  PQsetNoticeProcessor(FHandle, NoticeProc, Self);
     inherited Open;
 
     { Gets the current codepage if it wasn't set..}
-    if FClientCodePage = '' then
-      with CreateStatement.ExecuteQuery(Format('select pg_encoding_to_char(%d)',
-        [GetPlainDriver.GetClientEncoding(FHandle)]))  do
-      begin
-        if Next then FClientCodePage := GetString(1);
-        Close;
-      end;
-    CheckCharEncoding(FClientCodePage);
-    FCharactersetCode := TZPgCharactersetType(ClientCodePage^.ID);
-
-    { sets now the standard_conforming_strings which decides the escaping behavior
-      if not available }
-    if Info.Values['standard_conforming_strings']<>'' then
-    begin
-      FStandardConformingStrings := UpperCase(Info.Values['standard_conforming_strings']) = 'ON';
-      SQL := Format('SET standard_conforming_strings=''%s''',
-                                          [Info.Values['standard_conforming_strings']]);
-      QueryHandle := GetPlainDriver.ExecuteQuery(FHandle, PAnsiChar(ZPlainString(SQL)));
-      CheckPostgreSQLError(nil, GetPlainDriver, FHandle, lcExecute,
-                            SQL,QueryHandle);
-      GetPlainDriver.Clear(QueryHandle);
-      DriverManager.LogMessage(lcExecute, PlainDriver.GetProtocol, SQL);
-    end
+    if ( FClientCodePage = '') then
+      CheckCharEncoding(TempClientCodePage)
     else
-      FStandardConformingStrings := Self.GetServerMajorVersion < 9;
+    begin
+      CheckCharEncoding(FClientCodePage);
+      FClientSettingsChanged := True;
+    end;
+
+    if FPreparedStmts = nil then
+      FPreparedStmts := TStringList.Create;
+    if FTableInfoCache = nil then
+      FTableInfoCache := TZPGTableInfoCache.Create(ConSettings, FHandle, GetPlainDriver);
+
+    { sets standard_conforming_strings according to Properties if available }
+    SCS := Info.Values[standard_conforming_strings];
+    if SCS <> '' then
+    begin
+      SetServerSetting(standard_conforming_strings, SCS);
+      FClientSettingsChanged := True;
+    end;
+    FIs_bytea_output_hex := UpperCase(GetServerSetting('''bytea_output''')) = 'HEX';
 
   finally
     if self.IsClosed and (Self.FHandle <> nil) then
@@ -558,8 +811,20 @@ function TZPostgreSQLConnection.CreatePreparedStatement(
 begin
   if IsClosed then
      Open;
-  Result := TZPostgreSQLPreparedStatement.Create(GetPlainDriver,
-    Self, SQL, Info);
+
+  {$IFDEF ZEOS_TEST_ONLY}
+  Case GetTestMode of
+    0:
+  {$ENDIF}
+      if GetServerMajorVersion >= 8 then
+        Result := TZPostgreSQLCAPIPreparedStatement.Create(GetPlainDriver, Self, SQL, Info)
+      else
+        Result := TZPostgreSQLClassicPreparedStatement.Create(GetPlainDriver, Self, SQL, Info);
+  {$IFDEF ZEOS_TEST_ONLY}
+    1: Result := TZPostgreSQLClassicPreparedStatement.Create(GetPlainDriver, Self, SQL, Info);
+    2: Result := TZPostgreSQLEmulatedPreparedStatement.Create(GetPlainDriver, Self, SQL, Info);
+  end;
+  {$ENDIF}
 end;
 
 
@@ -689,9 +954,18 @@ end;
 procedure TZPostgreSQLConnection.Close;
 var
   LogMessage: string;
+  I: Integer;
 begin
   if ( Closed ) or (not Assigned(PlainDriver)) then
     Exit;
+
+  for i := 0 to FPreparedStmts.Count -1 do
+  begin
+    LogMessage := 'DEALLOCATE "'+FPreparedStmts[i]+'";';
+    GetPlainDriver.ExecuteQuery(FHandle, Pointer(LogMessage));
+  end;
+  FPreparedStmts.Clear;
+  FTableInfoCache.Clear;
 
   GetPlainDriver.Finish(FHandle);
   FHandle := nil;
@@ -775,8 +1049,8 @@ begin
     if LastVersion then
       SQL := 'SELECT oid, typname FROM pg_type WHERE oid<10000'
     else
-      SQL := 'SELECT oid, typname, typbasetype,typtype FROM pg_type' + 
-             ' WHERE (typtype = ''b'' and oid < 10000) OR typtype = ''p'' OR typtype = ''e'' OR typbasetype<>0 ORDER BY oid'; 
+      SQL := 'SELECT oid, typname, typbasetype,typtype FROM pg_type' +
+             ' WHERE (typtype = ''b'' and oid < 10000) OR typtype = ''p'' OR typtype = ''e'' OR typbasetype<>0 ORDER BY oid';
 
     QueryHandle := GetPlainDriver.ExecuteQuery(FHandle, SQL);
     CheckPostgreSQLError(Self, GetPlainDriver, FHandle, lcExecute, String(SQL),QueryHandle);
@@ -785,19 +1059,19 @@ begin
     FTypeList := TStringList.Create;
     for I := 0 to GetPlainDriver.GetRowCount(QueryHandle)-1 do
     begin
-      TypeCode := StrToIntDef(String(StrPas(
-        GetPlainDriver.GetValue(QueryHandle, I, 0))), 0);
-      isEnum := LowerCase(String(StrPas(GetPlainDriver.GetValue(QueryHandle, I, 3)))) = 'e';
-      if isEnum then 
-        TypeName := 'enum' 
-      else 
-        TypeName := String(StrPas(GetPlainDriver.GetValue(QueryHandle, I, 1)));
+      TypeCode := StrToIntDef(String(
+        GetPlainDriver.GetValue(QueryHandle, I, 0)), 0);
+      isEnum := LowerCase(String(GetPlainDriver.GetValue(QueryHandle, I, 3))) = 'e';
+      if isEnum then
+        TypeName := 'enum'
+      else
+        TypeName := String(GetPlainDriver.GetValue(QueryHandle, I, 1));
 
       if LastVersion then
         BaseTypeCode := 0
       else
-        BaseTypeCode := StrToIntDef(String(StrPas(
-          GetPlainDriver.GetValue(QueryHandle, I, 2))), 0);
+        BaseTypeCode := StrToIntDef(String(
+          GetPlainDriver.GetValue(QueryHandle, I, 2)), 0);
 
       if BaseTypeCode <> 0 then
       begin
@@ -914,12 +1188,12 @@ the connection is resumed.
 @return 0 if succesfull or error code if any error occurs 
 } 
 function TZPostgreSQLConnection.PingServer: Integer; 
-  const 
-    PING_ERROR_ZEOSCONNCLOSED = -1; 
-  var 
-    Closing: boolean;
-    res: PZPostgreSQLResult;
-    isset: boolean;
+const 
+  PING_ERROR_ZEOSCONNCLOSED = -1; 
+var 
+  Closing: boolean;
+  res: PZPostgreSQLResult;
+  isset: boolean;
 begin
   Result := PING_ERROR_ZEOSCONNCLOSED;
   Closing := FHandle = nil;
@@ -941,9 +1215,13 @@ begin
       except
         Result := 1;
       end;
-  end; 
-end; 
+  end;
+end;
 
+function TZPostgreSQLConnection.EscapeString(Value: RawByteString): RawByteString;
+begin
+  Result := PlainDriver.EscapeString(Self.FHandle, Value, ConSettings)
+end;
 {**
   Creates a sequence generator object.
   @param Sequence a name of the sequence generator.
@@ -957,12 +1235,18 @@ begin
 end;
 
 {**
-  Get characterset in terms of enumerated number.
-  @return characterset in terms of enumerated number.
+  EgonHugeist:
+  Returns the BinaryString in a Tokenizer-detectable kind
+  If the Tokenizer don't need to predetect it Result = BinaryString
+  @param Value represents the Binary-String
+  @param EscapeMarkSequence represents a Tokenizer detectable EscapeSequence (Len >= 3)
+  @result the detectable Binary String
 }
-function TZPostgreSQLConnection.GetCharactersetCode: TZPgCharactersetType;
+function TZPostgreSQLConnection.GetBinaryEscapeString(const Value: RawByteString): String;
 begin
-  Result := FCharactersetCode;
+  Result := String(EncodeBinary(Value));
+  if GetAutoEncodeStrings then
+    Result := GetDriver.GetTokenizer.GetEscapeString(Result);
 end;
 
 {**
@@ -973,13 +1257,13 @@ end;
   @param EscapeMarkSequence represents a Tokenizer detectable EscapeSequence (Len >= 3)
   @result the detectable Binary String
 }
-function TZPostgreSQLConnection.GetAnsiEscapeString(const Value: AnsiString;
-  const EscapeMarkSequence: String = '~<|'): String;
+function TZPostgreSQLConnection.GetBinaryEscapeString(const Value: TByteDynArray): String;
+var Tmp: RawByteString;
 begin
-  if Self.GetServerMajorVersion >= 8 then
-    Result := inherited GetAnsiEscapeString(GetPlainDriver.EncodeBYTEA(Value, GetConnectionHandle))
-  else
-    Result := inherited GetAnsiEscapeString(ZDbcPostgreSqlUtils.EncodeBinaryString(Value));
+  ZSetString(PAnsiChar(Value), Length(Value), Tmp);
+  Result := String(EncodeBinary(Tmp));
+  if GetAutoEncodeStrings then
+    Result := GetDriver.GetTokenizer.GetEscapeString(Result);
 end;
 
 {**
@@ -990,20 +1274,87 @@ end;
   @param EscapeMarkSequence represents a Tokenizer detectable EscapeSequence (Len >= 3)
   @result the detectable Postrgres-compatible String
 }
-function TZPostgreSQLConnection.GetEscapeString(const Value: String;
-  const EscapeMarkSequence: String = '~<|'): String;
+function TZPostgreSQLConnection.GetEscapeString(const Value: ZWideString): ZWideString;
 begin
-  if StartsWith(Value, '''') and EndsWith(Value, '''') then
-    if not FStandardConformingStrings then
-      Result := Value
-    else
-      Result := ZDbcPostgreSqlUtils.EncodeString(TZPgCharactersetType(Self.ClientCodePage^.ID), AnsiDequotedStr(Value, #39))
-  else
-    if not FStandardConformingStrings then
-      Result := AnsiQuotedStr(Value, #39)
-    else
-      Result := ZDbcPostgreSqlUtils.EncodeString(TZPgCharactersetType(Self.ClientCodePage^.ID), Value);
+  Result := GetPlainDriver.EscapeString(FHandle, Value, ConSettings);
+  if GetAutoEncodeStrings then
+    Result := GetDriver.GetTokenizer.GetEscapeString(Result);
 end;
+
+function TZPostgreSQLConnection.GetEscapeString(const Value: RawByteString): RawByteString;
+begin
+  Result := GetPlainDriver.EscapeString(FHandle, Value, ConSettings);
+  {$IFNDEF UNICODE}
+  if GetAutoEncodeStrings then
+    Result := GetDriver.GetTokenizer.GetEscapeString(Result);
+  {$ENDIF}
+end;
+
+{**
+  Gets a current setting of run-time parameter.
+  @param AName a parameter name.
+  @result a parmeter value retrieved from server.
+}
+function TZPostgreSQLConnection.GetServerSetting(const AName: string): string;
+var
+  SQL: string;
+  QueryHandle: PZPostgreSQLResult;
+begin
+  SQL := Format('select setting from pg_settings where name = %s', [AName]);
+  QueryHandle := GetPlainDriver.ExecuteQuery(FHandle, PAnsiChar({$IFDEF UNICODE}AnsiString{$ENDIF}(SQL)));
+  CheckPostgreSQLError(Self, GetPlainDriver, FHandle, lcExecute, SQL, QueryHandle);
+  DriverManager.LogMessage(lcExecute, PlainDriver.GetProtocol, SQL);
+
+  Result := String(GetPlainDriver.GetValue(QueryHandle, 0, 0));
+  GetPlainDriver.Clear(QueryHandle);
+end;
+
+procedure TZPostgreSQLConnection.OnPropertiesChange(Sender: TObject);
+var
+  SCS: string;
+begin
+  inherited OnPropertiesChange(Sender);
+
+  { Define standard_conforming_strings setting}
+  SCS := Trim(Info.Values[standard_conforming_strings]);
+  if SCS <> '' then
+    SetStandardConformingStrings(UpperCase(SCS) = FON)
+  else
+    SetStandardConformingStrings(GetPlainDriver.GetStandardConformingStrings);
+end;
+
+{**
+  Sets current setting of run-time parameter.
+  String values should be already quoted.
+  @param AName a parameter name.
+  @param AValue a new parameter value.
+}
+procedure TZPostgreSQLConnection.SetServerSetting(const AName, AValue: string);
+var
+  SQL: string;
+  QueryHandle: PZPostgreSQLResult;
+begin
+  SQL := Format('SET %s = %s', [AName, AValue]);
+  QueryHandle := GetPlainDriver.ExecuteQuery(FHandle, PAnsiChar(AnsiString(SQL)));
+  CheckPostgreSQLError(Self, GetPlainDriver, FHandle, lcExecute, SQL, QueryHandle);
+  DriverManager.LogMessage(lcExecute, PlainDriver.GetProtocol, SQL);
+
+  GetPlainDriver.Clear(QueryHandle);
+end;
+
+{$IFDEF ZEOS_TEST_ONLY}
+constructor TZPostgreSQLConnection.Create(const ZUrl: TZURL);
+begin
+ inherited Create(ZUrl);
+end;
+{$ENDIF}
+
+procedure TZPostgreSQLConnection.SetStandardConformingStrings(const Value: Boolean);
+begin
+  FStandardConformingStrings := Value;
+  ( Self.GetDriver.GetTokenizer as IZPostgreSQLTokenizer ).SetStandardConformingStrings(FStandardConformingStrings);
+end;
+
 
 { TZPostgreSQLSequence }
 {**

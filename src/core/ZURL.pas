@@ -6,7 +6,7 @@
 {*********************************************************}
 
 {@********************************************************}
-{    Copyright (c) 1999-2006 Zeos Development Group       }
+{    Copyright (c) 1999-2012 Zeos Development Group       }
 {                                                         }
 { License Agreement:                                      }
 {                                                         }
@@ -38,12 +38,10 @@
 {                                                         }
 { The project web site is located on:                     }
 {   http://zeos.firmos.at  (FORUM)                        }
-{   http://zeosbugs.firmos.at (BUGTRACKER)                }
-{   svn://zeos.firmos.at/zeos/trunk (SVN Repository)      }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
 {                                                         }
 {   http://www.sourceforge.net/projects/zeoslib.          }
-{   http://www.zeoslib.sourceforge.net                    }
-{                                                         }
 {                                                         }
 {                                                         }
 {                                 Zeos Development Group. }
@@ -54,7 +52,7 @@ interface
 {$I ZCore.inc}
 
 uses
-  Classes,
+  Classes, {$IFDEF MSEgui}mclasses,{$ENDIF}
   SysUtils;
 
 type
@@ -78,6 +76,7 @@ type
     FPassword: string;
     FLibLocation: String;
     FProperties: TZURLStringList;
+    FOnPropertiesChange: TNotifyEvent;
     procedure SetPrefix(const Value: string);
     procedure SetProtocol(const Value: string);
     procedure SetHostName(const Value: string);
@@ -92,7 +91,9 @@ type
     procedure SetLibLocation(const Value: String);
     function GetURL: string;
     procedure SetURL(const Value: string);
-    procedure OnPropertiesChange(Sender: TObject);
+    procedure DoOnPropertiesChange(Sender: TObject);
+    function GetParamAndValue(AString: String; Var Param, Value: String): Boolean;
+    procedure AddValues(Values: TStrings);
   public
     constructor Create; overload;
     constructor Create(const AURL: String); overload;
@@ -112,11 +113,13 @@ type
     property LibLocation: string read GetLibLocation write SetLibLocation;
     property Properties: TZURLStringList read FProperties;
     property URL: string read GetURL write SetURL;
+
+    property OnPropertiesChange: TNotifyEvent read FOnPropertiesChange write FOnPropertiesChange;
   end;
 
 implementation
 
-uses ZCompatibility;
+uses ZCompatibility, StrUtils;
 
 {TZURLStringList}
 function TZURLStringList.GetTextStr: string;
@@ -147,7 +150,8 @@ begin
   FPrefix := 'zdbc';
   FProperties := TZURLStringList.Create;
   FProperties.CaseSensitive := False;
-  FProperties.OnChange := OnPropertiesChange;
+  FProperties.NameValueSeparator := '=';
+  FProperties.OnChange := DoOnPropertiesChange;
 end;
 
 constructor TZURL.Create(const AURL: String);
@@ -160,7 +164,7 @@ constructor TZURL.Create(const AURL: String; Info: TStrings);
 begin
   Create(AURL);
   if Assigned(Info) then
-    Self.Properties.AddStrings(Info);
+    AddValues(Info);
 end;
 
 constructor TZURL.Create(const AURL: TZURL);
@@ -178,7 +182,7 @@ begin
   Self.UserName := AUser;
   Self.Password := APassword;
   if Assigned(Info) then
-    Self.Properties.AddStrings(Info);
+    AddValues(Info);
 end;
 
 destructor TZURL.Destroy;
@@ -249,8 +253,21 @@ begin
 end;
 
 function TZURL.GetURL: string;
+var
+  hasParamPart : boolean;
+  procedure AddParamPart(const ParamPart: String);
+  begin
+    if hasParamPart then
+      Result := Result + ';'
+    else
+      Result := Result + '?';
+    Result := Result + ParamPart;
+    hasParamPart := True;
+  end;
+
 begin
   Result := '';
+  hasParamPart := false;
 
   // Prefix
   Result := Result + Prefix + ':';
@@ -258,10 +275,11 @@ begin
   // Protocol
   Result := Result + Protocol + ':';
 
+  Result := Result + '//'; //Allways set the doubleslash  to avoid unix '/' path issues if host is empty
+
   // HostName/Port
   if HostName <> '' then
   begin
-    Result := Result + '//';
     Result := Result + HostName;
     if Port <> 0 then
       Result := Result + ':' + IntToStr(Port);
@@ -271,38 +289,21 @@ begin
   if Database <> '' then
     Result := Result + '/' + FDatabase;
 
-  // ?
-  if (FUserName <> '') or (FPassword <> '') or (Properties.Count > 0) then
-    Result := Result + '?';
-
   // UserName
   if FUserName <> '' then
-    Result := Result + 'username=' + FUserName;
+    AddParamPart('username=' + FUserName);
 
   // Password
   if FPassword <> '' then
-  begin
-    if Result[Length(Result)] <> '?' then
-      Result := Result + ';';
-    Result := Result + 'password=' + FPassword
-  end;
+    AddParamPart('password=' + FPassword);
 
-  // Properties + LibLocation
+  // Properties
   if Properties.Count > 0 then
-  begin
-    if Result[Length(Result)] <> '?' then
-      Result := Result + ';';  //in case if UserName and/or Password was set
-    Result := Result + Properties.GetURLText; //Adds the escaped string
+    AddParamPart(Properties.GetURLText); //Adds the escaped string
+
+  // LibLocation
     if FLibLocation <> '' then
-      Result := Result + ';LibLocation='+ FLibLocation;
-  end
-  else
-    if FLibLocation <> '' then
-    begin
-      if Result[Length(Result)] <> '?' then
-        Result := Result + ';';
-      Result := Result + 'LibLocation='+FLibLocation;
-    end;
+      AddParamPart('LibLocation='+ FLibLocation);
 end;
 
 procedure TZURL.SetURL(const Value: string);
@@ -348,7 +349,7 @@ begin
     if Pos('//', AValue) = 1 then
     begin
       Delete(AValue, 1, 2);
-      if (Pos(':', AValue) > 0) and (Pos(':', AValue) < Pos('/', AValue))  then
+      if (Pos(':', AValue) > 0) and ((Pos(':', AValue) < Pos('/', AValue)) or (Pos('/', AValue)=0)) then
         AHostName := Copy(AValue, 1, Pos(':', AValue) - 1)
       else if Pos('/', AValue) > 0 then
         AHostName := Copy(AValue, 1, Pos('/', AValue) - 1)
@@ -401,7 +402,7 @@ begin
   end;
 end;
 
-procedure TZURL.OnPropertiesChange(Sender: TObject);
+procedure TZURL.DoOnPropertiesChange(Sender: TObject);
 begin
   FProperties.OnChange := nil;
   try
@@ -436,8 +437,39 @@ begin
     end;
 
   finally
-    FProperties.OnChange := OnPropertiesChange;
+    FProperties.OnChange := DoOnPropertiesChange;
   end;
+
+  if Assigned(FOnPropertiesChange) then
+    FOnPropertiesChange(Sender);
+end;
+
+function TZURL.GetParamAndValue(AString: String; Var Param, Value: String): Boolean;
+var
+  DelimPos: Integer;
+begin
+  DelimPos := PosEx('=', AString);
+  Result := DelimPos <> 0;
+  Param := '';
+  Value := '';
+  if DelimPos <> 0 then
+  begin
+    Param := Copy(AString, 1, DelimPos -1);
+    Value := Copy(AString, DelimPos+1, Length(AString)-DelimPos);
+    Result := Value <> ''; //avoid loosing empty but added Params. e.g TestIdentifierQuotes
+  end;
+end;
+
+procedure TZURL.AddValues(Values: TStrings);
+var
+  I: Integer;
+  Param, Value: String;
+begin
+  for i := 0 to Values.Count -1 do
+    if GetParamAndValue(Values[i], Param, Value) then
+      FProperties.Values[Param] := Value
+    else
+      FProperties.Add(Values[i]);
 end;
 
 end.

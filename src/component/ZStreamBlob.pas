@@ -8,7 +8,7 @@
 {*********************************************************}
 
 {@********************************************************}
-{    Copyright (c) 1999-2006 Zeos Development Group       }
+{    Copyright (c) 1999-2012 Zeos Development Group       }
 {                                                         }
 { License Agreement:                                      }
 {                                                         }
@@ -40,12 +40,10 @@
 {                                                         }
 { The project web site is located on:                     }
 {   http://zeos.firmos.at  (FORUM)                        }
-{   http://zeosbugs.firmos.at (BUGTRACKER)                }
-{   svn://zeos.firmos.at/zeos/trunk (SVN Repository)      }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
 {                                                         }
 {   http://www.sourceforge.net/projects/zeoslib.          }
-{   http://www.zeoslib.sourceforge.net                    }
-{                                                         }
 {                                                         }
 {                                                         }
 {                                 Zeos Development Group. }
@@ -57,7 +55,9 @@ interface
 
 {$I ZComponent.inc}
 
-uses Classes, SysUtils, ZDbcIntfs, DB;
+uses Classes, SysUtils, {$IFDEF MSEgui}mclasses, mdb{$ELSE}DB{$ENDIF},
+  {$IFDEF WITH_WIDESTRUTILS}WideStrUtils, {$ENDIF}
+  ZDbcIntfs, ZCompatibility;
 
 type
   {** Implements a class for blobs stream. }
@@ -66,17 +66,19 @@ type
     FField: TBlobField;
     FBlob: IZBlob;
     FMode: TBlobStreamMode;
+    FConSettings: PZConSettings;
   protected
     property Blob: IZBlob read FBlob write FBlob;
     property Mode: TBlobStreamMode read FMode write FMode;
   public
-    constructor Create(Field: TBlobField; Blob: IZBlob; Mode: TBlobStreamMode);
+    constructor Create(Field: TBlobField; Blob: IZBlob; Mode: TBlobStreamMode;
+      ConSettings: PZConSettings);
     destructor Destroy; override;
   end;
 
 implementation
 
-uses ZCompatibility;
+uses ZEncoding;
 
 { TZBlobStream }
 
@@ -84,7 +86,8 @@ uses ZCompatibility;
   Constructs this object and assignes the main properties.
   @param Blob
 }
-constructor TZBlobStream.Create(Field: TBlobField; Blob: IZBlob; Mode: TBlobStreamMode);
+constructor TZBlobStream.Create(Field: TBlobField; Blob: IZBlob;
+  Mode: TBlobStreamMode; ConSettings: PZConSettings);
 var
   TempStream: TStream;
 begin
@@ -93,6 +96,7 @@ begin
   FBlob := Blob;
   FMode := Mode;
   FField := Field;
+  FConSettings := ConSettings;
   if (Mode in [bmRead, bmReadWrite]) and not Blob.IsEmpty then
   begin
     TempStream := Blob.GetStream;
@@ -103,7 +107,7 @@ begin
     finally
       TempStream.Free;
     end;
-  end;
+  end
 end;
 
 type THackedDataset = class(TDataset);
@@ -112,12 +116,29 @@ type THackedDataset = class(TDataset);
   Destroys this object and cleanups the memory.
 }
 destructor TZBlobStream.Destroy;
+{$IFDEF WITH_WIDEMEMO}
+var
+  TempStream: TStream;
+{$ENDIF}
 begin
   if Mode in [bmWrite, bmReadWrite] then
   begin
     if Assigned(Self.Memory) then
+    begin
+    {$IFDEF WITH_WIDEMEMO}
+      if FField.DataType = ftWideMemo then
+      begin
+        TempStream := GetValidatedUnicodeStream(Memory, Cardinal(Size),
+          FConSettings, False);
+        Blob.SetStream(TempStream, True);
+        TempStream.Free;
+      end
+      else
+    {$ENDIF}
       Blob.SetStream(Self)
-    else Blob.SetStream(nil);
+    end
+    else
+      Blob.SetStream(nil);
     try
       if Assigned(FField.Dataset) then
         THackedDataset(FField.DataSet).DataEvent(deFieldChange, ULong(FField));

@@ -8,7 +8,7 @@
 {*********************************************************}
 
 {@********************************************************}
-{    Copyright (c) 1999-2006 Zeos Development Group       }
+{    Copyright (c) 1999-2012 Zeos Development Group       }
 {                                                         }
 { License Agreement:                                      }
 {                                                         }
@@ -40,12 +40,10 @@
 {                                                         }
 { The project web site is located on:                     }
 {   http://zeos.firmos.at  (FORUM)                        }
-{   http://zeosbugs.firmos.at (BUGTRACKER)                }
-{   svn://zeos.firmos.at/zeos/trunk (SVN Repository)      }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
 {                                                         }
 {   http://www.sourceforge.net/projects/zeoslib.          }
-{   http://www.zeoslib.sourceforge.net                    }
-{                                                         }
 {                                                         }
 {                                                         }
 {                                 Zeos Development Group. }
@@ -58,7 +56,8 @@ interface
 {$I ZComponent.inc}
 
 uses
-  SysUtils, Classes, DB, ZDbcIntfs, ZDbcCachedResultSet, ZDbcCache, ZSqlStrings;
+  SysUtils, Classes, {$IFDEF MSEgui}mclasses, mdb{$ELSE}DB{$ENDIF},
+  ZDbcIntfs, ZDbcCachedResultSet, ZDbcCache, ZSqlStrings;
 
 type
   {ADDED BY fduenas}
@@ -541,10 +540,8 @@ var
   ParamValue: TParam;
   ParamName: string;
   OldParam: Boolean;
-//  SeqParam: Boolean;
   WasNull: Boolean;
   RowAccessor: TZRowAccessor;
-  Stream: TStream;
   TempBlob: IZBlob;
 begin
   WasNull := False;
@@ -640,64 +637,7 @@ begin
       end;
     end
     else
-    begin
-      if ParamValue.IsNull then
-        Statement.SetNull(I + 1, ConvertDatasetToDbcType(ParamValue.DataType))
-      else
-      begin
-        case ParamValue.DataType of
-          ftBoolean:
-            Statement.SetBoolean(I + 1, ParamValue.AsBoolean);
-          ftSmallInt:
-            Statement.SetShort(I + 1, ParamValue.AsSmallInt);
-          ftInteger, ftAutoInc:
-            Statement.SetInt(I + 1, ParamValue.AsInteger);
-          ftFloat:
-            Statement.SetFloat(I + 1, ParamValue.AsFloat);
-          ftLargeInt:
-            Statement.SetInt(I + 1, ParamValue.AsInteger);
-          ftString:
-            Statement.SetString(I + 1, ParamValue.AsString);
-          ftBytes:
-            Statement.SetString(I + 1, ParamValue.AsString);
-          ftDate:
-            Statement.SetDate(I + 1, ParamValue.AsDate);
-          ftTime:
-            Statement.SetTime(I + 1, ParamValue.AsTime);
-          ftDateTime:
-            Statement.SetTimestamp(I + 1, ParamValue.AsDateTime);
-          ftMemo:
-            begin
-              Stream := TStringStream.Create(ParamValue.AsMemo);
-              try
-                Statement.SetAsciiStream(I + 1, Stream);
-              finally
-                Stream.Free;
-              end;
-            end;
-          {$IFDEF WITH_WIDEMEMO}
-          ftWideMemo:
-            begin
-              Stream := WideStringStream(ParamValue.AsWideString);
-              try
-                Statement.SetUnicodeStream(I + 1, Stream);
-              finally
-                Stream.Free;
-              end;
-            end;
-          {$ENDIF}
-          ftBlob, ftGraphic:
-            begin
-              Stream := TStringStream.Create(ParamValue.AsBlob);
-              try
-                Statement.SetBinaryStream(I + 1, Stream);
-              finally
-                Stream.Free;
-              end;
-            end;
-        end;
-      end;
-    end;
+      SetStatementParam(I+1, Statement, ParamValue);
   end;
 end;
 

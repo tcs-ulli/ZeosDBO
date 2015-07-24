@@ -8,7 +8,7 @@
 {*********************************************************}
 
 {@********************************************************}
-{    Copyright (c) 1999-2006 Zeos Development Group       }
+{    Copyright (c) 1999-2012 Zeos Development Group       }
 {                                                         }
 { License Agreement:                                      }
 {                                                         }
@@ -40,12 +40,10 @@
 {                                                         }
 { The project web site is located on:                     }
 {   http://zeos.firmos.at  (FORUM)                        }
-{   http://zeosbugs.firmos.at (BUGTRACKER)                }
-{   svn://zeos.firmos.at/zeos/trunk (SVN Repository)      }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
 {                                                         }
 {   http://www.sourceforge.net/projects/zeoslib.          }
-{   http://www.zeoslib.sourceforge.net                    }
-{                                                         }
 {                                                         }
 {                                                         }
 {                                 Zeos Development Group. }
@@ -58,43 +56,43 @@ interface
 {$I ZDbc.inc}
 
 uses
-  Classes, SysUtils, Types, ZSysUtils, ZDbcIntfs,
-  ZDbcResultSet, ZPlainOracleDriver, ZDbcResultSetMetadata, ZDbcLogging,
-  ZCompatibility, ZDbcOracleUtils;
+  {$IFDEF WITH_TOBJECTLIST_INLINE}System.Types, System.Contnrs{$ELSE}Types{$ENDIF},
+  Classes, {$IFDEF MSEgui}mclasses,{$ENDIF} SysUtils,
+  ZSysUtils, ZDbcIntfs, ZDbcOracle, ZDbcResultSet, ZPlainOracleDriver,
+  ZDbcResultSetMetadata, ZDbcLogging, ZCompatibility, ZDbcOracleUtils,
+  ZPlainOracleConstants;
 
 type
 
   {** Implements Oracle ResultSet. }
-  TZOracleResultSet = class(TZAbstractResultSet)
+  TZOracleAbstractResultSet = class(TZAbstractResultSet)
   private
     FSQL: string;
     FStmtHandle: POCIStmt;
     FErrorHandle: POCIError;
     FPlainDriver: IZOraclePlainDriver;
+    FConnection: IZOracleConnection;
     FOutVars: PZSQLVars;
   protected
-    procedure Open; override;
     function GetSQLVarHolder(ColumnIndex: Integer): PZSQLVar;
     function GetAsStringValue(ColumnIndex: Integer;
-      SQLVarHolder: PZSQLVar): AnsiString;
+      SQLVarHolder: PZSQLVar): RawByteString;
     function GetAsLongIntValue(ColumnIndex: Integer;
       SQLVarHolder: PZSQLVar): LongInt;
     function GetAsDoubleValue(ColumnIndex: Integer;
       SQLVarHolder: PZSQLVar): Double;
     function GetAsDateTimeValue(ColumnIndex: Integer;
       SQLVarHolder: PZSQLVar): TDateTime;
-    function InternalGetString(ColumnIndex: Integer): AnsiString; override;
+    function InternalGetString(ColumnIndex: Integer): RawByteString; override;
+    function GetFinalObject(Obj: POCIObject): POCIObject;
   public
     constructor Create(PlainDriver: IZOraclePlainDriver;
       Statement: IZStatement; SQL: string; StmtHandle: POCIStmt;
       ErrorHandle: POCIError);
-    destructor Destroy; override;
-
-    procedure Close; override;
 
     function IsNull(ColumnIndex: Integer): Boolean; override;
     function GetBoolean(ColumnIndex: Integer): Boolean; override;
-    function GetByte(ColumnIndex: Integer): ShortInt; override;
+    function GetByte(ColumnIndex: Integer): Byte; override;
     function GetShort(ColumnIndex: Integer): SmallInt; override;
     function GetInt(ColumnIndex: Integer): Integer; override;
     function GetLong(ColumnIndex: Integer): Int64; override;
@@ -105,10 +103,32 @@ type
     function GetDate(ColumnIndex: Integer): TDateTime; override;
     function GetTime(ColumnIndex: Integer): TDateTime; override;
     function GetTimestamp(ColumnIndex: Integer): TDateTime; override;
+    function GetDataSet(ColumnIndex: Integer): IZDataSet; override;
     function GetBlob(ColumnIndex: Integer): IZBlob; override;
-
-    function Next(): Boolean; override;
   end;
+
+  TZOracleResultSet = class(TZOracleAbstractResultSet)
+  protected
+    procedure Open; override;
+  public
+    procedure Close; override;
+    function Next: Boolean; override;
+  end;
+
+  TZOracleCallableResultSet = Class(TZOracleAbstractResultSet)
+  private
+    FFieldNames: TStringDynArray;
+    function PrepareOracleOutVars(Statement: IZStatement; InVars: PZSQLVars;
+      const OracleParams: TZOracleParams): PZSQLVars;
+  protected
+    procedure Open; override;
+  public
+    constructor Create(PlainDriver: IZOraclePlainDriver;
+      Statement: IZStatement; SQL: string; StmtHandle: POCIStmt;
+      ErrorHandle: POCIError; OutVars: PZSQLVars; const OracleParams: TZOracleParams);
+    procedure Close; override;
+    function Next: Boolean; override;
+  End;
 
   {** Represents an interface, specific for Oracle blobs. }
   IZOracleBlob = interface(IZBlob)
@@ -145,7 +165,7 @@ type
     function IsEmpty: Boolean; override;
     function Clone: IZBlob; override;
 
-    function GetString: ZAnsiString; override;
+    function GetString: RawByteString; override;
     function GetBytes: TByteDynArray; override;
     function GetStream: TStream; override;
   end;
@@ -153,9 +173,9 @@ type
 implementation
 
 uses
-  Math, ZMessages, ZDbcOracle;
+  Math, ZMessages, ZDbcUtils, ZEncoding;
 
-{ TZOracleResultSet }
+{ TZOracleAbstractResultSet }
 
 {**
   Constructs this object, assignes main properties and
@@ -165,217 +185,20 @@ uses
   @param SQL a SQL statement.
   @param Handle a Oracle specific query handle.
 }
-constructor TZOracleResultSet.Create(PlainDriver: IZOraclePlainDriver;
+constructor TZOracleAbstractResultSet.Create(PlainDriver: IZOraclePlainDriver;
   Statement: IZStatement; SQL: string; StmtHandle: POCIStmt;
   ErrorHandle: POCIError);
 begin
-  inherited Create(Statement, SQL, nil, Statement.GetConnection.GetClientCodePageInformations);
+  inherited Create(Statement, SQL, nil, Statement.GetConnection.GetConSettings);
 
   FSQL := SQL;
   FStmtHandle := StmtHandle;
   FErrorHandle := ErrorHandle;
   FPlainDriver := PlainDriver;
   ResultSetConcurrency := rcReadOnly;
+  FConnection := Statement.GetConnection as IZOracleConnection;
 
   Open;
-end;
-
-{**
-  Destroys this object and cleanups the memory.
-}
-destructor TZOracleResultSet.Destroy;
-begin
-  inherited Destroy;
-end;
-
-{**
-  Opens this recordset.
-}
-procedure TZOracleResultSet.Open;
-var
-  I: Integer;
-  ColumnInfo: TZColumnInfo;
-  Status: Integer;
-  Connection: IZOracleConnection;
-  CurrentVar: PZSQLVar;
-  ColumnCount: ub4;
-  TempColumnName: PAnsiChar;
-  TempColumnNameLen: Integer;
-begin
-  if ResultSetConcurrency = rcUpdatable then
-    raise EZSQLException.Create(SLiveResultSetsAreNotSupported);
-
-  if not Assigned(FStmtHandle) or not Assigned(FErrorHandle) then
-    raise EZSQLException.Create(SCanNotRetrieveResultSetData);
-
-  Connection := GetStatement.GetConnection as IZOracleConnection;
-
-  Status := FPlainDriver.StmtExecute(Connection.GetContextHandle, FStmtHandle,
-    FErrorHandle, 1, 0, nil, nil, OCI_DESCRIBE_ONLY);
-  CheckOracleError(FPlainDriver, FErrorHandle, Status, lcExecute, FSQL);
-
-  { Resize SQLVERS structure if needed }
-  FPlainDriver.AttrGet(FStmtHandle, OCI_HTYPE_STMT, @ColumnCount, nil,
-    OCI_ATTR_PARAM_COUNT, FErrorHandle);
-  AllocateOracleSQLVars(FOutVars, ColumnCount);
-  FOutVars.ActualNum := ColumnCount;
-
-  { Allocates memory for result set }
-  for I := 1 to FOutVars.ActualNum do
-  begin
-    CurrentVar := @FOutVars.Variables[I];
-    CurrentVar.Handle := nil;
-
-    FPlainDriver.ParamGet(FStmtHandle, OCI_HTYPE_STMT, FErrorHandle,
-      CurrentVar.Handle, I);
-    FPlainDriver.AttrGet(CurrentVar.Handle, OCI_DTYPE_PARAM,
-      @CurrentVar.DataSize, nil, OCI_ATTR_DATA_SIZE, FErrorHandle);
-    FPlainDriver.AttrGet(CurrentVar.Handle, OCI_DTYPE_PARAM,
-      @CurrentVar.DataType, nil, OCI_ATTR_DATA_TYPE, FErrorHandle);
-    CurrentVar.Scale := 0;
-    CurrentVar.Precision := 0;
-
-    case CurrentVar.DataType of
-      SQLT_CHR, SQLT_VCS, SQLT_AFC, SQLT_AVC, SQLT_STR, SQLT_VST:
-        begin
-          CurrentVar.ColType := stString
-        end;
-      SQLT_NUM:
-        begin
-          FPlainDriver.AttrGet(CurrentVar.Handle, OCI_DTYPE_PARAM,
-            @CurrentVar.Precision, nil, OCI_ATTR_PRECISION, FErrorHandle);
-          FPlainDriver.AttrGet(CurrentVar.Handle, OCI_DTYPE_PARAM,
-            @CurrentVar.Scale, nil, OCI_ATTR_SCALE, FErrorHandle);
-
-          {by default convert number to double}
-          CurrentVar.ColType := stDouble;
-          if (CurrentVar.Scale = 0) and (CurrentVar.Precision <> 0) then
-          begin
-            if CurrentVar.Precision <= 2 then
-              CurrentVar.ColType := stByte
-            else if CurrentVar.Precision <= 4 then
-              CurrentVar.ColType := stShort
-            else if CurrentVar.Precision <= 9 then
-              CurrentVar.ColType := stInteger
-            else if CurrentVar.Precision <= 19 then
-              CurrentVar.ColType := stLong;
-          end
-        end;
-      SQLT_INT, _SQLT_PLI:
-        CurrentVar.ColType := stInteger;
-      SQLT_LNG, SQLT_LVC:
-        CurrentVar.ColType := stAsciiStream;
-      SQLT_RID, SQLT_RDD:
-        begin
-          CurrentVar.ColType := stString;
-          CurrentVar.DataSize := 20;
-        end;
-      SQLT_DAT, SQLT_DATE:
-        { oracle DATE precission - 1 second}
-        CurrentVar.ColType := stTimestamp;
-      SQLT_TIME, SQLT_TIME_TZ:
-        CurrentVar.ColType := stTime;
-      SQLT_TIMESTAMP, SQLT_TIMESTAMP_TZ, SQLT_TIMESTAMP_LTZ:
-        CurrentVar.ColType := stTimestamp;
-      SQLT_BIN, SQLT_LBI:
-        CurrentVar.ColType := stBinaryStream;
-      SQLT_CLOB:
-        begin
-          CurrentVar.ColType := stAsciiStream;
-          CurrentVar.TypeCode := CurrentVar.DataType;
-        end;
-      SQLT_BLOB:
-        begin
-          CurrentVar.ColType := stBinaryStream;
-          CurrentVar.TypeCode := CurrentVar.DataType;
-        end;
-      SQLT_BFILEE, SQLT_CFILEE:
-        begin
-          CurrentVar.ColType := stBinaryStream;
-          CurrentVar.TypeCode := CurrentVar.DataType;
-        end;
-      else
-        CurrentVar.ColType := stUnknown;
-    end;
-
-    if (Statement.GetConnection.GetEncoding = ceUTF8) and
-      (Self.Statement.GetConnection.UTF8StringAsWideField)
-    then
-      case CurrentVar.ColType of
-        stString: CurrentVar.ColType := stUnicodeString;
-        stAsciiStream: if not CurrentVar.DataType in [SQLT_LNG] then
-          CurrentVar.ColType := stUnicodeStream;
-      end;
-
-
-    InitializeOracleVar(FPlainDriver, Connection, CurrentVar,
-      CurrentVar.ColType, CurrentVar.TypeCode, CurrentVar.DataSize);
-
-    Status := FPlainDriver.DefineByPos(FStmtHandle, CurrentVar.Define,
-      FErrorHandle, I, CurrentVar.Data, CurrentVar.Length, CurrentVar.TypeCode,
-      @CurrentVar.Indicator, nil, nil, OCI_DEFAULT);
-    CheckOracleError(FPlainDriver, FErrorHandle, Status, lcExecute, FSQL);
-  end;
-
-  { Fills the column info. }
-  ColumnsInfo.Clear;
-  for I := 1 to FOutVars.ActualNum do
-  begin
-    CurrentVar := @FOutVars.Variables[I];
-    ColumnInfo := TZColumnInfo.Create;
-
-    with ColumnInfo do
-    begin
-      ColumnName := '';
-      TableName := '';
-
-      TempColumnName := nil;
-      FPlainDriver.AttrGet(CurrentVar.Handle, OCI_DTYPE_PARAM,
-        @TempColumnName, @TempColumnNameLen, OCI_ATTR_NAME, FErrorHandle);
-      if TempColumnName <> nil then
-        ColumnLabel := BufferToStr(TempColumnName, TempColumnNameLen);
-
-      ColumnDisplaySize := 0;
-      AutoIncrement := False;
-      Signed := True;
-      Nullable := ntNullable;
-
-      ColumnType := CurrentVar.ColType;
-      Scale := CurrentVar.Scale;
-      if (ColumnType = stString) or (ColumnType = stUnicodeString) then
-        Precision := CurrentVar.DataSize
-      else
-        Precision := CurrentVar.Precision;
-    end;
-
-    ColumnsInfo.Add(ColumnInfo);
-  end;
-
-  inherited Open;
-end;
-
-{**
-  Releases this <code>ResultSet</code> object's database and
-  JDBC resources immediately instead of waiting for
-  this to happen when it is automatically closed.
-
-  <P><B>Note:</B> A <code>ResultSet</code> object
-  is automatically closed by the
-  <code>Statement</code> object that generated it when
-  that <code>Statement</code> object is closed,
-  re-executed, or is used to retrieve the next result from a
-  sequence of multiple results. A <code>ResultSet</code> object
-  is also automatically closed when it is garbage collected.
-}
-procedure TZOracleResultSet.Close;
-var
-  ps: IZPreparedStatement;
-begin
-  FreeOracleSQLVars(FPlainDriver, FOutVars);
-  { prepared statement own handles, so dont free them }
-  if not Supports(GetStatement, IZPreparedStatement, ps) then
-     FreeOracleStatementHandles(FPlainDriver, FStmtHandle, FErrorHandle);
-  inherited Close;
 end;
 
 {**
@@ -386,7 +209,7 @@ end;
   @return if the value is SQL <code>NULL</code>, the
     value returned is <code>true</code>. <code>false</code> otherwise.
 }
-function TZOracleResultSet.IsNull(ColumnIndex: Integer): Boolean;
+function TZOracleAbstractResultSet.IsNull(ColumnIndex: Integer): Boolean;
 var
   CurrentVar: PZSQLVar;
 begin
@@ -410,7 +233,7 @@ end;
   @param ColumnIndex an index of the column to read.
   @returns an output variable holder or <code>nil</code> if column is empty.
 }
-function TZOracleResultSet.GetSQLVarHolder(ColumnIndex: Integer): PZSQLVar;
+function TZOracleAbstractResultSet.GetSQLVarHolder(ColumnIndex: Integer): PZSQLVar;
 begin
 {$IFNDEF DISABLE_CHECKING}
   CheckClosed;
@@ -434,8 +257,8 @@ end;
   @return the column value; if the value is SQL <code>NULL</code>, the
     value returned is <code>null</code>
 }
-function TZOracleResultSet.GetAsStringValue(ColumnIndex: Integer;
-  SQLVarHolder: PZSQLVar): AnsiString;
+function TZOracleAbstractResultSet.GetAsStringValue(ColumnIndex: Integer;
+  SQLVarHolder: PZSQLVar): RawByteString;
 var
   OldSeparator: Char;
   Blob: IZBlob;
@@ -455,8 +278,8 @@ begin
           {$IFDEF WITH_FORMATSETTINGS}FormatSettings.{$ENDIF}DecimalSeparator := OldSeparator;
         end;
       SQLT_STR:
-        Result := StrPas(PAnsiChar(SQLVarHolder.Data));
-      SQLT_LVB, SQLT_LVC:
+        Result := PAnsiChar(SQLVarHolder.Data);
+      SQLT_LVB, SQLT_LVC, SQLT_BIN:
         begin
           Result := AnsiString(BufferToStr(PAnsiChar(SQLVarHolder.Data) + SizeOf(Integer),
             PInteger(SQLVarHolder.Data)^));
@@ -487,7 +310,7 @@ end;
   @return the column value; if the value is SQL <code>NULL</code>, the
     value returned is <code>0</code>
 }
-function TZOracleResultSet.GetAsLongIntValue(ColumnIndex: Integer;
+function TZOracleAbstractResultSet.GetAsLongIntValue(ColumnIndex: Integer;
   SQLVarHolder: PZSQLVar): LongInt;
 begin
   if SQLVarHolder = nil then
@@ -520,7 +343,7 @@ end;
   @return the column value; if the value is SQL <code>NULL</code>, the
     value returned is <code>0.0</code>
 }
-function TZOracleResultSet.GetAsDoubleValue(ColumnIndex: Integer;
+function TZOracleAbstractResultSet.GetAsDoubleValue(ColumnIndex: Integer;
   SQLVarHolder: PZSQLVar): Double;
 begin
   if SQLVarHolder = nil then
@@ -553,7 +376,7 @@ end;
   @return the column value; if the value is SQL <code>NULL</code>, the
     value returned is <code>0</code>
 }
-function TZOracleResultSet.GetAsDateTimeValue(ColumnIndex: Integer;
+function TZOracleAbstractResultSet.GetAsDateTimeValue(ColumnIndex: Integer;
   SQLVarHolder: PZSQLVar): TDateTime;
 var
   Status: Integer;
@@ -625,12 +448,26 @@ end;
   @return the column value; if the value is SQL <code>NULL</code>, the
     value returned is <code>null</code>
 }
-function TZOracleResultSet.InternalGetString(ColumnIndex: Integer): AnsiString;
+function TZOracleAbstractResultSet.InternalGetString(ColumnIndex: Integer): RawByteString;
 begin
 {$IFNDEF DISABLE_CHECKING}
   CheckColumnConvertion(ColumnIndex, stString);
 {$ENDIF}
   Result := GetAsStringValue(ColumnIndex, nil);
+end;
+
+{**
+  Gets the final object of a type/named-collection/nested-table,array
+
+  @param obj the parent-object
+  @return the Object which contains the final object descriptor
+}
+function TZOracleAbstractResultSet.GetFinalObject(Obj: POCIObject): POCIObject;
+begin
+  if Obj.is_final_type = 1 then
+    Result := Obj
+  else
+    Result := GetFinalObject(Obj.next_subtype); //recursive call
 end;
 
 {**
@@ -642,7 +479,7 @@ end;
   @return the column value; if the value is SQL <code>NULL</code>, the
     value returned is <code>false</code>
 }
-function TZOracleResultSet.GetBoolean(ColumnIndex: Integer): Boolean;
+function TZOracleAbstractResultSet.GetBoolean(ColumnIndex: Integer): Boolean;
 var
   Temp: string;
 begin
@@ -662,12 +499,12 @@ end;
   @return the column value; if the value is SQL <code>NULL</code>, the
     value returned is <code>0</code>
 }
-function TZOracleResultSet.GetByte(ColumnIndex: Integer): ShortInt;
+function TZOracleAbstractResultSet.GetByte(ColumnIndex: Integer): Byte;
 begin
 {$IFNDEF DISABLE_CHECKING}
   CheckColumnConvertion(ColumnIndex, stByte);
 {$ENDIF}
-  Result := ShortInt(GetAsLongIntValue(ColumnIndex, nil));
+  Result := Byte(GetAsLongIntValue(ColumnIndex, nil));
 end;
 
 {**
@@ -679,7 +516,7 @@ end;
   @return the column value; if the value is SQL <code>NULL</code>, the
     value returned is <code>0</code>
 }
-function TZOracleResultSet.GetShort(ColumnIndex: Integer): SmallInt;
+function TZOracleAbstractResultSet.GetShort(ColumnIndex: Integer): SmallInt;
 begin
 {$IFNDEF DISABLE_CHECKING}
   CheckColumnConvertion(ColumnIndex, stShort);
@@ -696,7 +533,7 @@ end;
   @return the column value; if the value is SQL <code>NULL</code>, the
     value returned is <code>0</code>
 }
-function TZOracleResultSet.GetInt(ColumnIndex: Integer): Integer;
+function TZOracleAbstractResultSet.GetInt(ColumnIndex: Integer): Integer;
 begin
 {$IFNDEF DISABLE_CHECKING}
   CheckColumnConvertion(ColumnIndex, stInteger);
@@ -713,7 +550,7 @@ end;
   @return the column value; if the value is SQL <code>NULL</code>, the
     value returned is <code>0</code>
 }
-function TZOracleResultSet.GetLong(ColumnIndex: Integer): Int64;
+function TZOracleAbstractResultSet.GetLong(ColumnIndex: Integer): Int64;
 begin
 {$IFNDEF DISABLE_CHECKING}
   CheckColumnConvertion(ColumnIndex, stLong);
@@ -730,7 +567,7 @@ end;
   @return the column value; if the value is SQL <code>NULL</code>, the
     value returned is <code>0</code>
 }
-function TZOracleResultSet.GetFloat(ColumnIndex: Integer): Single;
+function TZOracleAbstractResultSet.GetFloat(ColumnIndex: Integer): Single;
 begin
 {$IFNDEF DISABLE_CHECKING}
   CheckColumnConvertion(ColumnIndex, stFloat);
@@ -747,7 +584,7 @@ end;
   @return the column value; if the value is SQL <code>NULL</code>, the
     value returned is <code>0</code>
 }
-function TZOracleResultSet.GetDouble(ColumnIndex: Integer): Double;
+function TZOracleAbstractResultSet.GetDouble(ColumnIndex: Integer): Double;
 begin
 {$IFNDEF DISABLE_CHECKING}
   CheckColumnConvertion(ColumnIndex, stDouble);
@@ -765,7 +602,7 @@ end;
   @return the column value; if the value is SQL <code>NULL</code>, the
     value returned is <code>null</code>
 }
-function TZOracleResultSet.GetBigDecimal(ColumnIndex: Integer): Extended;
+function TZOracleAbstractResultSet.GetBigDecimal(ColumnIndex: Integer): Extended;
 begin
 {$IFNDEF DISABLE_CHECKING}
   CheckColumnConvertion(ColumnIndex, stBigDecimal);
@@ -783,7 +620,7 @@ end;
   @return the column value; if the value is SQL <code>NULL</code>, the
     value returned is <code>null</code>
 }
-function TZOracleResultSet.GetBytes(ColumnIndex: Integer): TByteDynArray;
+function TZOracleAbstractResultSet.GetBytes(ColumnIndex: Integer): TByteDynArray;
 begin
 {$IFNDEF DISABLE_CHECKING}
   CheckColumnConvertion(ColumnIndex, stBytes);
@@ -800,7 +637,7 @@ end;
   @return the column value; if the value is SQL <code>NULL</code>, the
     value returned is <code>null</code>
 }
-function TZOracleResultSet.GetDate(ColumnIndex: Integer): TDateTime;
+function TZOracleAbstractResultSet.GetDate(ColumnIndex: Integer): TDateTime;
 begin
 {$IFNDEF DISABLE_CHECKING}
   CheckColumnConvertion(ColumnIndex, stDate);
@@ -817,7 +654,7 @@ end;
   @return the column value; if the value is SQL <code>NULL</code>, the
     value returned is <code>null</code>
 }
-function TZOracleResultSet.GetTime(ColumnIndex: Integer): TDateTime;
+function TZOracleAbstractResultSet.GetTime(ColumnIndex: Integer): TDateTime;
 begin
 {$IFNDEF DISABLE_CHECKING}
   CheckColumnConvertion(ColumnIndex, stTime);
@@ -835,12 +672,83 @@ end;
   value returned is <code>null</code>
   @exception SQLException if a database access error occurs
 }
-function TZOracleResultSet.GetTimestamp(ColumnIndex: Integer): TDateTime;
+function TZOracleAbstractResultSet.GetTimestamp(ColumnIndex: Integer): TDateTime;
 begin
 {$IFNDEF DISABLE_CHECKING}
   CheckColumnConvertion(ColumnIndex, stTimestamp);
 {$ENDIF}
   Result := GetAsDateTimeValue(ColumnIndex, nil);
+end;
+
+{**
+  Returns the value of the designated column in the current row
+  of this <code>ResultSet</code> object as a <code>IZResultSet</code> object
+  in the Java programming language.
+
+  @param ColumnIndex the first column is 1, the second is 2, ...
+  @return a <code>IZResultSet</code> object representing the SQL
+    <code>IZResultSet</code> value in the specified column
+}
+function TZOracleAbstractResultSet.GetDataSet(ColumnIndex: Integer): IZDataSet;
+var
+  CurrentVar: PZSQLVar;
+  type_Ref: POCIRef;
+  //tdo: POCIType;
+begin
+  Result := nil ;
+{$IFNDEF DISABLE_CHECKING}
+  CheckBlobColumn(ColumnIndex);
+{$ENDIF}
+
+  LastWasNull := IsNull(ColumnIndex);
+  if LastWasNull then
+      Exit;
+
+  GetSQLVarHolder(ColumnIndex);
+  CurrentVar := @FOutVars.Variables[ColumnIndex];
+  Result := nil;
+  if CurrentVar.TypeCode = SQLT_NTY then
+    if CurrentVar.Indicator >= 0 then
+    begin
+      if CurrentVar._Obj.is_final_type = 1 then
+        // here we've the final object lets's read it to test it
+        // later we only need the reference-pointers to create a new dataset
+      else
+      begin
+        //create a temporary object
+        type_ref := nil;
+        CheckOracleError(FPlainDriver, FErrorHandle,
+          FPlainDriver.ObjectNew(FConnection.GetConnectionHandle,
+            FConnection.GetErrorHandle, FConnection.GetContextHandle,
+            OCI_TYPECODE_REF, nil, nil, OCI_DURATION_DEFAULT, TRUE, @type_ref),
+          lcOther, 'OCITypeByRef from OCI_ATTR_REF_TDO');
+        //Get the type reference
+        CheckOracleError(FPlainDriver, FErrorHandle,
+          FPlainDriver.ObjectGetTypeRef(FConnection.GetConnectionHandle,
+            FConnection.GetErrorHandle, CurrentVar._Obj.obj_value, type_Ref),
+          lcOther, 'OCIObjectGetTypeRef(obj_value)');
+
+        //Now let's get the new tdo
+        //Excptions????????
+        {CheckOracleError(FPlainDriver, FErrorHandle,
+          FPlainDriver.TypeByRef(FConnection.GetConnectionHandle,
+            FConnection.GetErrorHandle, type_ref, OCI_DURATION_DEFAULT,
+            OCI_TYPEGET_ALL, @tdo),
+          lcOther, 'OCITypeByRef from OCI_ATTR_REF_TDO');}
+        //free the temporary object
+        CheckOracleError(FPlainDriver, FErrorHandle,
+          FPlainDriver.ObjectFree(FConnection.GetConnectionHandle,
+            FConnection.GetErrorHandle, type_ref, ub2(0)),
+          lcOther, 'ObjectFree()');
+      end;
+
+
+      {CheckOracleError(FPlainDriver, FErrorHandle,
+        FPlainDriver.ResultSetToStmt(CurrentVar._Object,
+          FErrorHandle), lcOther, 'Nested Table to Stmt handle');
+      Result := CreateOracleResultSet(FPlainDriver, GetStatement,
+        'Fetch Nested Table', CurrentVar._Object, FErrorHandle);}
+    end;
 end;
 
 {**
@@ -852,7 +760,7 @@ end;
   @return a <code>Blob</code> object representing the SQL <code>BLOB</code> value in
     the specified column
 }
-function TZOracleResultSet.GetBlob(ColumnIndex: Integer): IZBlob;
+function TZOracleAbstractResultSet.GetBlob(ColumnIndex: Integer): IZBlob;
 var
   Connection: IZOracleConnection;
   CurrentVar: PZSQLVar;
@@ -881,24 +789,252 @@ begin
     Result := TZOracleBlob.Create(FPlainDriver, nil, 0, Connection, LobLocator,
       CurrentVar.ColType, GetStatement.GetChunkSize);
     (Result as IZOracleBlob).ReadBlob;
+
   end
   else
-  begin
-    if CurrentVar.Indicator >= 0 then
-    begin
-      Stream := nil;
-      try
-        Stream := TStringStream.Create(
-          GetAsStringValue(ColumnIndex, CurrentVar));
-        Result := TZAbstractBlob.CreateWithStream(Stream);
-      finally
-        if Assigned(Stream) then
-          Stream.Free;
-      end;
-    end
+    if CurrentVar.TypeCode=SQLT_NTY then
+      Result := TZAbstractBlob.CreateWithStream(nil, GetStatement.GetConnection)
     else
-      Result := TZAbstractBlob.CreateWithStream(nil);
+    begin
+      if CurrentVar.Indicator >= 0 then
+      begin
+        Stream := nil;
+        try
+          Stream := TStringStream.Create(
+            GetAsStringValue(ColumnIndex, CurrentVar));
+          Result := TZAbstractBlob.CreateWithStream(Stream, GetStatement.GetConnection);
+        finally
+          if Assigned(Stream) then
+            Stream.Free;
+        end;
+      end
+      else
+        Result := TZAbstractBlob.CreateWithStream(nil, GetStatement.GetConnection);
+    end;
+end;
+
+{ TZOracleResultSet }
+
+{**
+  Opens this recordset.
+}
+procedure TZOracleResultSet.Open;
+var
+  I: Integer;
+  ColumnInfo: TZColumnInfo;
+  Connection: IZOracleConnection;
+  CurrentVar: PZSQLVar;
+  ColumnCount: ub4;
+  TempColumnName: PAnsiChar;
+  TempColumnNameLen, CSForm: Integer;
+begin
+  if ResultSetConcurrency = rcUpdatable then
+    raise EZSQLException.Create(SLiveResultSetsAreNotSupported);
+
+  if not Assigned(FStmtHandle) or not Assigned(FErrorHandle) then
+    raise EZSQLException.Create(SCanNotRetrieveResultSetData);
+
+  Connection := GetStatement.GetConnection as IZOracleConnection;
+
+  CheckOracleError(FPlainDriver, FErrorHandle,
+    FPlainDriver.StmtExecute(Connection.GetContextHandle, FStmtHandle,
+    FErrorHandle, 1, 0, nil, nil, OCI_DESCRIBE_ONLY), lcExecute, FSQL);
+
+  { Resize SQLVERS structure if needed }
+  FPlainDriver.AttrGet(FStmtHandle, OCI_HTYPE_STMT, @ColumnCount, nil,
+    OCI_ATTR_PARAM_COUNT, FErrorHandle);
+  AllocateOracleSQLVars(FOutVars, ColumnCount);
+  FOutVars.ActualNum := ColumnCount;
+
+  { Allocates memory for result set }
+  for I := 1 to FOutVars.ActualNum do
+  begin
+    CurrentVar := @FOutVars.Variables[I];
+    CurrentVar.Handle := nil;
+
+    FPlainDriver.ParamGet(FStmtHandle, OCI_HTYPE_STMT, FErrorHandle,
+      CurrentVar.Handle, I);
+    FPlainDriver.AttrGet(CurrentVar.Handle, OCI_DTYPE_PARAM,
+      @CurrentVar.DataSize, nil, OCI_ATTR_DATA_SIZE, FErrorHandle);
+    FPlainDriver.AttrGet(CurrentVar.Handle, OCI_DTYPE_PARAM,
+      @CurrentVar.DataType, nil, OCI_ATTR_DATA_TYPE, FErrorHandle);
+    CurrentVar.Scale := 0;
+    CurrentVar.Precision := 0;
+
+    case CurrentVar.DataType of
+      SQLT_CHR, SQLT_VCS, SQLT_AFC, SQLT_AVC, SQLT_STR, SQLT_VST:
+        CurrentVar.ColType := stString;
+      SQLT_NUM:
+        begin
+          FPlainDriver.AttrGet(CurrentVar.Handle, OCI_DTYPE_PARAM,
+            @CurrentVar.Precision, nil, OCI_ATTR_PRECISION, FErrorHandle);
+          FPlainDriver.AttrGet(CurrentVar.Handle, OCI_DTYPE_PARAM,
+            @CurrentVar.Scale, nil, OCI_ATTR_SCALE, FErrorHandle);
+
+          {by default convert number to double}
+          CurrentVar.ColType := stDouble;
+          if (CurrentVar.Scale = 0) and (CurrentVar.Precision <> 0) then
+          begin
+            if CurrentVar.Precision <= 2 then
+              CurrentVar.ColType := stByte
+            else if CurrentVar.Precision <= 4 then
+              CurrentVar.ColType := stShort
+            else if CurrentVar.Precision <= 9 then
+              CurrentVar.ColType := stInteger
+            else if CurrentVar.Precision <= 19 then
+              CurrentVar.ColType := stLong;
+          end
+        end;
+      SQLT_BFLOAT, SQLT_BDOUBLE, SQLT_IBFLOAT, SQLT_IBDOUBLE:
+        CurrentVar.ColType := stDouble;
+      SQLT_INT, _SQLT_PLI:
+        CurrentVar.ColType := stInteger;
+      SQLT_LNG, SQLT_LVC:
+        CurrentVar.ColType := stAsciiStream;
+      SQLT_RID, SQLT_RDD:
+        begin
+          CurrentVar.ColType := stString;
+          CurrentVar.DataSize := 20;
+        end;
+      SQLT_DAT, SQLT_DATE:
+        { oracle DATE precission - 1 second}
+        CurrentVar.ColType := stTimestamp;
+      SQLT_TIME, SQLT_TIME_TZ:
+        CurrentVar.ColType := stTime;
+      SQLT_TIMESTAMP, SQLT_TIMESTAMP_TZ, SQLT_TIMESTAMP_LTZ:
+        CurrentVar.ColType := stTimestamp;
+      SQLT_BIN, SQLT_LBI:
+        begin
+          if CurrentVar.DataSize = 0 then
+            CurrentVar.ColType := stBinaryStream
+          else
+            CurrentVar.ColType := stBytes;
+        end;
+      SQLT_CLOB:
+        begin
+          CurrentVar.ColType := stAsciiStream;
+          CurrentVar.TypeCode := CurrentVar.DataType;
+        end;
+      SQLT_BLOB, SQLT_BFILEE, SQLT_CFILEE:
+        begin
+          CurrentVar.ColType := stBinaryStream;
+          CurrentVar.TypeCode := CurrentVar.DataType;
+        end;
+      SQLT_NTY:
+        begin
+          CurrentVar.ColType := stDataSet;
+          CurrentVar.TypeCode := CurrentVar.DataType;
+
+          CurrentVar._Obj := DescribeObject(FplainDriver, FConnection,
+            CurrentVar.Handle, FStmtHandle, 0);
+
+          if FPlainDriver.TypeTypeCode(Connection.GetConnectionHandle,
+              FerrorHandle, CurrentVar._Obj.tdo) = SQLT_NCO then
+            CurrentVar.ColType := stDataSet
+          else
+            CurrentVar.ColType := stBinaryStream;
+        end;
+      else
+        CurrentVar.ColType := stUnknown;
+    end;
+
+    if (ConSettings.CPType = cCP_UTF16) then
+      case CurrentVar.ColType of
+        stString: CurrentVar.ColType := stUnicodeString;
+        stAsciiStream: if not ( CurrentVar.DataType in [SQLT_LNG]) then
+          CurrentVar.ColType := stUnicodeStream;
+      end;
+
+
+    InitializeOracleVar(FPlainDriver, Connection, CurrentVar,
+      CurrentVar.ColType, CurrentVar.TypeCode, CurrentVar.DataSize);
+
+    if CurrentVar.ColType <> stUnknown then
+      CheckOracleError(FPlainDriver, FErrorHandle,
+        FPlainDriver.DefineByPos(FStmtHandle, CurrentVar.Define,
+        FErrorHandle, I, CurrentVar.Data, CurrentVar.Length, CurrentVar.TypeCode,
+        @CurrentVar.Indicator, nil, nil, OCI_DEFAULT), lcExecute, FSQL);
+    if CurrentVar.DataType=SQLT_NTY then
+    begin
+      //second step: http://www.csee.umbc.edu/portal/help/oracle8/server.815/a67846/obj_bind.htm
+      CheckOracleError(FPlainDriver, FErrorHandle,
+        FPlainDriver.DefineObject(CurrentVar.Define, FErrorHandle, CurrentVar._Obj.tdo,
+           @CurrentVar._Obj.obj_value, nil, nil, nil), lcExecute, FSQL);
+    end;
   end;
+
+  { Fills the column info. }
+  ColumnsInfo.Clear;
+  for I := 1 to FOutVars.ActualNum do
+  begin
+    CurrentVar := @FOutVars.Variables[I];
+    ColumnInfo := TZColumnInfo.Create;
+
+    with ColumnInfo do
+    begin
+      ColumnName := '';
+      TableName := '';
+
+      TempColumnName := nil;
+      FPlainDriver.AttrGet(CurrentVar.Handle, OCI_DTYPE_PARAM,
+        @TempColumnName, @TempColumnNameLen, OCI_ATTR_NAME, FErrorHandle);
+      if TempColumnName <> nil then
+        ColumnLabel := BufferToStr(TempColumnName, TempColumnNameLen);
+
+      ColumnDisplaySize := 0;
+      AutoIncrement := False;
+      Signed := True;
+      Nullable := ntNullable;
+
+      ColumnType := CurrentVar.ColType;
+      Scale := CurrentVar.Scale;
+      if (ColumnType in [stString, stUnicodeString]) then
+      begin
+        FPlainDriver.AttrGet(CurrentVar.Handle, OCI_DTYPE_PARAM,
+          @ColumnDisplaySize, nil, OCI_ATTR_DISP_SIZE, FErrorHandle);
+        FPlainDriver.AttrGet(CurrentVar.Handle, OCI_DTYPE_PARAM,
+          @CSForm, nil, OCI_ATTR_CHARSET_FORM, FErrorHandle);
+        if CSForm = SQLCS_NCHAR then //AL16UTF16 or AL16UTF16LE?? We should determine the NCHAR set on connect
+          ColumnDisplaySize := ColumnDisplaySize div 2;
+        Precision := GetFieldSize(ColumnType, ConSettings, ColumnDisplaySize,
+          ConSettings.ClientCodePage^.CharWidth);
+      end
+      else
+        if (ColumnType = stBytes ) then
+          Precision := CurrentVar.DataSize
+        else
+          Precision := CurrentVar.Precision;
+    end;
+
+    ColumnsInfo.Add(ColumnInfo);
+  end;
+
+  inherited Open;
+end;
+
+{**
+  Releases this <code>ResultSet</code> object's database and
+  JDBC resources immediately instead of waiting for
+  this to happen when it is automatically closed.
+
+  <P><B>Note:</B> A <code>ResultSet</code> object
+  is automatically closed by the
+  <code>Statement</code> object that generated it when
+  that <code>Statement</code> object is closed,
+  re-executed, or is used to retrieve the next result from a
+  sequence of multiple results. A <code>ResultSet</code> object
+  is also automatically closed when it is garbage collected.
+}
+procedure TZOracleResultSet.Close;
+var
+  ps: IZPreparedStatement;
+begin
+  if assigned(FOutVars) then // else no statement anyways
+    FreeOracleSQLVars(FPlainDriver, FOutVars, FConnection.GetConnectionHandle, FErrorHandle, ConSettings);
+  { prepared statement own handles, so dont free them }
+  if not Supports(GetStatement, IZPreparedStatement, ps) then
+     FreeOracleStatementHandles(FPlainDriver, FStmtHandle, FErrorHandle);
+  inherited Close;
 end;
 
 {**
@@ -919,7 +1055,6 @@ end;
 function TZOracleResultSet.Next: Boolean;
 var
   Status: Integer;
-  Connection: IZOracleConnection;
 begin
   { Checks for maximum row. }
   Result := False;
@@ -927,16 +1062,11 @@ begin
     Exit;
 
   if RowNo = 0 then
-  begin
-    Connection := GetStatement.GetConnection as IZOracleConnection;
-    Status := FPlainDriver.StmtExecute(Connection.GetContextHandle, FStmtHandle,
-      FErrorHandle, 1, 0, nil, nil, OCI_DEFAULT);
-  end
+    Status := FPlainDriver.StmtExecute(FConnection.GetContextHandle, FStmtHandle,
+      FErrorHandle, 1, 0, nil, nil, OCI_DEFAULT)
   else
-  begin
     Status := FPlainDriver.StmtFetch(FStmtHandle, FErrorHandle,
       1, OCI_FETCH_NEXT, OCI_DEFAULT);
-  end;
   if not (Status in [OCI_SUCCESS, OCI_NO_DATA]) then
     CheckOracleError(FPlainDriver, FErrorHandle, Status, lcOther, 'FETCH ROW');
 
@@ -955,6 +1085,158 @@ begin
   end;
 end;
 
+{ TZOracleCallableResultSet }
+function TZOracleCallableResultSet.PrepareOracleOutVars(Statement: IZStatement;
+  InVars: PZSQLVars; const OracleParams: TZOracleParams): PZSQLVars;
+var
+  I, J: Integer;
+begin
+  J := 0;
+  for i := 0 to High(OracleParams) do
+    if OracleParams[I].pType in [2,3,4] then
+      Inc(J);
+
+  Result := nil;
+  AllocateOracleSQLVars(Result, J);
+  Result.ActualNum := J;
+  SetLength(FFieldNames, J);
+
+  for I := 1 to Length(OracleParams) do
+  begin
+    J := OracleParams[I-1].pOutIndex;
+    if OracleParams[I-1].pType in [2,3,4] then //ptInOut, ptOut, ptResult
+    begin
+      Result.Variables[J].ColType := InVars.Variables[I].ColType;
+      Result.Variables[J].TypeCode := InVars.Variables[I].TypeCode;
+      Result.Variables[J].DataSize := InVars.Variables[I].DataSize;
+      Result.Variables[J].Length := InVars.Variables[I].Length;
+      GetMem(Result.Variables[J].Data, InVars.Variables[I].Length);
+      Move(InVars.Variables[I].Data^, Result.Variables[J].Data^, InVars.Variables[I].Length);
+      FFieldNames[J-1] := OracleParams[I-1].pName;
+    end;
+  end;
+end;
+
+procedure TZOracleCallableResultSet.Open;
+var
+  I: Integer;
+  ColumnInfo: TZColumnInfo;
+  CurrentVar: PZSQLVar;
+  Connection: IZConnection;
+begin
+  Connection := GetStatement.GetConnection;
+  { Fills the column info. }
+  ColumnsInfo.Clear;
+  for I := 1 to FOutVars.ActualNum do
+  begin
+    CurrentVar := @FOutVars.Variables[I];
+    ColumnInfo := TZColumnInfo.Create;
+
+    with ColumnInfo do
+    begin
+      ColumnName := '';
+      TableName := '';
+
+      ColumnLabel := FFieldNames[i-1];
+      ColumnDisplaySize := 0;
+      AutoIncrement := False;
+      Signed := True;
+      Nullable := ntNullable;
+
+      ColumnType := CurrentVar.ColType;
+      Scale := CurrentVar.Scale;
+
+      {Reset the column type which can be changed by user before}
+      if (ColumnType = stUnicodeStream) and not ( Connection.GetConSettings.CPType = cCP_UTF16) then
+        ColumnType := stAsciiStream;
+      if (ColumnType = stAsciiStream) and ( Connection.GetConSettings.CPType = cCP_UTF16) then
+        ColumnType := stUnicodeStream;
+      if (ColumnType = stUnicodeString) and not ( Connection.GetConSettings.CPType = cCP_UTF16) then
+        ColumnType := stString;
+      if (ColumnType = stString) and ( Connection.GetConSettings.CPType = cCP_UTF16) then
+        ColumnType := stUnicodeString;
+
+      if ( ColumnType in [stString, stUnicodeString] ) then
+      begin
+        ColumnDisplaySize := CurrentVar.DataSize;
+        Precision := GetFieldSize(ColumnType, ConSettings, CurrentVar.DataSize,
+          ConSettings.ClientCodePage^.CharWidth);
+      end
+      else
+        Precision := CurrentVar.Precision;
+    end;
+
+    ColumnsInfo.Add(ColumnInfo);
+  end;
+
+  inherited Open;
+end;
+
+{**
+  Constructs this object, assignes main properties and
+  opens the record set.
+  @param PlainDriver a Oracle plain driver.
+  @param Statement a related SQL statement object.
+  @param SQL a SQL statement.
+  @param Handle a Oracle specific query handle.
+}
+constructor TZOracleCallableResultSet.Create(PlainDriver: IZOraclePlainDriver;
+  Statement: IZStatement; SQL: string; StmtHandle: POCIStmt;
+  ErrorHandle: POCIError; OutVars: PZSQLVars; const OracleParams: TZOracleParams);
+begin
+  FOutVars := PrepareOracleOutVars(Statement, OutVars, OracleParams);
+  inherited Create(PlainDriver, Statement, SQL, StmtHandle, ErrorHandle);
+  FConnection := Statement.GetConnection as IZOracleConnection;
+  MaxRows := 1;
+end;
+
+{**
+  Releases this <code>ResultSet</code> object's database and
+  JDBC resources immediately instead of waiting for
+  this to happen when it is automatically closed.
+
+  <P><B>Note:</B> A <code>ResultSet</code> object
+  is automatically closed by the
+  <code>Statement</code> object that generated it when
+  that <code>Statement</code> object is closed,
+  re-executed, or is used to retrieve the next result from a
+  sequence of multiple results. A <code>ResultSet</code> object
+  is also automatically closed when it is garbage collected.
+}
+procedure TZOracleCallableResultSet.Close;
+var
+  I: Integer;
+  CurrentVar: PZSQLVar;
+begin
+  if FOutVars <> nil then
+  begin
+    { Frees allocated memory for output variables }
+    for I := 1 to FOutVars.ActualNum do
+    begin
+      CurrentVar := @FOutVars.Variables[I];
+      if CurrentVar.Data <> nil then
+      begin
+        CurrentVar.DupData := nil;
+        FreeMem(CurrentVar.Data);
+        CurrentVar.Data := nil;
+      end;
+    end;
+    FreeMem(FOutVars);
+  end;
+  FOutVars := nil;
+  inherited Close;
+end;
+
+function TZOracleCallableResultSet.Next: Boolean;
+begin
+  { Checks for maximum row. }
+  Result := False;
+  if (RowNo >= MaxRows) then
+    Exit;
+  RowNo := LastRowNo + 1;
+  Result := True;
+end;
+
 { TZOracleBlob }
 
 {**
@@ -970,7 +1252,7 @@ constructor TZOracleBlob.Create(PlainDriver: IZOraclePlainDriver;
   Data: Pointer; Size: Integer; Handle: IZConnection;
   LobLocator: POCILobLocator; BlobType: TZSQLType; ChunkSize: Integer);
 begin
-  inherited CreateWithData(Data, Size);
+  inherited CreateWithData(Data, Size, Handle);
   FHandle := Handle;
   FLobLocator := LobLocator;
   FPlainDriver := PlainDriver;
@@ -1016,7 +1298,7 @@ var
 begin
   Connection := FHandle as IZOracleConnection;
 
-  if FBlobType = stBinaryStream then
+  if FBlobType in [stBytes, stBinaryStream] then
     TempBlobType := OCI_TEMP_BLOB
   else
     TempBlobType := OCI_TEMP_CLOB;
@@ -1041,6 +1323,24 @@ var
   Buf: PByteArray;
   ReadNumBytes, ReadNumChars, Offset, Cap: ub4;
   Connection: IZOracleConnection;
+  AnsiTemp: RawByteString;
+  Stream: TStream;
+  csid: ub2;
+  csfrm: ub1;
+
+  procedure DoRead(const csid: ub2; const csfrm: ub1);
+  begin
+    FillChar(Buf^, FChunkSize+1, #0);
+    ReadNumChars := 0;
+    Status := FPlainDriver.LobRead(Connection.GetContextHandle,
+      Connection.GetErrorHandle, FLobLocator, ReadNumChars, Offset + 1,
+      Buf, FChunkSize, nil, nil, Connection.GetClientCodePageInformations^.ID, csfrm);
+    if ReadNumChars > 0 then
+    begin
+      Inc(Offset, ReadNumChars);
+      AnsiTemp := AnsiTemp+PAnsiChar(Buf);
+    end;
+  end;
 begin
   if not Updated and (FLobLocator <> nil)
     and (BlobData = nil) and (not FTemporary) then
@@ -1057,7 +1357,7 @@ begin
       Offset := 0;
       Buf := nil;
       try
-        case self.FBlobType of
+        case FBlobType of
           stBinaryStream:
             repeat //BLOB
               {Calc new progressive by 1/8 and aligned by MemDelta capacity for buffer}
@@ -1074,21 +1374,33 @@ begin
                 Inc(Offset, ReadNumBytes);
             until Offset < Cap;
           else //CLob
-            repeat
-              {Calc new progressive by 1/8 and aligned by MemDelta capacity for buffer}
-              Cap := (Offset + (Offset shr 3) + 2 * MemDelta - 1) and not (MemDelta - 1);
-              ReallocMem(Buf, Cap);
-              ReadNumBytes := Cap - Offset;
-
-              ReadNumChars := ReadNumBytes div Connection.GetClientCodePageInformations^.CharWidth;
-              Status := FPlainDriver.LobRead(Connection.GetContextHandle,
-                Connection.GetErrorHandle, FLobLocator, ReadNumChars, Offset + 1,
-                @Buf[Offset], ReadNumBytes, nil, nil, Connection.GetClientCodePageInformations^.ID, SQLCS_IMPLICIT);
-              CheckOracleError(FPlainDriver, Connection.GetErrorHandle,
+          begin
+            GetMem(Buf, FChunkSize+1);
+            AnsiTemp := '';
+            Offset := 0;
+            csid := Connection.GetClientCodePageInformations^.ID;
+            CheckOracleError(FPlainDriver, Connection.GetErrorHandle,
+              FPlainDriver.LobCharSetForm(Connection.GetConnectionHandle,
+                Connection.GetErrorHandle, FLobLocator, @csfrm), lcOther, 'Determine LOB SCFORM'); //need to determine proper CharSet-Form
+            DoRead(csid, csfrm);
+            if Status = OCI_NEED_DATA then
+              while Status = OCI_NEED_DATA do
+                DoRead(csid, csfrm);
+            CheckOracleError(FPlainDriver, Connection.GetErrorHandle,
               Status, lcOther, 'Read Large Object');
-              if ReadNumChars > 0 then
-                Inc(Offset, ReadNumChars);
-            until Offset < Cap;
+            if FBlobType = stUnicodeStream then
+              if OffSet = 0 then
+                Stream := TMemoryStream.Create
+              else
+                Stream := ZEncoding.GetValidatedUnicodeStream(AnsiTemp, Connection.GetConSettings, True)
+            else
+              Stream := TStringStream.Create(GetValidatedAnsiString(AnsiTemp, Connection.GetConSettings, True));
+            ReallocMem(Buf, Stream.Size);
+            Move(TMemoryStream(Stream).Memory^, PAnsichar(Buf)^, Stream.Size);
+            OffSet := Stream.Size;
+            Stream.Free;
+            FDecoded := FBlobType = stUnicodeStream;
+          end;
         end;
       except
         FreeMem(Buf);
@@ -1113,9 +1425,9 @@ procedure TZOracleBlob.WriteBlob;
 var
   Status: sword;
   Connection: IZOracleConnection;
-  ContentSize{, OffSet}: ub4;
+  ContentSize, OffSet: ub4;
 
-  {function DoWrite(AOffSet: ub4; AChunkSize: ub4; APiece: ub1): sword;
+  function DoWrite(AOffSet: ub4; AChunkSize: ub4; APiece: ub1): sword;
   var
     AContentSize: ub4;
   begin
@@ -1124,7 +1436,7 @@ var
       AContentSize := ContentSize;
       Result := FPlainDriver.LobWrite(Connection.GetContextHandle,
         Connection.GetErrorHandle, FLobLocator, AContentSize, AOffSet,
-        BlobData, AChunkSize, APiece, nil, nil, 0, SQLCS_IMPLICIT);
+        (PAnsiChar(BlobData)+OffSet), AChunkSize, APiece, nil, nil, 0, SQLCS_IMPLICIT);
     end
     else
     begin
@@ -1138,11 +1450,11 @@ var
 
       Result := FPlainDriver.LobWrite(Connection.GetContextHandle,
         Connection.GetErrorHandle, FLobLocator, AContentSize, AOffSet,
-        BlobData, AChunkSize, APiece, nil, nil, Connection.GetClientCodePageInformations^.ID, SQLCS_IMPLICIT);
+        (PAnsiChar(BlobData)+OffSet), AChunkSize, APiece, nil, nil, Connection.GetClientCodePageInformations^.ID, SQLCS_IMPLICIT);
     end;
     ContentSize := AContentSize;
     inc(OffSet, AChunkSize);
-  end;}
+  end;
 begin
   Connection := FHandle as IZOracleConnection;
 
@@ -1156,7 +1468,7 @@ begin
   { This test doesn't use IsEmpty because that function does allow for zero length blobs}
   if (BlobSize > 0) then
   begin
-    {if BlobSize > FChunkSize then
+    if BlobSize > FChunkSize then
     begin
       OffSet := 0;
       ContentSize := 0;
@@ -1177,7 +1489,7 @@ begin
         end;
       Status := DoWrite(offset, BlobSize - OffSet, OCI_LAST_PIECE);
     end
-    else}
+    else
     begin
       ContentSize := BlobSize;
       Status := FPlainDriver.LobWrite(Connection.GetContextHandle,
@@ -1250,7 +1562,7 @@ end;
   Gets the string from the stored data.
   @return a string which contains the stored data.
 }
-function TZOracleBlob.GetString: ZAnsiString;
+function TZOracleBlob.GetString: RawByteString;
 begin
   ReadBlob;
   Result := inherited GetString;

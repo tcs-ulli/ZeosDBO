@@ -1,5 +1,5 @@
 {@********************************************************}
-{    Copyright (c) 1999-2006 Zeos Development Group       }
+{    Copyright (c) 1999-2012 Zeos Development Group       }
 {                                                         }
 { License Agreement:                                      }
 {                                                         }
@@ -31,31 +31,34 @@
 {                                                         }
 { The project web site is located on:                     }
 {   http://zeos.firmos.at  (FORUM)                        }
-{   http://zeosbugs.firmos.at (BUGTRACKER)                }
-{   svn://zeos.firmos.at/zeos/trunk (SVN Repository)      }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
 {                                                         }
 {   http://www.sourceforge.net/projects/zeoslib.          }
-{   http://www.zeoslib.sourceforge.net                    }
-{                                                         }
 {                                                         }
 {                                                         }
 {                                 Zeos Development Group. }
 {********************************************************@}
-
 // Compilation directives for Lazarus
+
+{$DEFINE WITH_UNIDIRECTIONALBUG} //still buggy with IsUnidirectional prop of TDataSet FPC still moves the recordBuffer-> visit TestReadOnlyQueryUniDirectional and TZAbstractRODataset.GetRecord
+
 // These are in a spearate file as Delphi compilers don't digest the macros stuff very well
+{$MACRO ON}             // Macros needed for FPC_VERSION and FPC_RELEASE
   {$MODE DELPHI}
+
   {$INTERFACES COM}
   {$IFDEF FPC_FULLVERSION}  // FPC_FULLVERSION was added in FPC 2.2.4
     {$IF FPC_FULLVERSION<=20204}
       {$DEFINE OLDFPC}
     {$IFEND}
 
-    {$MACRO ON}             // Macros needed for FPC_VERSION and FPC_RELEASE
-
 //    {$IF FPC_FULLVERSION>=20400}  // 2.4.0 status is unknown. 2.4.2+ should be generally fine.
 //      {$DEFINE FPC2_4UP}
 //    {$IFEND}
+
+    {$DEFINE WITH_FTWIDESTRING}  // Supported from somewhere between 2.2 and 2.4
+
     {$IF FPC_FULLVERSION>=20500}  // Upgrade to 2.6.x asap.
       {$DEFINE FPC2_5UP} // Used in code
       {$DEFINE WITH_NEWTOBJECT}
@@ -67,31 +70,52 @@
        {$DEFINE WITH_ASCURRENCY}      // Has AsCurrency.
        {$DEFINE WITH_ASVARIANT}
        {$DEFINE WITH_FORMATSETTINGS}
-      {$DEFINE FPC2_6UP}
+       {$DEFINE WITH_WIDEFIELDS}	// Wide-fields are supported (common define for ftWideString/ftWideMemo)
+       {$DEFINE PWIDECHAR_IS_PUNICODECHAR}
+       {$DEFINE WITH_FTGUID} //TStringField descendant TGuidField is supported 
+       {$DEFINE FPC2_6UP}
     {$IFEND}
 
+    {$IF FPC_FULLVERSION>=20602}
+       {$DEFINE HAVE_TBYTES}         // TBytes is declared only in FPC 2.6.2 instead of 2.6.0 as declared...
+    {$ENDIF}
+
+    {$IFDEF LCL}
+      {$DEFINE WITH_LCONVENCODING} //Only available for Lazarus
+    {$ENDIF}
     {$DEFINE LAZARUSUTF8HACK} // Places that fixed for the Lazarus convention that all strings are UTF8  are marked with this
                               // ifdef. But probably most of them are adhoc hacks, and need revisiting in time.
     {$DEFINE WITH_FPC_FTTIME_BUG} //http://zeos.firmos.at/viewtopic.php?t=3534&postdays=0&postorder=asc&start=0
     {$DEFINE WITH_FPC_BOF_BUG} //http://bugs.freepascal.org/view.php?id=22377
     {$DEFINE WITH_FPC_MODIFIED_BUG} //http://bugs.freepascal.org/view.php?id=22381
-
+    {$DEFINE WITHOUT_VARBYTESASSTRING}
+    {$DEFINE WITH_PWIDECHAR_TOWIDESTRING}
+    {$DEFINE WITH_CLASS_VARS}
   {$ELSE}
     {$FATAL Versions Older than 2.2.4 are not supported!}
   {$ENDIF}
 
   {$DEFINE WITH_FUNIDIRECTIONAL} // FPC has references a field instead of a setter here.  (at least in 2.6.0)
 
-  {$IF FPC_FULLVERSION>20602} // will be introduced in 2.6.2 (and up to date 2.6.1)
-    {$DEFINE WITH_TRECORDBUFFER}
-    {$DEFINE WITH_TBOOKMARK}              // Have TBookmark
+  {$IFDEF FPC_FULLVERSION>20601}
+    {$UNDEF WITH_FPC_FTTIME_BUG} //seems like the never FPC2.6.2 also have fixed the NativData bug for TTimeFields+TDataSet
+  {$ENDIF}
+  {$IF FPC_FULLVERSION>20602}       // will be introduced in 2.6.2 (and up to date 2.6.1)
+    {$DEFINE WITH_INLINE}           // compiler supports inline methodes
   {$IFEND}
-  {$IF FPC_FULLVERSION>20700}
-    {$UNDEF WITH_FPC_FTTIME_BUG}
+  {$IF FPC_FULLVERSION>20700}       // will be introduced in 2.7+
+    {$DEFINE WITH_TRECORDBUFFER}
+    {$DEFINE WITH_TBOOKMARK}        // Have TBookmark
     {$UNDEF WITH_FPC_BOF_BUG}
     {$UNDEF WITH_FPC_MODIFIED_BUG}
+    {$DEFINE WITH_RAWBYTESTRING}          // Have RawByteString CP $FFFFF
+    {$DEFINE WITH_FPC_STRING_CONVERSATION} //After string conversations to RawByteString like AnsiZoUTF8 the results are equal to original value
+    {$DEFINE WITH_DEFAULTSYSTEMCODEPAGE}
+    {$DEFINE MISS_RBS_SETSTRING_OVERLOAD} //SetString overload for RawByteString is missing
+    {$IFNDEF FPC_HAS_BUILTIN_WIDESTR_MANAGER} //Hack for *nix systems where i couldn't locate this define )):
+      {$DEFINE FPC_HAS_BUILTIN_WIDESTR_MANAGER}
+    {$ENDIF}
   {$IFEND}
-
 
   // todo
   //   VIRTUALSETFIELDDATA: in nativeformat versions of SETFIELDDATA, inherited wasn't called.
@@ -102,3 +126,14 @@
   //   OLDFPC      : IFDEF FPC's so old that I can't remember which version are put under IFDEF OLDFPC. In time these
   //                   blocks can be killed.
 
+{$IF defined(WITH_LCONVENCODING) and (defined(MSWINDOWS) or defined(FPC_HAS_BUILTIN_WIDESTR_MANAGER))}
+  {$UNDEF WITH_LCONVENCODING}
+{$IFEND}
+
+{$IFDEF WITH_LCONVENCODING}
+  {$IF declared(lcl_fullversion)}
+    {$if lcl_fullversion>=1000000} //Lazarus >= 1.0.0 with delphi fix.
+      {$DEFINE LCONVENCODING_HAS_CP852_FUNCTIONS}
+    {$ifend}
+  {$ifend}
+{$ENDIF}

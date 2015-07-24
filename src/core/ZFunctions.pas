@@ -8,7 +8,7 @@
 {*********************************************************}
 
 {@********************************************************}
-{    Copyright (c) 1999-2006 Zeos Development Group       }
+{    Copyright (c) 1999-2012 Zeos Development Group       }
 {                                                         }
 { License Agreement:                                      }
 {                                                         }
@@ -40,12 +40,10 @@
 {                                                         }
 { The project web site is located on:                     }
 {   http://zeos.firmos.at  (FORUM)                        }
-{   http://zeosbugs.firmos.at (BUGTRACKER)                }
-{   svn://zeos.firmos.at/zeos/trunk (SVN Repository)      }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
 {                                                         }
 {   http://www.sourceforge.net/projects/zeoslib.          }
-{   http://www.zeoslib.sourceforge.net                    }
-{                                                         }
 {                                                         }
 {                                                         }
 {                                 Zeos Development Group. }
@@ -173,7 +171,7 @@ end;
 procedure TZFunctionsList.RegenerateKey(const aPosition : Integer);
 
 begin
-  SetKey(Hash({$IFDEF DELPHI12_UP}AnsiString{$ENDIF}((FFunctions[aPosition] as IZFunction).Name)), aPosition);
+  SetKey(Hash({$IFDEF UNICODE}AnsiString{$ENDIF}((FFunctions[aPosition] as IZFunction).Name)), aPosition);
 end;
 
 {**
@@ -222,7 +220,7 @@ var
 
 begin
   aName := Uppercase(Name);
-  Result := FindByKeyAndName(Hash({$IFDEF DELPHI12_UP}AnsiString{$ENDIF}(aName)), aName);
+  Result := FindByKeyAndName(Hash({$IFDEF UNICODE}AnsiString{$ENDIF}(aName)), aName);
 end;
 
 {**
@@ -237,7 +235,7 @@ var
 
 begin
   aName := Uppercase(Func.Name);
-  aKey  := Hash({$IFDEF DELPHI12_UP}AnsiString{$ENDIF}(aName));
+  aKey  := Hash({$IFDEF UNICODE}AnsiString{$ENDIF}(aName));
   Index := FindByKeyAndName(aKey, aName);
   if Index < 0 then
   begin

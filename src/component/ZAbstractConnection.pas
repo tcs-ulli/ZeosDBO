@@ -8,7 +8,7 @@
 {*********************************************************}
 
 {@********************************************************}
-{    Copyright (c) 1999-2006 Zeos Development Group       }
+{    Copyright (c) 1999-2012 Zeos Development Group       }
 {                                                         }
 { License Agreement:                                      }
 {                                                         }
@@ -40,12 +40,10 @@
 {                                                         }
 { The project web site is located on:                     }
 {   http://zeos.firmos.at  (FORUM)                        }
-{   http://zeosbugs.firmos.at (BUGTRACKER)                }
-{   svn://zeos.firmos.at/zeos/trunk (SVN Repository)      }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
 {                                                         }
 {   http://www.sourceforge.net/projects/zeoslib.          }
-{   http://www.zeoslib.sourceforge.net                    }
-{                                                         }
 {                                                         }
 {                                                         }
 {                                 Zeos Development Group. }
@@ -89,7 +87,8 @@ uses
   ZDbcPooled,
 {$ENDIF}
 
-  SysUtils, Classes, ZDbcIntfs, DB, ZCompatibility, ZURL;
+  SysUtils, Classes, {$IFDEF MSEgui}mclasses, mdb{$ELSE}DB{$ENDIF},
+  ZDbcIntfs, ZCompatibility, ZURL;
 
 
 type
@@ -103,13 +102,15 @@ type
   TZAbstractConnection = class(TComponent)
   private
     FUseMetaData: Boolean;
-    FPreprepareSQL: Boolean;
-    FUTF8StringAsWideField: Boolean;
+    {$IFNDEF UNICODE}FAutoEncode: Boolean;{$ENDIF}
+    FControlsCodePage: TZControlsCodePage;
+    {$IFDEF ZEOS_TEST_ONLY}
+    FTestMode: Byte;
+    {$ENDIF}
     function GetVersion: string;
     procedure SetUseMetadata(AValue: Boolean);
     procedure SetVersion(const Value: string);
-    function GetUTF8StringAsWideField: Boolean;
-    procedure SetUTF8StringAsWideField(const Value: Boolean);
+    procedure SetControlsCodePage(const Value: TZControlsCodePage);
   protected
     FURL: TZURL;
     FCatalog: string;
@@ -141,8 +142,8 @@ type
     FOnLogin: TZLoginEvent;
     FClientCodepage: String;
 
-    function GetPreprepareSQL: Boolean;
-    procedure SetPreprepareSQL(Value: Boolean);
+    function GetAutoEncode: Boolean;
+    procedure SetAutoEncode(Value: Boolean);
     function GetHostName: string;
     procedure SetHostName(const Value: String);
     function GetConnPort: Integer;
@@ -230,8 +231,8 @@ type
     procedure GetCatalogNames(List: TStrings);
     procedure GetSchemaNames(List: TStrings);
     procedure GetTableNames(const Pattern: string; List: TStrings);overload;
-    procedure GetTableNames(const tablePattern,schemaPattern: string; List: TStrings);overload;
-    procedure GetTableNames(const tablePattern,schemaPattern: string; Types: TStringDynArray; List: TStrings);overload;
+    procedure GetTableNames(const schemaPattern, tablePattern: string; List: TStrings);overload;
+    procedure GetTableNames(const schemaPattern, tablePattern: string; Types: TStringDynArray; List: TStrings);overload;
     procedure GetColumnNames(const TablePattern, ColumnPattern: string; List: TStrings);
 
     procedure GetStoredProcNames(const Pattern: string; List: TStrings);
@@ -263,8 +264,8 @@ type
     procedure ShowSQLHourGlass;
     procedure HideSQLHourGlass;
   published
-    property UTF8StringsAsWideField: Boolean read GetUTF8StringAsWideField write SetUTF8StringAsWideField;
-    property PreprepareSQL: Boolean read GetPreprepareSQL write SetPreprepareSQL default True;
+    property ControlsCodePage: TZControlsCodePage read FControlsCodePage write SetControlsCodePage;
+    property AutoEncodeStrings: Boolean read GetAutoEncode write SetAutoEncode default True;
     property ClientCodepage: String read FClientCodepage write SetClientCodePage; //EgonHugeist
     property Catalog: string read FCatalog write FCatalog;
     property Properties: TStrings read GetProperties write SetProperties;
@@ -305,13 +306,16 @@ type
     property OnLogin: TZLoginEvent read FOnLogin write FOnLogin;
     property OnStartTransaction: TNotifyEvent
       read FOnStartTransaction write FOnStartTransaction;
+    {$IFDEF ZEOS_TEST_ONLY}
+    property TestMode : Byte read FTestMode write FTestMode;
+    {$ENDIF}
   end;
 
 implementation
 
 uses ZMessages, ZClasses, ZAbstractRODataset, ZSysUtils,
       // Modified by cipto 8/2/2007 10:00:22 AM
-      ZSequence;
+      ZSequence, ZAbstractDataset, ZEncoding;
 
 var
   SqlHourGlassLock: Integer;
@@ -325,13 +329,13 @@ var
 }
 constructor TZAbstractConnection.Create(AOwner: TComponent);
 begin
-  {$IFDEF LAZARUSUTF8HACK}
-  FUTF8StringAsWideField := False;
+  {$IFDEF UNICODE}
+  FControlsCodePage := cCP_UTF16;
   {$ELSE}
-    {$IFDEF DELPHI12_UP}
-    FUTF8StringAsWideField := True;
+    {$IFDEF FPC}
+    FControlsCodePage := cCP_UTF8;
     {$ELSE}
-    FUTF8StringAsWideField := False;
+    FControlsCodePage := cGET_ACP;
     {$ENDIF}
   {$ENDIF}
   FURL := TZURL.Create;
@@ -523,13 +527,64 @@ begin
       FClientCodepage := Trim(Value.Values['codepage'])
     else
       Value.Values['codepage'] := FClientCodepage;
-    if Self.Connected then
-    begin
-      DbcConnection.PreprepareSQL := Value.Values['PreprepareSQL'] = 'ON';
-      FPreprepareSQL := Value.Values['PreprepareSQL'] = 'ON';
-    end
+
+    { check autoencodestrings }
+    {$IF (defined(MSWINDOWS) or defined(WITH_LCONVENCODING) or defined(FPC_HAS_BUILTIN_WIDESTR_MANAGER)) and not defined(UNICODE)}
+    if Connected then
+      DbcConnection.AutoEncodeStrings := Value.Values['AutoEncodeStrings'] = 'ON';
+    FAutoEncode := Value.Values['AutoEncodeStrings'] = 'ON';
+    {$ELSE}
+      {$IFDEF UNICODE}
+      Value.Values['AutoEncodeStrings'] := 'ON';
+      {$ELSE}
+      Value.Values['AutoEncodeStrings'] := '';
+      {$ENDIF}
+    {$IFEND}
+
+    if Value.IndexOf('controls_cp') = -1 then
+      {$IFDEF UNICODE}
+      if ControlsCodePage = cCP_UTF16 then
+        Value.values['controls_cp'] := 'CP_UTF16'
+      else
+        Value.values['controls_cp'] := 'GET_ACP'
+      {$ELSE}
+      case ControlsCodePage of //automated check..
+        cCP_UTF16: Value.values['controls_cp'] := 'CP_UTF16';
+        cCP_UTF8: Value.values['controls_cp'] := 'CP_UTF8';
+        cGET_ACP: Value.values['controls_cp'] := 'GET_ACP';
+      end
+      {$ENDIF}
     else
-      FPreprepareSQL := Value.Values['PreprepareSQL'] = 'ON';
+      {$IFDEF UNICODE}
+      if Value.values['controls_cp'] = 'CP_UTF8' then
+      begin
+        Value.values['controls_cp'] := 'CP_UTF16';
+        FControlsCodePage := cCP_UTF16;
+      end;
+      {$ELSE}
+        {$IFNDEF WITH_WIDEFIELDS} //old FPC and D7
+        if Value.values['controls_cp'] = 'CP_UTF16' then
+        begin
+          FControlsCodePage := cGET_ACP;
+          Value.values['controls_cp'] := {$IFDEF DLEPHI}'GET_ACP'{$ELSE}'CP_UTF8'{$ENDIF};
+        end;
+        {$ELSE}
+        if Value.values['controls_cp'] = 'GET_ACP' then
+          FControlsCodePage := cGET_ACP
+        else
+          if Value.values['controls_cp'] = 'CP_UTF8' then
+            FControlsCodePage := cCP_UTF8
+          else
+            if Value.values['controls_cp'] = 'CP_UTF16' then
+              FControlsCodePage := cCP_UTF16
+            else
+              case ControlsCodePage of //automated check..
+                cCP_UTF16: Value.values['controls_cp'] := 'CP_UTF16';
+                cCP_UTF8: Value.values['controls_cp'] := 'CP_UTF8';
+                cGET_ACP: Value.values['controls_cp'] := 'GET_ACP';
+              end;
+        {$ENDIF}
+      {$ENDIF}
     FURL.Properties.Text := Value.Text;
   end
   else
@@ -801,8 +856,10 @@ begin
           SetCatalog(FCatalog);
           SetTransactionIsolation(FTransactIsolationLevel);
           SetUseMetadata(FUseMetadata);
-          SetUTF8StringAsWideField(Self.GetUTF8StringAsWideField);
           Open;
+          {$IFDEF ZEOS_TEST_ONLY}
+          SetTestMode(FTestMode);
+          {$ENDIF}
         end;
       except
         FConnection := nil;
@@ -918,9 +975,12 @@ end;
 {**
   Commits the current transaction.
 }
+type //To get protected methodes
+  THack_ZAbstractDataset = Class(TZAbstractDataset);
 procedure TZAbstractConnection.Commit;
 var
   ExplicitTran: Boolean;
+  i: Integer;
 begin
   CheckConnected;
   CheckNonAutoCommitMode;
@@ -932,6 +992,10 @@ begin
     ShowSQLHourGlass;
     try
       try
+        for i := 0 to FDatasets.Count -1 do
+          if Assigned(FDatasets[i]) then
+            if TObject(FDatasets[i]) is TZAbstractDataset then
+              THack_ZAbstractDataset(FDatasets[i]).DisposeCachedUpdates;
         FConnection.Commit;
       finally
         FExplicitTransactionCounter := 0;
@@ -1104,8 +1168,7 @@ begin
 end;
 
 {**
-  Unregisters a new dataset object.
-  @param DataSet a new dataset to be unregistered.
+  Unregisters all dataset objects.
 }
 procedure TZAbstractConnection.UnregisterAllDataSets;
 var
@@ -1228,7 +1291,7 @@ end;
 }
 procedure TZAbstractConnection.GetTableNames(const Pattern: string; List: TStrings);
 begin
-  GetTableNames(Pattern,'',nil,List);
+  GetTableNames('', Pattern, nil, List);
 end;
 
 {**
@@ -1237,9 +1300,9 @@ end;
   @param schemaPattern a pattern for schema names.
   @param List a string list to fill out.
 }
-procedure TZAbstractConnection.GetTableNames(const tablePattern,schemaPattern: string; List: TStrings);
+procedure TZAbstractConnection.GetTableNames(const schemaPattern, tablePattern: string; List: TStrings);
 begin
-  GetTableNames(tablePattern,schemaPattern,nil,List);
+  GetTableNames(schemaPattern, tablePattern, nil,List);
 end;
 
 {**
@@ -1256,7 +1319,7 @@ end;
                                        'TEMPORARY INDEX'
   @param List a string list to fill out.
 }
-procedure TZAbstractConnection.GetTableNames(const tablePattern,schemaPattern: string; Types: TStringDynArray; List: TStrings);
+procedure TZAbstractConnection.GetTableNames(const schemaPattern, tablePattern: string; Types: TStringDynArray; List: TStrings);
 var
   Metadata: IZDatabaseMetadata;
   ResultSet: IZResultSet;
@@ -1340,7 +1403,7 @@ begin
   CheckConnected;
 
   if Assigned(FConnection) then
-    Result := FConnection.GetAnsiEscapeString(BinaryString);
+    Result := FConnection.GetBinaryEscapeString(BinaryString);
 end;
 
 {**
@@ -1383,7 +1446,7 @@ begin
     if Assigned(FBlobData) then
       FreeMem(FBlobData);
 
-    Result := FConnection.GetAnsiEscapeString(TempAnsi);
+    Result := FConnection.GetBinaryEscapeString(TempAnsi);
   end;
 end;
 
@@ -1423,31 +1486,47 @@ begin
   Result := ConstructURL(FURL.UserName, FURL.Password);
 end;
 
-function TZAbstractConnection.GetPreprepareSQL: Boolean;
+function TZAbstractConnection.GetAutoEncode: Boolean;
 begin
-  if Self.Connected then
-  begin
-    Result := DbcConnection.PreprepareSQL;
-    Self.FPreprepareSQL := Result;
-  end
-  else
-    Result := FPreprepareSQL;
+  {$IFDEF UNICODE}
+  Result := True;
+  {$ELSE}
+    {$IF defined(MSWINDOWS) or defined(WITH_LCONVENCODING) or defined(FPC_HAS_BUILTIN_WIDESTR_MANAGER)}
+    if Connected then
+    begin
+      Result := DbcConnection.GetConSettings.AutoEncode;
+      FAutoEncode := Result;
+    end
+    else
+      Result := FAutoEncode;
+    {$ELSE}
+    Result := False;
+    {$IFEND}
+  {$ENDIF}
 end;
 
-procedure TZAbstractConnection.SetPreprepareSQL(Value: Boolean);
+procedure TZAbstractConnection.SetAutoEncode(Value: Boolean);
 begin
-  if Value then
-    FURL.Properties.Values['PreprepareSQL'] := 'ON'
-  else
-    FURL.Properties.Values['PreprepareSQL'] := '';
+  {$IFNDEF UNICODE}
+    {$IF defined(MSWINDOWS) or defined(WITH_LCONVENCODING) or defined(FPC_HAS_BUILTIN_WIDESTR_MANAGER)}
+    if Value then
+      FURL.Properties.Values['AutoEncodeStrings'] := 'ON'
+    else
+      FURL.Properties.Values['AutoEncodeStrings'] := '';
 
-  if Self.Connected then
-  begin
-    DbcConnection.PreprepareSQL := Value;
-    FPreprepareSQL := Value;
-  end
-  else
-    FPreprepareSQL := Value;
+    if Value <> FAutoEncode then
+    begin
+      FAutoEncode := Value;
+      if Self.Connected then
+      begin
+        Connected := False;
+        Connected := True;
+      end;
+    end;
+    {$ELSE}
+    FURL.Properties.Values['AutoEncodeStrings'] := '';
+    {$IFEND}
+  {$ENDIF}
 end;
 
 {**
@@ -1466,32 +1545,89 @@ begin
     FConnection.SetUseMetadata(FUseMetadata);
 end;
 
-function TZAbstractConnection.GetUTF8StringAsWideField: Boolean;
-begin
-  {$IF defined(LAZARUSUTF8HACK) or (not defined(WITH_FTWIDESTRING))}
-  Result := False;
-  {$ELSE}
-    {$IFDEF DELPHI12_UP}
-    Result := True;
+procedure TZAbstractConnection.SetControlsCodePage(const Value: TZControlsCodePage);
+  procedure SetValue;
+  begin
+    {$IFDEF UNICODE}
+    case Value of
+      cCP_UTF16:
+        begin
+          Properties.values['controls_cp'] := 'CP_UTF16';
+          FControlsCodePage := Value;
+        end;
+      cCP_UTF8:
+        begin
+          Properties.values['controls_cp'] := 'CP_UTF16';
+          FControlsCodePage := cCP_UTF16;
+        end;
+      cGET_ACP:
+        begin
+          Properties.values['controls_cp'] := 'GET_ACP';
+          FControlsCodePage := Value;
+        end;
+    end;
     {$ELSE}
-    Result := FUTF8StringAsWideField;
+      {$IFDEF WITH_WIDEFIELDS}
+      case Value of
+        cCP_UTF16:
+          begin
+            Properties.values['controls_cp'] := 'CP_UTF16';
+            FControlsCodePage := Value;
+          end;
+        cCP_UTF8:
+          begin
+            Properties.values['controls_cp'] := 'CP_UTF8';
+            FControlsCodePage := Value;
+          end;
+        cGET_ACP:
+          if ZDefaultSystemCodePage = zCP_UTF8 then
+          begin
+            Properties.values['controls_cp'] := 'CP_UTF8';
+            FControlsCodePage := cCP_UTF8;
+          end
+          else
+          begin
+            Properties.values['controls_cp'] := 'GET_ACP';
+            FControlsCodePage := Value;
+          end;
+      end;
+      {$ELSE} //D7 or old FPC
+      case Value of
+        cCP_UTF16:
+          begin
+            Properties.values['controls_cp'] := 'CP_UTF8';
+            FControlsCodePage := cCP_UTF8;
+          end;
+        cCP_UTF8:
+          begin
+            Properties.values['controls_cp'] := 'CP_UTF8';
+            FControlsCodePage := Value;
+          end;
+        cGET_ACP:
+          if ZDefaultSystemCodePage = zCP_UTF8 then
+          begin
+            Properties.values['controls_cp'] := 'CP_UTF8';
+            FControlsCodePage := cCP_UTF8;
+          end
+          else
+          begin
+            Properties.values['controls_cp'] := 'GET_ACP';
+            FControlsCodePage := Value;
+          end;
+      end;
+      {$ENDIF}
     {$ENDIF}
-  {$IFEND}
-end;
-
-procedure TZAbstractConnection.SetUTF8StringAsWideField(const Value: Boolean);
+  end;
 begin
-  {$IF defined(LAZARUSUTF8HACK) or (not defined(WITH_FTWIDESTRING))}
-  FUTF8StringAsWideField := False;
-  {$ELSE}
-    {$IFDEF DELPHI12_UP}
-    FUTF8StringAsWideField := True;
-    {$ELSE}
-    FUTF8StringAsWideField := Value;
-    {$ENDIF}
-  {$IFEND}
-  if Assigned(DbcConnection) then
-    DbcConnection.UTF8StringAsWideField := FUTF8StringAsWideField;
+  if Value <> FControlsCodePage then
+    if Connected then
+    begin
+      Connected := False;
+      SetValue;
+      Connected := True;
+    end
+    else
+      SetValue;
 end;
 
 procedure TZAbstractConnection.SetVersion(const Value: string);
@@ -1543,7 +1679,8 @@ end;
   @param RowsAffected the number of rows that were affected by the statement.
   Returns an indication if execution was succesfull.
 }
-function TZAbstractConnection.ExecuteDirect(SQL:string; var RowsAffected:integer):boolean;
+function TZAbstractConnection.ExecuteDirect(SQL: string;
+  var RowsAffected: integer):boolean;
 var
   stmt : IZStatement;
 begin
@@ -1556,6 +1693,7 @@ begin
     except
       RowsAffected := -1;
       result := False;
+      raise; {------ added by Henk 09-10-2012 --------}
     end;
   finally
     stmt:=nil;

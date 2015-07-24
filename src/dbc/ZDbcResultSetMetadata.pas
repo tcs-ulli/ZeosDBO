@@ -8,7 +8,7 @@
 {*********************************************************}
 
 {@********************************************************}
-{    Copyright (c) 1999-2006 Zeos Development Group       }
+{    Copyright (c) 1999-2012 Zeos Development Group       }
 {                                                         }
 { License Agreement:                                      }
 {                                                         }
@@ -40,12 +40,10 @@
 {                                                         }
 { The project web site is located on:                     }
 {   http://zeos.firmos.at  (FORUM)                        }
-{   http://zeosbugs.firmos.at (BUGTRACKER)                }
-{   svn://zeos.firmos.at/zeos/trunk (SVN Repository)      }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
 {                                                         }
 {   http://www.sourceforge.net/projects/zeoslib.          }
-{   http://www.zeoslib.sourceforge.net                    }
-{                                                         }
 {                                                         }
 {                                                         }
 {                                 Zeos Development Group. }
@@ -88,12 +86,12 @@ type
     FTableName: string;
     FCatalogName: string;
     FColumnType: TZSQLType;
+    FInternalColumnType: TZSQLType;
     FReadOnly: Boolean;
     FWritable: Boolean;
     FDefinitelyWritable: Boolean;
     FDefaultValue: string;
     FDefaultExpression : string;
-  published
   public
     constructor Create;
     function GetColumnTypeName: string;
@@ -117,6 +115,7 @@ type
     property TableName: string read FTableName write FTableName;
     property CatalogName: string read FCatalogName write FCatalogName;
     property ColumnType: TZSQLType read FColumnType write FColumnType;
+    property InternalColumnType: TZSQLType read FInternalColumnType write FInternalColumnType;
     property ReadOnly: Boolean read FReadOnly write FReadOnly;
     property Writable: Boolean read FWritable write FWritable;
     property DefinitelyWritable: Boolean read FDefinitelyWritable
@@ -188,7 +187,7 @@ type
 
 implementation
 
-uses ZVariant, ZDbcUtils, ZDbcMetadata, ZSysUtils;
+uses ZVariant, ZDbcUtils, ZDbcMetadata;
 
 { TZColumnInfo }
 
@@ -213,6 +212,7 @@ begin
   FCatalogName := '';
   FDefaultValue := '';
   FColumnType := stUnknown;
+  FInternalColumnType := stUnknown;
   FReadOnly := True;
   FWritable := False;
   FDefinitelyWritable := False;
@@ -597,6 +597,7 @@ function TZAbstractResultSetMetadata.ReadColumnByName(FieldName: string;
   TableRef: TZTableRef; ColumnInfo: TZColumnInfo): Boolean;
 var
   TableColumns: IZResultSet;
+  tempColType: TZSQLType;
 begin
   Result := False;
   TableColumns := GetTableColumns(TableRef);
@@ -630,7 +631,23 @@ begin
 //If the returned column information is null then the value assigned during
 //the resultset.open will be kept
   if not TableColumns.IsNull(5) then
-    ColumnInfo.ColumnType := TZSQLType(TableColumns.GetInt(5));
+  begin
+    //since Pointer referencing by RowAccessor we've a pointer and GetBlob
+    //raises an exception if the pointer is a reference to PPAnsiChar or
+    //ZPPWideChar. if we execute a cast of a lob field the database meta-informtions
+    //assume a IZLob-Pointer. So let's prevent this case and check for
+    //stByte, stString, stUnicoeString first. If this type is returned from the
+    //ResultSet-Metadata we do NOT overwrite the column-type
+    //f.e. select cast( name as varchar(100)), cast(setting as varchar(100)) from pg_settings
+
+    //or the same vice versa:
+    //(CASE WHEN (Ticket51_B."Name" IS NOT NULL) THEN Ticket51_B."Name" ELSE 'Empty' END) As "Name"
+    //we've NO fixed length for a case(postgres and FB2.5up f.e.) select
+    tempColType := TZSQLType(TableColumns.GetShort(5));
+    if not (TZSQLType(TableColumns.GetShort(5)) in [stBinaryStream, stAsciiStream,
+        stUnicodeStream, stBytes, stString, stUnicodeString]) then
+    ColumnInfo.ColumnType := tempColType;
+  end;
   if not TableColumns.IsNull(11) then
     ColumnInfo.Nullable := TZColumnNullableType(TableColumns.GetInt(11));
   if not TableColumns.IsNull(19) then
@@ -640,11 +657,29 @@ begin
   if not TableColumns.IsNull(21) then
     ColumnInfo.Searchable := TableColumns.GetBoolean(21);
   if not TableColumns.IsNull(22) then
-    ColumnInfo.Writable := TableColumns.GetBoolean(22);
+    if ColumnInfo.AutoIncrement and Assigned(FMetadata) then {improve ADO where the metainformations do not bring autoincremental fields through}
+      if FMetadata.GetDatabaseInfo.SupportsUpdateAutoIncrementFields then
+        ColumnInfo.Writable := TableColumns.GetBoolean(22)
+      else
+        ColumnInfo.Writable := False
+    else
+      ColumnInfo.Writable := TableColumns.GetBoolean(22);
   if not TableColumns.IsNull(23) then
-    ColumnInfo.DefinitelyWritable := TableColumns.GetBoolean(23);
+    if ColumnInfo.AutoIncrement and Assigned(FMetadata) then {improve ADO where the metainformations do not bring autoincremental fields through}
+      if FMetadata.GetDatabaseInfo.SupportsUpdateAutoIncrementFields then
+        ColumnInfo.DefinitelyWritable := TableColumns.GetBoolean(23)
+      else
+        ColumnInfo.DefinitelyWritable := False
+    else
+      ColumnInfo.DefinitelyWritable := TableColumns.GetBoolean(23);
   if not TableColumns.IsNull(24) then
-    ColumnInfo.ReadOnly := TableColumns.GetBoolean(24);
+    if ColumnInfo.AutoIncrement and Assigned(FMetadata) then {improve ADO where the metainformations do not bring autoincremental fields through}
+      if FMetadata.GetDatabaseInfo.SupportsUpdateAutoIncrementFields then
+        ColumnInfo.ReadOnly := TableColumns.GetBoolean(24)
+      else
+        ColumnInfo.ReadOnly := True
+    else
+      ColumnInfo.ReadOnly := TableColumns.GetBoolean(24);
   if not TableColumns.IsNull(13) then
     ColumnInfo.DefaultValue := TableColumns.GetString(13);
 end;
@@ -684,8 +719,8 @@ var
   Found: Boolean;
 begin
   { Initializes single columns with specified table. }
-  FieldRef := SelectSchema.LinkFieldByIndexAndShortName(
-    ColumnIndex, ColumnInfo.ColumnLabel);
+  FieldRef := SelectSchema.LinkFieldByIndexAndShortName(ColumnIndex,
+    ColumnInfo.ColumnLabel, IdentifierConvertor);
   ReadColumnByRef(FieldRef, ColumnInfo);
   if ColumnInfo.ColumnName <> '' then
     Exit;
@@ -698,9 +733,9 @@ begin
   begin
     TableRef := SelectSchema.Tables[I];
     if Assigned(FieldRef) then
-      Found := ReadColumnByName(FieldRef.Field, TableRef, ColumnInfo)
+      Found := ReadColumnByName(IdentifierConvertor.ExtractQuote(FieldRef.Field), TableRef, ColumnInfo)
     else
-      Found := ReadColumnByName(ColumnInfo.ColumnLabel, TableRef, ColumnInfo);
+      Found := ReadColumnByName(IdentifierConvertor.ExtractQuote(ColumnInfo.ColumnLabel), TableRef, ColumnInfo);
     Inc(I);
   end;
 end;

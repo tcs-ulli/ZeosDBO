@@ -8,7 +8,7 @@
 {*********************************************************}
 
 {@********************************************************}
-{    Copyright (c) 1999-2006 Zeos Development Group       }
+{    Copyright (c) 1999-2012 Zeos Development Group       }
 {                                                         }
 { License Agreement:                                      }
 {                                                         }
@@ -40,12 +40,10 @@
 {                                                         }
 { The project web site is located on:                     }
 {   http://zeos.firmos.at  (FORUM)                        }
-{   http://zeosbugs.firmos.at (BUGTRACKER)                }
-{   svn://zeos.firmos.at/zeos/trunk (SVN Repository)      }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
 {                                                         }
 {   http://www.sourceforge.net/projects/zeoslib.          }
-{   http://www.zeoslib.sourceforge.net                    }
-{                                                         }
 {                                                         }
 {                                                         }
 {                                 Zeos Development Group. }
@@ -58,16 +56,16 @@ interface
 {$I ZDbc.inc}
 
 uses
-  Types, ZCompatibility, Classes, SysUtils, ZDbcIntfs, ZDbcConnection,
-  ZPlainMySqlDriver, ZPlainDriver, ZURL, ZDbcLogging, ZTokenizer,
-  ZGenericSqlAnalyser, ZPlainMySqlConstants;
+  Types, Classes, {$IFDEF MSEgui}mclasses,{$ENDIF} SysUtils,
+  ZCompatibility, ZDbcIntfs, ZDbcConnection, ZPlainMySqlDriver, ZPlainDriver,
+  ZURL, ZDbcLogging, ZTokenizer, ZGenericSqlAnalyser, ZPlainMySqlConstants;
 
 type
 
   {** Implements MySQL Database Driver. }
 
   { TZMySQLDriver }
-
+  {$WARNINGS OFF}
   TZMySQLDriver = class(TZAbstractDriver)
   protected
     function GetPlainDriver(const Url: TZURL; const InitDriver: Boolean = True): IZPlainDriver; override;
@@ -81,6 +79,7 @@ type
     function GetStatementAnalyser: IZStatementAnalyser; override;
     function GetClientVersion(const Url: string): Integer; override;
   end;
+  {$WARNINGS ON}
 
   {** Represents a MYSQL specific connection interface. }
   IZMySQLConnection = interface (IZConnection)
@@ -103,12 +102,14 @@ type
     function CreateRegularStatement(Info: TStrings): IZStatement; override;
     function CreatePreparedStatement(const SQL: string; Info: TStrings):
       IZPreparedStatement; override;
+    function CreateCallableStatement(const SQL: string; Info: TStrings):
+      IZCallableStatement; override;
 
     procedure Commit; override;
     procedure Rollback; override;
 
     function PingServer: Integer; override;
-    function EscapeString(Value: AnsiString): AnsiString; override;
+    function EscapeString(Value: RawByteString): RawByteString; override;
 
     procedure Open; override;
     procedure Close; override;
@@ -124,12 +125,8 @@ type
     {END ADDED by fduenas 15-06-2006}
     function GetPlainDriver: IZMySQLPlainDriver;
     function GetConnectionHandle: PZMySQLConnect;
-    function GetAnsiEscapeString(const Value: AnsiString;
-      const EscapeMarkSequence: String = '~<|'): String; override;
-    function GetEscapeString(const Value: String;
-      const EscapeMarkSequence: String = '~<|'): String; override;
-    function GetEscapeString(const Value: PAnsiChar;
-      const EscapeMarkSequence: String = '~<|'): String; overload; override;
+    function GetEscapeString(const Value: ZWideString): ZWideString; override;
+    function GetEscapeString(const Value: RawByteString): RawByteString; override;
   end;
 
 
@@ -141,7 +138,8 @@ implementation
 
 uses
   ZMessages, ZSysUtils, ZDbcUtils, ZDbcMySqlStatement, ZMySqlToken,
-  ZDbcMySqlUtils, ZDbcMySqlMetadata, ZMySqlAnalyser, TypInfo, Math;
+  ZDbcMySqlUtils, ZDbcMySqlMetadata, ZMySqlAnalyser, TypInfo, Math,
+  ZEncoding;
 
 { TZMySQLDriver }
 
@@ -151,11 +149,12 @@ uses
 constructor TZMySQLDriver.Create;
 begin
   inherited Create;
-  AddSupportedProtocol(AddPlainDriverToCache(TZMySQL5PlainDriver.Create(Self.GetTokenizer), 'mysql'));
-  AddSupportedProtocol(AddPlainDriverToCache(TZMySQL41PlainDriver.Create(Self.GetTokenizer)));
-  AddSupportedProtocol(AddPlainDriverToCache(TZMySQL5PlainDriver.Create(Self.GetTokenizer)));
-  AddSupportedProtocol(AddPlainDriverToCache(TZMySQLD41PlainDriver.Create(Self.GetTokenizer)));
-  AddSupportedProtocol(AddPlainDriverToCache(TZMySQLD5PlainDriver.Create(Self.GetTokenizer)));
+  AddSupportedProtocol(AddPlainDriverToCache(TZMySQL5PlainDriver.Create(GetTokenizer), 'mysql'));
+  AddSupportedProtocol(AddPlainDriverToCache(TZMySQL41PlainDriver.Create(GetTokenizer)));
+  AddSupportedProtocol(AddPlainDriverToCache(TZMySQL5PlainDriver.Create(GetTokenizer)));
+  AddSupportedProtocol(AddPlainDriverToCache(TZMySQLD41PlainDriver.Create(GetTokenizer)));
+  AddSupportedProtocol(AddPlainDriverToCache(TZMySQLD5PlainDriver.Create(GetTokenizer)));
+  AddSupportedProtocol(AddPlainDriverToCache(TZMariaDB5PlainDriver.Create(GetTokenizer)));
 end;
 
 {**
@@ -181,10 +180,12 @@ end;
   @return a <code>Connection</code> object that represents a
     connection to the URL
 }
+{$WARNINGS OFF}
 function TZMySQLDriver.Connect(const Url: TZURL): IZConnection;
 begin
   Result := TZMySQLConnection.Create(Url);
 end;
+{$WARNINGS ON}
 
 {**
   Gets the driver's major version number. Initially this should be 1.
@@ -276,6 +277,7 @@ begin
      Self.Port := MYSQL_PORT;
   AutoCommit := True;
   TransactIsolationLevel := tiNone;
+  FHandle := nil;
 
   { Processes connection properties. }
   Open;
@@ -297,7 +299,8 @@ var
   LogMessage: string;
   OldLevel: TZTransactIsolationLevel;
   OldAutoCommit: Boolean;
-  ConnectTimeout: Integer;
+  UIntOpt: UInt;
+  MyBoolOpt: Byte;
   ClientFlag : Cardinal;
   SslCa, SslCaPath, SslKey, SslCert, SslCypher: PAnsiChar;
   myopt: TMySQLOption;
@@ -306,17 +309,18 @@ var
   sMy_client_Opt, sMy_client_Char_Set:String;
   ClientVersion: Integer;
   SQL: PAnsiChar;
+label setuint;
 begin
    if not Closed then
       Exit;
 
   LogMessage := Format('CONNECT TO "%s" AS USER "%s"', [Database, User]);
-
-  GetPlainDriver.Init(FHandle);
+  FHandle := GetPlainDriver.Init(FHandle);
   {EgonHugeist: Arrange Client-CodePage/CharacterSet first
     Now we know if UTFEncoding is neccessary or not}
   sMy_client_Char_Set := String(GetPlainDriver.GetConnectionCharacterSet(FHandle));
-  ClientCodePage := GetPlainDriver.ValidateCharEncoding(sMy_client_Char_Set); //This sets the internal use of Encodings..
+  ConSettings^.ClientCodePage := GetPlainDriver.ValidateCharEncoding(sMy_client_Char_Set);
+  ZEncoding.SetConvertFunctions(ConSettings);
   {EgonHugeist:
     Now we know in which kind of CharacterSet we have to send the next Connection-Properties
     before we can change to the CharacterSet we want to have here..
@@ -330,21 +334,70 @@ begin
        Port := MYSQL_PORT;
 
     { Turn on compression protocol. }
-    if StrToBoolEx(Info.Values['compress']) then
-      GetPlainDriver.SetOptions(FHandle, MYSQL_OPT_COMPRESS, nil);
+    if StrToBoolEx(Info.Values['compress']) and
+      (Info.Values['MYSQL_OPT_COMPRESS'] = '') and
+       (Info.IndexOf('MYSQL_OPT_COMPRESS') = -1) then
+      Info.Values['MYSQL_OPT_COMPRESS'] := Info.Values['compress']; //check if user allready did set the value!
     { Sets connection timeout. }
-    ConnectTimeout := StrToIntDef(Info.Values['timeout'], 0);
-    if ConnectTimeout >= 0 then
-      GetPlainDriver.SetOptions(FHandle, MYSQL_OPT_CONNECT_TIMEOUT, PAnsiChar(@ConnectTimeout));
+    if (StrToIntDef(Info.Values['timeout'], 0) >= 0) and
+       (Info.Values['MYSQL_OPT_CONNECT_TIMEOUT'] = '') then //check if user allready did set the value!
+      Info.Values['MYSQL_OPT_CONNECT_TIMEOUT'] := Info.Values['timeout'];
 
    (*Added lines to handle option parameters 21 november 2007 marco cotroneo*)
+    ClientVersion := GetPlainDriver.GetClientVersion;
     for myopt := low(TMySQLOption) to high(TMySQLOption) do
     begin
       sMyOpt:= GetEnumName(typeInfo(TMySQLOption), integer(myOpt));
+      if ClientVersion >= TMySqlOptionMinimumVersion[myopt] then //version checked (:
+        case myopt of
+          {unsigned int options ...}
+          MYSQL_OPT_CONNECT_TIMEOUT,
+          MYSQL_OPT_PROTOCOL,
+          MYSQL_OPT_READ_TIMEOUT,
+          MYSQL_OPT_WRITE_TIMEOUT:
       if Info.Values[sMyOpt] <> '' then
-      begin
-        GetPlainDriver.SetOptions(FHandle, myopt, PAnsiChar(AnsiString(Info.Values[sMyOpt])));
-      end;
+            begin
+setuint:      UIntOpt := StrToIntDef(Info.Values[sMyOpt], 0);
+              GetPlainDriver.SetOptions(FHandle, myopt, @UIntOpt);
+    end;
+          MYSQL_OPT_LOCAL_INFILE: {optional empty or unsigned int}
+            if Info.Values[sMyOpt] <> '' then
+              goto setuint
+            else
+              if Info.IndexOf(sMyOpt) > -1 then
+                GetPlainDriver.SetOptions(FHandle, myopt, nil);
+          { no value options }
+          MYSQL_OPT_COMPRESS,
+          MYSQL_OPT_GUESS_CONNECTION,
+          MYSQL_OPT_NAMED_PIPE,
+          MYSQL_OPT_USE_REMOTE_CONNECTION,
+          MYSQL_OPT_USE_EMBEDDED_CONNECTION,
+          MYSQL_OPT_USE_RESULT,
+          MYSQL_OPT_CONNECT_ATTR_RESET:
+            if (Info.Values[sMyOpt] <> '') or (Info.IndexOf(sMyOpt) > -1) then
+              GetPlainDriver.SetOptions(FHandle, myopt, nil);
+          { my_bool * options}
+          MYSQL_REPORT_DATA_TRUNCATION,
+          MYSQL_SECURE_AUTH,
+          MYSQL_OPT_RECONNECT,
+          MYSQL_OPT_SSL_VERIFY_SERVER_CERT,
+          MYSQL_ENABLE_CLEARTEXT_PLUGIN,
+          MYSQL_OPT_CAN_HANDLE_EXPIRED_PASSWORDS,
+          MYSQL_OPT_SSL_ENFORCE:
+            if Info.Values[sMyOpt] <> '' then
+            begin
+              MyBoolOpt := Ord(StrToBoolEx(Info.Values[sMyOpt]));
+              GetPlainDriver.SetOptions(FHandle, myopt, @MyBoolOpt);
+            end;
+          { unsigned char * options }
+          MYSQL_OPT_SSL_KEY, MYSQL_OPT_SSL_CERT,
+          MYSQL_OPT_SSL_CA, MYSQL_OPT_SSL_CAPATH, MYSQL_OPT_SSL_CIPHER: ;//skip, processed down below
+          else
+            if Info.Values[sMyOpt] <> '' then
+              GetPlainDriver.SetOptions(FHandle, myopt, PAnsiChar(
+                ConSettings^.ConvFuncs.ZStringToRaw(Info.Values[sMyOpt],
+                  ConSettings^.CTRL_CP, ConSettings^.ClientCodePage^.CP)));
+        end;
     end;
 
     { Set ClientFlag }
@@ -360,11 +413,7 @@ begin
     end;
 
   { Set SSL properties before connect}
-  SslKey := nil;
-  SslCert := nil;
-  SslCa := nil;
-  SslCaPath := nil;
-  SslCypher := nil;
+  SslKey := nil; SslCert := nil; SslCa := nil; SslCaPath := nil; SslCypher := nil;
   {EgonHugeist: If these Paramters MUST BE UTF8 then leave Param ceUTF8 in the
     ZPlainString-function like else remove it and it adapts to default codepage}
   if StrToBoolEx(Info.Values['MYSQL_SSL']) then
@@ -400,17 +449,15 @@ begin
     DriverManager.LogMessage(lcConnect, PlainDriver.GetProtocol, LogMessage);
 
     { Fix Bugs in certain Versions where real_conncet resets the Reconnect flag }
-    if StrToBoolEx(Info.Values['MYSQL_OPT_RECONNECT']) then
+    if (Info.Values['MYSQL_OPT_RECONNECT'] <> '') and
+      ((ClientVersion>=50013) and (ClientVersion<50019)) or
+      ((ClientVersion>=50100) and (ClientVersion<50106)) then
     begin
-      ClientVersion := GetPlainDriver.GetClientVersion;
-      if ((ClientVersion>=50013) and (ClientVersion<50019)) or
-         ((ClientVersion>=50100) and (ClientVersion<50106)) then
-        GetPlainDriver.SetOptions(FHandle, MYSQL_OPT_RECONNECT, 'true');
+      MyBoolOpt := Ord(StrToBoolEx(Info.Values['MYSQL_OPT_RECONNECT']));
+      GetPlainDriver.SetOptions(FHandle, MYSQL_OPT_RECONNECT, @MyBoolOpt);
     end;
-
-    if FClientCodePage = '' then //was set on inherited Create(...)
+    if (FClientCodePage = '') and (sMy_client_Char_Set <> '') then
       FClientCodePage := sMy_client_Char_Set;
-
 
     if (FClientCodePage <> sMy_client_Char_Set) then
     begin
@@ -420,17 +467,6 @@ begin
       DriverManager.LogMessage(lcExecute, PlainDriver.GetProtocol, String(SQL));
     end;
     Self.CheckCharEncoding(FClientCodePage);
-    {EgonHugeist:
-      CheckCharEncoding(FClientCharacterSet);
-      This has to be done before any Query was send to Driver.
-      This procedure sets also the internal TZCharEncoding to ZCompatibility-Objects...
-      Now use the new Functions to get encoded Strings:
-        function ZString(const Ansi: AnsiString; const Encoding: TZCharEncoding = ceDefault): String;
-        function ZPlainString(const Str: String; const Encoding: TZCharEncoding = ceDefault): AnsiString;
-      These functions do auto arrange the in/out-coming AnsiStrings in
-      dependency of the used CharacterSet and Compiler
-      they defend the StringDataLoss}
-    { Sets a client codepage. }
 
     { Sets transaction isolation level. }
     OldLevel := TransactIsolationLevel;
@@ -449,6 +485,18 @@ begin
   end;
 
   inherited Open;
+
+  if FClientCodePage = '' then //workaround for MySQL 4 down
+  begin
+    with CreateStatement.ExecuteQuery('show variables like "character_set_database"') do
+    begin
+      if Next then
+        FClientCodePage := GetString(2);
+      Close;
+    end;
+    ConSettings^.ClientCodePage := GetPlainDriver.ValidateCharEncoding(FClientCodePage);
+    ZEncoding.SetConvertFunctions(ConSettings);
+  end
 end;
 
 {**
@@ -474,22 +522,9 @@ end;
   @param value string that should be escaped
   @return Escaped string
 }
-function TZMySQLConnection.EscapeString(Value: AnsiString): AnsiString;
-var
-   Closing: boolean;
-   Inlength, outlength: integer;
-   Outbuffer: AnsiString;
+function TZMySQLConnection.EscapeString(Value: RawByteString): RawByteString;
 begin
-   InLength := Length(Value);
-   Setlength(Outbuffer,Inlength*2+1);
-   Closing := FHandle = nil;
-   //RealConnect needs database connection handle
-   if Closed or Closing then
-     OutLength := GetPlainDriver.GetEscapeString(PAnsiChar(OutBuffer),PAnsiChar(Value),InLength)
-   else
-     OutLength := GetPlainDriver.GetRealEscapeString(FHandle, PAnsiChar(OutBuffer),PAnsiChar(Value),InLength);
-   Setlength(Outbuffer,OutLength);
-   Result := Outbuffer;
+  Result := PlainDriver.EscapeString(Self.FHandle,  Value, ConSettings);
 end;
 
 {**
@@ -554,6 +589,38 @@ begin
       Result := TZMySQLEmulatedPreparedStatement.Create(GetPlainDriver, Self, SQL, Info, FHandle)
   else
     Result := TZMySQLEmulatedPreparedStatement.Create(GetPlainDriver, Self, SQL, Info, FHandle);
+end;
+
+{**
+  Creates a <code>CallableStatement</code> object for calling
+  database stored procedures.
+  The <code>CallableStatement</code> object provides
+  methods for setting up its IN and OUT parameters, and
+  methods for executing the call to a stored procedure.
+
+  <P><B>Note:</B> This method is optimized for handling stored
+  procedure call statements. Some drivers may send the call
+  statement to the database when the method <code>prepareCall</code>
+  is done; others
+  may wait until the <code>CallableStatement</code> object
+  is executed. This has no
+  direct effect on users; however, it does affect which method
+  throws certain SQLExceptions.
+
+  Result sets created using the returned CallableStatement will have
+  forward-only type and read-only concurrency, by default.
+
+  @param sql a SQL statement that may contain one or more '?'
+    parameter placeholders. Typically this  statement is a JDBC
+    function call escape string.
+  @param Info a statement parameters.
+  @return a new CallableStatement object containing the
+    pre-compiled SQL statement
+}
+function TZMySQLConnection.CreateCallableStatement(const SQL: string; Info: TStrings):
+  IZCallableStatement;
+begin
+  Result := TZMySQLCallableStatement.Create(GetPlainDriver, Self, SQL, Info, FHandle);
 end;
 
 {**
@@ -770,22 +837,14 @@ end;
   @param EscapeMarkSequence represents a Tokenizer detectable EscapeSequence (Len >= 3)
   @result the detectable Binary String
 }
-function TZMySQLConnection.GetAnsiEscapeString(const Value: AnsiString;
-  const EscapeMarkSequence: String = '~<|'): String;
+function TZMySQLConnection.GetEscapeString(const Value: ZWideString): ZWideString;
 begin
-  Result := inherited GetAnsiEscapeString('''' + EscapeString(Value) + '''', EscapeMarkSequence);
+  Result := inherited GetEscapeString(GetPlainDriver.EscapeString(FHandle, Value, ConSettings));
 end;
 
-function TZMySQLConnection.GetEscapeString(const Value: String;
-  const EscapeMarkSequence: String = '~<|'): String;
+function TZMySQLConnection.GetEscapeString(const Value: RawByteString): RawByteString;
 begin
-  Result := inherited GetEscapeString('''' + String(EscapeString(ZPlainString(Value))) + '''', EscapeMarkSequence);
-end;
-
-function TZMySQLConnection.GetEscapeString(const Value: PAnsiChar;
-  const EscapeMarkSequence: String = '~<|'): String;
-begin
-  Result := inherited GetAnsiEscapeString('''' + EscapeString(Value) + '''', EscapeMarkSequence);
+  Result := inherited GetEscapeString(GetPlainDriver.EscapeString(FHandle, Value, ConSettings));
 end;
 
 initialization

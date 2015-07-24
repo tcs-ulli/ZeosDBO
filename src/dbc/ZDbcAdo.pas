@@ -8,7 +8,7 @@
 {*********************************************************}
 
 {@********************************************************}
-{    Copyright (c) 1999-2006 Zeos Development Group       }
+{    Copyright (c) 1999-2012 Zeos Development Group       }
 {                                                         }
 { License Agreement:                                      }
 {                                                         }
@@ -40,12 +40,10 @@
 {                                                         }
 { The project web site is located on:                     }
 {   http://zeos.firmos.at  (FORUM)                        }
-{   http://zeosbugs.firmos.at (BUGTRACKER)                }
-{   svn://zeos.firmos.at/zeos/trunk (SVN Repository)      }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
 {                                                         }
 {   http://www.sourceforge.net/projects/zeoslib.          }
-{   http://www.zeoslib.sourceforge.net                    }
-{                                                         }
 {                                                         }
 {                                                         }
 {                                 Zeos Development Group. }
@@ -59,17 +57,20 @@ interface
 
 uses
   Types, Classes, ZDbcConnection, ZDbcIntfs, ZCompatibility, ZPlainDriver,
-  ZPlainAdoDriver, ZPlainAdo, ZURL;
+  ZPlainAdoDriver, ZPlainAdo, ZURL, ZTokenizer;
 
 type
   {** Implements Ado Database Driver. }
+  {$WARNINGS OFF}
   TZAdoDriver = class(TZAbstractDriver)
   public
     constructor Create; override;
     function Connect(const Url: TZURL): IZConnection; override;
     function GetMajorVersion: Integer; override;
     function GetMinorVersion: Integer; override;
+    function GetTokenizer: IZTokenizer; override;
   end;
+  {$WARNINGS ON}
 
   {** Represents an Ado specific connection interface. }
   IZAdoConnection = interface (IZConnection)
@@ -85,14 +86,16 @@ type
     procedure ReStartTransactionSupport;
   protected
     FAdoConnection: ZPlainAdo.Connection;
-    function GetAdoConnection: ZPlainAdo.Connection; virtual;
-    procedure InternalExecuteStatement(const SQL: string); virtual;
-    procedure CheckAdoError; virtual;
-    procedure StartTransaction; virtual;
+    function GetAdoConnection: ZPlainAdo.Connection;
+    procedure InternalExecuteStatement(const SQL: string);
+    procedure CheckAdoError;
+    procedure StartTransaction;
     procedure InternalCreate; override;
   public
     destructor Destroy; override;
 
+    function GetBinaryEscapeString(const Value: TByteDynArray): String; overload; override;
+    function GetBinaryEscapeString(const Value: RawByteString): String; overload; override;
     function CreateRegularStatement(Info: TStrings): IZStatement; override;
     function CreatePreparedStatement(const SQL: string; Info: TStrings):
       IZPreparedStatement; override;
@@ -127,7 +130,7 @@ implementation
 
 uses
   Variants,
-  SysUtils, ActiveX, ZDbcUtils, ZDbcLogging,
+  SysUtils, ActiveX, ZDbcUtils, ZDbcLogging, ZAdoToken, ZSysUtils,
   ZDbcAdoStatement, ZDbcAdoMetaData;
 
 const                                                //adXactUnspecified
@@ -147,10 +150,12 @@ end;
 {**
   Attempts to make a database connection to the given URL.
 }
+{$WARNINGS OFF}
 function TZAdoDriver.Connect(const Url: TZURL): IZConnection;
 begin
   Result := TZAdoConnection.Create(Url);
 end;
+{$WARNINGS ON}
 
 {**
   Gets the driver's major version number. Initially this should be 1.
@@ -170,12 +175,20 @@ begin
   Result := 0;
 end;
 
+function TZAdoDriver.GetTokenizer: IZTokenizer;
+begin
+  if Tokenizer = nil then
+    Tokenizer := TZAdoSQLTokenizer.Create;
+  Result := Tokenizer;
+end;
+
 { TZAdoConnection }
 
 procedure TZAdoConnection.InternalCreate;
 begin
   FAdoConnection := CoConnection.Create;
   Self.FMetadata := TZAdoDatabaseMetadata.Create(Self, URL);
+  Open;
 end;
 
 {**
@@ -248,6 +261,7 @@ begin
     FAdoConnection.Open(Database, User, Password, -1{adConnectUnspecified});
     FAdoConnection.Set_CursorLocation(adUseClient);
     DriverManager.LogMessage(lcConnect, PLainDriver.GetProtocol, LogMessage);
+    if FClientCodePage <> 'CP_ADO' then CheckCharEncoding('CP_ADO', True)
   except
     on E: Exception do
     begin
@@ -260,6 +274,20 @@ begin
 
   FAdoConnection.IsolationLevel := IL[GetTransactionIsolation];
   ReStartTransactionSupport;
+end;
+
+function TZAdoConnection.GetBinaryEscapeString(const Value: TByteDynArray): String;
+begin
+  Result := GetSQLHexString(PAnsiChar(Value), Length(Value), True);
+  if GetAutoEncodeStrings then
+    Result := GetDriver.GetTokenizer.GetEscapeString(Result)
+end;
+
+function TZAdoConnection.GetBinaryEscapeString(const Value: RawByteString): String;
+begin
+  Result := GetSQLHexString(PAnsiChar(Value), Length(Value), True);
+  if GetAutoEncodeStrings then
+    Result := GetDriver.GetTokenizer.GetEscapeString(Result)
 end;
 
 {**
@@ -464,6 +492,7 @@ var
   LogMessage: string;
 begin
   LogMessage := 'COMMIT';
+  if not (AutoCommit or (GetTransactionIsolation = tiNone)) then
   try
     FAdoConnection.CommitTrans;
     DriverManager.LogMessage(lcExecute, PlainDriver.GetProtocol, LogMessage);
@@ -489,6 +518,7 @@ var
   LogMessage: string;
 begin
   LogMessage := 'ROLLBACK';
+  if not (AutoCommit or (GetTransactionIsolation = tiNone)) then
   try
     FAdoConnection.RollbackTrans;
     DriverManager.LogMessage(lcExecute, PlainDriver.GetProtocol, LogMessage);

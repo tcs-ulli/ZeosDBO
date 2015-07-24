@@ -8,7 +8,7 @@
 {*********************************************************}
 
 {@********************************************************}
-{    Copyright (c) 1999-2006 Zeos Development Group       }
+{    Copyright (c) 1999-2012 Zeos Development Group       }
 {                                                         }
 { License Agreement:                                      }
 {                                                         }
@@ -40,12 +40,10 @@
 {                                                         }
 { The project web site is located on:                     }
 {   http://zeos.firmos.at  (FORUM)                        }
-{   http://zeosbugs.firmos.at (BUGTRACKER)                }
-{   svn://zeos.firmos.at/zeos/trunk (SVN Repository)      }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
 {                                                         }
 {   http://www.sourceforge.net/projects/zeoslib.          }
-{   http://www.zeoslib.sourceforge.net                    }
-{                                                         }
 {                                                         }
 {                                                         }
 {                                 Zeos Development Group. }
@@ -58,8 +56,9 @@ interface
 {$I ZDbc.inc}
 
 uses
-  Classes, SysUtils, Types, ZSysUtils, ZDbcIntfs,
-  Contnrs, ZDbcResultSet, ZDbcResultSetMetadata, ZPlainSqLiteDriver,
+  {$IFDEF WITH_TOBJECTLIST_INLINE}System.Types, System.Contnrs{$ELSE}Types, Contnrs{$ENDIF},
+  Classes, {$IFDEF MSEgui}mclasses,{$ENDIF} SysUtils,
+  ZSysUtils, ZDbcIntfs, ZDbcResultSet, ZDbcResultSetMetadata, ZPlainSqLiteDriver,
   ZCompatibility, ZDbcCache, ZDbcCachedResultSet, ZDbcGenericResolver;
 
 type
@@ -74,29 +73,31 @@ type
   {** Implements SQLite ResultSet. }
   TZSQLiteResultSet = class(TZAbstractResultSet)
   private
+    FFetchingReady: Boolean;
     FHandle: Psqlite;
     FStmtHandle: Psqlite_vm;
     FColumnCount: Integer;
     FColumnNames: PPAnsiChar;
     FColumnValues: PPAnsiChar;
     FPlainDriver: IZSQLitePlainDriver;
+    FFreeHandle: Boolean;
   protected
     procedure Open; override;
     procedure FreeHandle;
-    function InternalGetString(ColumnIndex: Integer): AnsiString; override;
+    function InternalGetString(ColumnIndex: Integer): RawByteString; override;
   public
     constructor Create(PlainDriver: IZSQLitePlainDriver; Statement: IZStatement;
       SQL: string; Handle: Psqlite; StmtHandle: Psqlite_vm;
-      ColumnCount: Integer; ColumnNames: PPAnsiChar; ColumnValues: PPAnsiChar);
+      ColumnCount: Integer; ColumnNames: PPAnsiChar; ColumnValues: PPAnsiChar;
+      AllowFreeHandle: Boolean = True);
     destructor Destroy; override;
 
     procedure Close; override;
 
     function IsNull(ColumnIndex: Integer): Boolean; override;
     function GetPChar(ColumnIndex: Integer): PChar; override;
-    //function GetString(ColumnIndex: Integer): String; override;
     function GetBoolean(ColumnIndex: Integer): Boolean; override;
-    function GetByte(ColumnIndex: Integer): ShortInt; override;
+    function GetByte(ColumnIndex: Integer): Byte; override;
     function GetShort(ColumnIndex: Integer): SmallInt; override;
     function GetInt(ColumnIndex: Integer): Integer; override;
     function GetLong(ColumnIndex: Integer): Int64; override;
@@ -107,9 +108,6 @@ type
     function GetDate(ColumnIndex: Integer): TDateTime; override;
     function GetTime(ColumnIndex: Integer): TDateTime; override;
     function GetTimestamp(ColumnIndex: Integer): TDateTime; override;
-    function GetAsciiStream(ColumnIndex: Integer): TStream; override;
-    function GetUnicodeStream(ColumnIndex: Integer): TStream; override;
-    function GetBinaryStream(ColumnIndex: Integer): TStream; override;
     function GetBlob(ColumnIndex: Integer): IZBlob; override;
 
     function Next: Boolean; override;
@@ -137,8 +135,8 @@ type
 implementation
 
 uses
-  ZMessages, ZDbcSqLite, ZDbcSQLiteUtils, ZMatchPattern,
-  ZDbcLogging;
+  ZMessages, ZDbcSqLite, ZDbcSQLiteUtils, ZMatchPattern, ZEncoding,
+  ZDbcLogging, ZDbcSqLiteStatement;
 
 { TZSQLiteResultSetMetadata }
 
@@ -183,11 +181,11 @@ end;
 constructor TZSQLiteResultSet.Create(PlainDriver: IZSQLitePlainDriver;
   Statement: IZStatement; SQL: string; Handle: Psqlite;
   StmtHandle: Psqlite_vm; ColumnCount: Integer; ColumnNames: PPAnsiChar;
-  ColumnValues: PPAnsiChar);
+  ColumnValues: PPAnsiChar; AllowFreeHandle: Boolean = True);
 begin
   inherited Create(Statement, SQL, TZSQLiteResultSetMetadata.Create(
     Statement.GetConnection.GetMetadata, SQL, Self),
-    Statement.GetConnection.GetClientCodePageInformations);
+    Statement.GetConnection.GetConSettings);
 
   FHandle := Handle;
   FStmtHandle := StmtHandle;
@@ -196,6 +194,8 @@ begin
   FColumnCount := ColumnCount;
   FColumnNames := ColumnNames;
   FColumnValues := ColumnValues;
+  FFreeHandle := AllowFreeHandle;
+  FFetchingReady := False;
 
   Open;
 end;
@@ -245,31 +245,32 @@ begin
     ColumnInfo := TZColumnInfo.Create;
     with ColumnInfo do
     begin
-      ColumnLabel := ZDbcString(StrPas(FieldName^));
+      ColumnLabel := ZDbcString(FieldName^);
       Inc(FieldName);
       TableName := '';
       ReadOnly := False;
       if TypeName^ <> nil then
       begin
-        ColumnType := ConvertSQLiteTypeToSQLType(String(TypeName^),
-          FieldPrecision, FieldDecimals, ClientCodePage^.Encoding,
-          Statement.GetConnection.UTF8StringAsWideField);
+        ColumnType := ConvertSQLiteTypeToSQLType(ZDbcString(TypeName^),
+          FieldPrecision, FieldDecimals, ConSettings.CPType);
         Inc(TypeName);
       end
       else
       begin
-        ColumnType := ConvertSQLiteTypeToSQLType(FPlainDriver.GetColumnDataType(FStmtHandle,I-1),
-          FieldPrecision, FieldDecimals, ClientCodePage^.Encoding,
-          Statement.GetConnection.UTF8StringAsWideField);
+        ColumnType := ConvertSQLiteTypeToSQLType(ZDbcString(FPlainDriver.column_decltype(FStmtHandle,I-1)),
+          FieldPrecision, FieldDecimals, ConSettings.CPType);
       end;
-      ColumnDisplaySize := FieldPrecision;
-      AutoIncrement := False;
-      case ColumnType of
-        stString: Precision := FieldPrecision *3+3;
-        stUnicodeString: Precision := FieldPrecision * 2+2;
+      if ColumnType = stString then
+        if Zencoding.ZDefaultSystemCodePage = zCP_UTF8 then
+          ColumnDisplaySize := FieldPrecision div 4
         else
-          Precision := FieldPrecision;
-      end;
+          ColumnDisplaySize := FieldPrecision div 2;
+
+      if ColumnType = stUnicodeString then
+        ColumnDisplaySize := FieldPrecision div 2;
+
+      AutoIncrement := False;
+      Precision := FieldPrecision;
       Scale := FieldDecimals;
       Signed := True;
       Nullable := ntNullable;
@@ -287,16 +288,25 @@ end;
 procedure TZSQLiteResultSet.FreeHandle;
 var
   ErrorCode: Integer;
-  ErrorMessage: PAnsiChar;
 begin
-  ErrorMessage := nil;
-  if Assigned(FStmtHandle) then
-    ErrorCode := FPlainDriver.Finalize(FStmtHandle, ErrorMessage)
+  if FFreeHandle then
+  begin
+    if Assigned(FStmtHandle) then
+      ErrorCode := FPlainDriver.Finalize(FStmtHandle)
+    else
+      ErrorCode := SQLITE_OK;
+    FStmtHandle := nil;
+    CheckSQLiteError(FPlainDriver, FStmtHandle, ErrorCode, nil,
+      lcOther, 'FINALIZE SQLite VM');
+  end
   else
-    ErrorCode := SQLITE_OK;
-  FStmtHandle := nil;
-  CheckSQLiteError(FPlainDriver, ErrorCode, ErrorMessage,
-    lcOther, 'FINALIZE SQLite VM');
+    if FStmtHandle <> nil then
+    begin
+      ErrorCode := FPlainDriver.reset(FStmtHandle);
+      FStmtHandle := nil;
+      CheckSQLiteError(FPlainDriver, FStmtHandle, ErrorCode, nil, lcBindPrepStmt, 'Reset Prepared Stmt');
+      FFetchingReady := True;
+    end;
 end;
 
 {**
@@ -313,7 +323,10 @@ end;
   is also automatically closed when it is garbage collected.
 }
 procedure TZSQLiteResultSet.Close;
+var stmt: IZSQLiteCAPIPreparedStatement;
 begin
+  if Assigned(Statement) and Supports(Statement, IZSQLiteCAPIPreparedStatement, stmt) then
+    stmt.FreeReference;
   inherited Close;
   FreeHandle;
 end;
@@ -374,7 +387,7 @@ end;
   @return the column value; if the value is SQL <code>NULL</code>, the
     value returned is <code>null</code>
 }
-function TZSQLiteResultSet.InternalGetString(ColumnIndex: Integer): AnsiString;
+function TZSQLiteResultSet.InternalGetString(ColumnIndex: Integer): RawByteString;
 var
   Temp: PPAnsiChar;
 begin
@@ -387,7 +400,7 @@ begin
   Temp := FColumnValues;
   Inc(Temp, ColumnIndex - 1);
   Result := Temp^;
-  LastWasNull := Result = '';
+  LastWasNull := Temp^ = nil;
 end;
 
 {**
@@ -420,12 +433,12 @@ end;
   @return the column value; if the value is SQL <code>NULL</code>, the
     value returned is <code>0</code>
 }
-function TZSQLiteResultSet.GetByte(ColumnIndex: Integer): ShortInt;
+function TZSQLiteResultSet.GetByte(ColumnIndex: Integer): Byte;
 begin
 {$IFNDEF DISABLE_CHECKING}
   CheckColumnConvertion(ColumnIndex, stByte);
 {$ENDIF}
-  Result := ShortInt(StrToIntDef(String(InternalGetString(ColumnIndex)), 0));
+  Result := Byte(StrToIntDef(String(InternalGetString(ColumnIndex)), 0));
 end;
 
 {**
@@ -561,6 +574,7 @@ end;
 function TZSQLiteResultSet.GetDate(ColumnIndex: Integer): TDateTime;
 var
   Value: string;
+  TempDate: TDateTime;
 begin
 {$IFNDEF DISABLE_CHECKING}
   CheckColumnConvertion(ColumnIndex, stDate);
@@ -569,7 +583,12 @@ begin
   if IsMatch('????-??-??*', Value) then
     Result := Trunc(AnsiSQLDateToDateTime(Value))
   else
+  begin
+    TempDate := Trunc(SQLStrToFloatDef(Value, 0));
     Result := Trunc(TimestampStrToDateTime(Value));
+    if ( Result = 0 ) and not ( TempDate = 0 ) then
+      Result := TempDate;
+  end;
   LastWasNull := Result = 0;
 end;
 
@@ -585,6 +604,7 @@ end;
 function TZSQLiteResultSet.GetTime(ColumnIndex: Integer): TDateTime;
 var
   Value: string;
+  TempTime: TDateTime;
 begin
 {$IFNDEF DISABLE_CHECKING}
   CheckColumnConvertion(ColumnIndex, stTime);
@@ -593,7 +613,13 @@ begin
   if IsMatch('*??:??:??*', Value) then
     Result := Frac(AnsiSQLDateToDateTime(Value))
   else
+  begin
+    TempTime := Frac(SQLStrToFloatDef(Value, 0));
     Result := Frac(TimestampStrToDateTime(Value));
+    if ( Result = 0 ) and not ( TempTime = 0 ) then
+      Result := TempTime;
+  end;
+  LastWasNull := Result = 0;
 end;
 
 {**
@@ -608,107 +634,23 @@ end;
 }
 function TZSQLiteResultSet.GetTimestamp(ColumnIndex: Integer): TDateTime;
 var
-  Temp: string;
+  Value: string;
+  TempTimeStamp: TDateTime;
 begin
 {$IFNDEF DISABLE_CHECKING}
   CheckColumnConvertion(ColumnIndex, stTimestamp);
 {$ENDIF}
-  Temp := String(InternalGetString(ColumnIndex));
-  if IsMatch('????-??-??*', Temp) then
-    Result := AnsiSQLDateToDateTime(Temp)
+  Value := String(InternalGetString(ColumnIndex));
+  if IsMatch('????-??-??*', Value) then
+    Result := AnsiSQLDateToDateTime(Value)
   else
-    Result := TimestampStrToDateTime(Temp);
+  begin
+    TempTimeStamp := SQLStrToFloatDef(Value, 0);
+    Result := TimestampStrToDateTime(Value);
+    if ( Result = 0 ) and not ( TempTimeStamp = 0 ) then
+      Result := TempTimeStamp;
+  end;
   LastWasNull := Result = 0;
-end;
-
-{**
-  Gets the value of the designated column in the current row
-  of this <code>ResultSet</code> object as
-  a stream of ASCII characters. The value can then be read in chunks from the
-  stream. This method is particularly
-  suitable for retrieving large <char>LONGVARCHAR</char> values.
-  The JDBC driver will
-  do any necessary conversion from the database format into ASCII.
-
-  <P><B>Note:</B> All the data in the returned stream must be
-  read prior to getting the value of any other column. The next
-  call to a <code>getXXX</code> method implicitly closes the stream.  Also, a
-  stream may return <code>0</code> when the method
-  <code>InputStream.available</code>
-  is called whether there is data available or not.
-
-  @param columnIndex the first column is 1, the second is 2, ...
-  @return a Java input stream that delivers the database column value
-    as a stream of one-byte ASCII characters; if the value is SQL
-    <code>NULL</code>, the value returned is <code>null</code>
-}
-function TZSQLiteResultSet.GetAsciiStream(ColumnIndex: Integer): TStream;
-begin
-{$IFNDEF DISABLE_CHECKING}
-  CheckColumnConvertion(ColumnIndex, stAsciiStream);
-{$ENDIF}
-  Result := TStringStream.Create(GetString(ColumnIndex));
-end;
-
-{**
-  Gets the value of a column in the current row as a stream of
-  Gets the value of the designated column in the current row
-  of this <code>ResultSet</code> object as
-  as a stream of Unicode characters.
-  The value can then be read in chunks from the
-  stream. This method is particularly
-  suitable for retrieving large<code>LONGVARCHAR</code>values.
-  The JDBC driver will
-  do any necessary conversion from the database format into Unicode.
-  The byte format of the Unicode stream must be Java UTF-8,
-  as specified in the Java virtual machine specification.
-
-  <P><B>Note:</B> All the data in the returned stream must be
-  read prior to getting the value of any other column. The next
-  call to a <code>getXXX</code> method implicitly closes the stream.  Also, a
-  stream may return <code>0</code> when the method
-  <code>InputStream.available</code>
-  is called whether there is data available or not.
-
-  @param columnIndex the first column is 1, the second is 2, ...
-  @return a Java input stream that delivers the database column value
-    as a stream in Java UTF-8 byte format; if the value is SQL
-    <code>NULL</code>, the value returned is <code>null</code>
-}
-function TZSQLiteResultSet.GetUnicodeStream(ColumnIndex: Integer): TStream;
-begin
-{$IFNDEF DISABLE_CHECKING}
-  CheckColumnConvertion(ColumnIndex, stUnicodeStream);
-{$ENDIF}
-  Result := TStringStream.Create(InternalGetString(ColumnIndex));
-end;
-
-{**
-  Gets the value of a column in the current row as a stream of
-  Gets the value of the designated column in the current row
-  of this <code>ResultSet</code> object as a binary stream of
-  uninterpreted bytes. The value can then be read in chunks from the
-  stream. This method is particularly
-  suitable for retrieving large <code>LONGVARBINARY</code> values.
-
-  <P><B>Note:</B> All the data in the returned stream must be
-  read prior to getting the value of any other column. The next
-  call to a <code>getXXX</code> method implicitly closes the stream.  Also, a
-  stream may return <code>0</code> when the method
-  <code>InputStream.available</code>
-  is called whether there is data available or not.
-
-  @param columnIndex the first column is 1, the second is 2, ...
-  @return a Java input stream that delivers the database column value
-    as a stream of uninterpreted bytes;
-    if the value is SQL <code>NULL</code>, the value returned is <code>null</code>
-}
-function TZSQLiteResultSet.GetBinaryStream(ColumnIndex: Integer): TStream;
-begin
-{$IFNDEF DISABLE_CHECKING}
-  CheckColumnConvertion(ColumnIndex, stBinaryStream);
-{$ENDIF}
-  Result := TStringStream.Create(DecodeString(Self.InternalGetString(ColumnIndex)));
 end;
 
 {**
@@ -723,6 +665,7 @@ end;
 function TZSQLiteResultSet.GetBlob(ColumnIndex: Integer): IZBlob;
 var
   Stream: TStream;
+  AnsiTemp: RawByteString;
 begin
   Result := nil;
 {$IFNDEF DISABLE_CHECKING}
@@ -736,18 +679,31 @@ begin
   try
     if not LastWasNull then
     begin
-     if TZAbstractResultSetMetadata(Metadata).GetColumnType(ColumnIndex) = stAsciiStream then
-        Stream := TStringStream.Create(InternalGetString(ColumnIndex))
-      else
-        {introduced the old Zeos6 blob-encoding cause of compatibility reasons}
-        if (Statement.GetConnection as IZSQLiteConnection).UseOldBlobEncoding then
-          Stream := TStringStream.Create(DecodeString(InternalGetString(ColumnIndex)))
-        else
-          Stream := FPlaindriver.getblob(FStmtHandle,columnIndex);
-      Result := TZAbstractBlob.CreateWithStream(Stream)
+      case GetMetadata.GetColumnType(ColumnIndex) of
+        stAsciiStream:
+          if ConSettings.AutoEncode then
+            Stream := TStringStream.Create(GetValidatedAnsiString(InternalGetString(ColumnIndex), ConSettings, True))
+          else
+            Stream := TStringStream.Create(InternalGetString(ColumnIndex));
+        stUnicodeStream:
+          begin
+            AnsiTemp := InternalGetString(ColumnIndex);
+            if Length(AnsiTemp) = 0 then
+              Stream := TMemoryStream.Create
+            else
+              Stream := GetValidatedUnicodeStream(InternalGetString(ColumnIndex), ConSettings, True);
+          end;
+        stBinaryStream:
+          {introduced the old Zeos6 blob-encoding cause of compatibility reasons}
+          if (Statement.GetConnection as IZSQLiteConnection).UseOldBlobEncoding then
+            Stream := TStringStream.Create(DecodeString(InternalGetString(ColumnIndex)))
+          else
+            Stream := FPlaindriver.column_blob(FStmtHandle,columnIndex);
+      end;
+      Result := TZAbstractBlob.CreateWithStream(Stream, GetStatement.GetConnection, GetMetadata.GetColumnType(ColumnIndex) = stUnicodeStream);
     end
     else
-      Result := TZAbstractBlob.CreateWithStream(nil);
+      Result := TZAbstractBlob.CreateWithStream(nil, GetStatement.GetConnection);
   finally
     if Assigned(Stream) then
       Stream.Free;
@@ -799,7 +755,7 @@ begin
     if FColumnValues <> nil then
       FreeMem(FColumnValues, Sizeof(PPAnsiChar) * (fColumnCount + 1));
     FColumnValues := nil;
-    if Assigned(FStmtHandle) then
+    if Assigned(FStmtHandle) and not FFetchingReady then
     begin
      //ZPlainSQLLiteDriver.Step : AllocMem(SizeOf(PPAnsiChar)*(pN+1)*2); // Leak, if not freed [HD, 05.10.2007]
       if FColumnNames <> nil then
@@ -807,7 +763,7 @@ begin
       FColumnNames := nil;
       ErrorCode := FPlainDriver.Step(FStmtHandle, FColumnCount,
         FColumnValues, FColumnNames);
-      CheckSQLiteError(FPlainDriver, ErrorCode, nil, lcOther, 'FETCH');
+      CheckSQLiteError(FPlainDriver, FStmtHandle, ErrorCode, nil, lcOther, 'FETCH');
     end;
 
     if FColumnValues <> nil then

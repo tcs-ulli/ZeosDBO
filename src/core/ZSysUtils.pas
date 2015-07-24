@@ -8,7 +8,7 @@
 {*********************************************************}
 
 {@********************************************************}
-{    Copyright (c) 1999-2006 Zeos Development Group       }
+{    Copyright (c) 1999-2012 Zeos Development Group       }
 {                                                         }
 { License Agreement:                                      }
 {                                                         }
@@ -40,12 +40,10 @@
 {                                                         }
 { The project web site is located on:                     }
 {   http://zeos.firmos.at  (FORUM)                        }
-{   http://zeosbugs.firmos.at (BUGTRACKER)                }
-{   svn://zeos.firmos.at/zeos/trunk (SVN Repository)      }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
 {                                                         }
 {   http://www.sourceforge.net/projects/zeoslib.          }
-{   http://www.zeoslib.sourceforge.net                    }
-{                                                         }
 {                                                         }
 {                                                         }
 {                                 Zeos Development Group. }
@@ -58,7 +56,8 @@ interface
 {$I ZCore.inc}
 
 uses
-  Variants, ZMessages, ZCompatibility, Classes, SysUtils, Types;
+  Variants, Classes, {$IFDEF MSEgui}mclasses,{$ENDIF} SysUtils, Types,
+  ZMessages, ZCompatibility;
 
 type
   {** Modified comaprison function. }
@@ -89,16 +88,13 @@ function FirstDelimiter(const Delimiters, Str: string): Integer;
 }
 function LastDelimiter(const Delimiters, Str: string): Integer;
 
-
-{$IFDEF DELPHI12_UP}
 {**
   Compares two PWideChars without stopping at #0 (Unicode Version)
   @param P1 first PWideChars
   @param P2 seconds PWideChars
   @return <code>True</code> if the memory at P1 and P2 are equal
 }
-function MemLCompUnicode(P1, P2: PChar; Len: Integer): Boolean;
-{$ENDIF}
+function MemLCompUnicode(P1, P2: PWideChar; Len: Integer): Boolean;
 
 {**
   Compares two PAnsiChars without stopping at #0
@@ -114,15 +110,16 @@ function MemLCompAnsi(P1, P2: PAnsiChar; Len: Integer): Boolean;
   @param SubStr a string to test at the start of the Str.
   @return <code>True</code> if Str started with SubStr;
 }
-function StartsWith(const Str, SubStr: string): Boolean;
-
+function StartsWith(const Str, SubStr: ZWideString): Boolean; overload;
+function StartsWith(const Str, SubStr: RawByteString): Boolean; overload;
 {**
   Checks is the string ends with substring.
   @param Str a string to be checked.
   @param SubStr a string to test at the end of the Str.
   @return <code>True</code> if Str ended with SubStr;
 }
-function EndsWith(const Str, SubStr: string): Boolean;
+function EndsWith(const Str, SubStr: ZWideString): Boolean; overload;
+function EndsWith(const Str, SubStr: RawByteString): Boolean; overload;
 
 {**
   Converts SQL string into float value.
@@ -130,7 +127,10 @@ function EndsWith(const Str, SubStr: string): Boolean;
   @param Def a default value if the string can not be converted.
   @return a converted value or Def if conversion was failt.
 }
-function SQLStrToFloatDef(Str: AnsiString; Def: Extended): Extended;
+{$IFDEF WITH_RAWBYTESTRING}
+function SQLStrToFloatDef(Str: RawByteString; Def: Extended): Extended; overload;
+{$ENDIF}
+function SQLStrToFloatDef(Str: String; Def: Extended): Extended; overload;
 
 {**
   Converts SQL string into float value.
@@ -147,6 +147,7 @@ function SQLStrToFloat(const Str: AnsiString): Extended;
 }
 function BufferToStr(Buffer: PWideChar; Length: LongInt): string; overload;
 function BufferToStr(Buffer: PAnsiChar; Length: LongInt): string; overload;
+function BufferToBytes(Buffer: Pointer; Length: LongInt): TByteDynArray;
 
 {**
   Converts a string into boolean value.
@@ -248,8 +249,36 @@ function BytesToStr(const Value: TByteDynArray): AnsiString;
   @param Value a AnsiString to be converted.
   @return a converted array of bytes.
 }
-function StrToBytes(const Value: AnsiString): TByteDynArray;
+function StrToBytes(const Value: AnsiString): TByteDynArray; overload;
 
+{$IFDEF WITH_RAWBYTESTRING}
+{**
+  Converts a UTF8String into an array of bytes.
+  @param Value a UTF8String to be converted.
+  @return a converted array of bytes.
+}
+function StrToBytes(const Value: UTF8String): TByteDynArray; overload;
+{**
+  Converts a UTF8String into an array of bytes.
+  @param Value a UTF8String to be converted.
+  @return a converted array of bytes.
+}
+function StrToBytes(const Value: RawByteString): TByteDynArray; overload;
+{**
+  Converts a RawByteString into an array of bytes.
+  @param Value a RawByteString to be converted.
+  @return a converted array of bytes.
+}
+{$ENDIF}
+function StrToBytes(const Value: WideString): TByteDynArray; overload;
+{**
+  Converts a String into an array of bytes.
+  @param Value a String to be converted.
+  @return a converted array of bytes.
+}
+{$IFDEF PWIDECHAR_IS_PUNICODECHAR}
+function StrToBytes(const Value: UnicodeString): TByteDynArray; overload;
+{$ENDIF}
 {**
   Converts bytes into a variant representation.
   @param Value an array of bytes to be converted.
@@ -283,7 +312,7 @@ function TimestampStrToDateTime(const Value: string): TDateTime;
   @param Value an encoded TDateTime value.
   @return a  date and time string.
 }
-function DateTimeToAnsiSQLDate(Value: TDateTime): string;
+function DateTimeToAnsiSQLDate(Value: TDateTime; WithMMSec: Boolean = False): string;
 
 {**
   Converts an string into escape PostgreSQL format.
@@ -365,9 +394,19 @@ function ZStrToFloat(Value: PAnsiChar): Extended; overload;
 }
 function ZStrToFloat(Value: AnsiString): Extended; overload;
 
+procedure ZSetString(const Src: PAnsiChar; var Dest: AnsiString); overload;
+procedure ZSetString(const Src: PAnsiChar; const Len: Cardinal; var Dest: AnsiString); overload;
+procedure ZSetString(const Src: PAnsiChar; var Dest: UTF8String); overload;
+procedure ZSetString(const Src: PAnsiChar; const Len: Cardinal; var Dest: UTF8String); overload;
+procedure ZSetString(const Src: PAnsiChar; const Len: Cardinal; var Dest: ZWideString); overload;
+{$IFDEF WITH_RAWBYTESTRING}
+procedure ZSetString(const Src: PAnsiChar; var Dest: RawByteString); overload;
+procedure ZSetString(const Src: PAnsiChar; const Len: Cardinal; var Dest: RawByteString); overload;
+{$ENDIF}
+
 implementation
 
-uses ZMatchPattern, StrUtils;
+uses ZMatchPattern, StrUtils {$IFDEF WITH_UNITANSISTRINGS}, AnsiStrings{$ENDIF};
 
 {**
   Determines a position of a first delimiter.
@@ -411,7 +450,6 @@ begin
 end;
 
 
-{$IFDEF DELPHI12_UP}
 {**
   Compares two PWideChars without stopping at #0 (Unicode Version)
   @param P1 first PWideChar
@@ -428,7 +466,6 @@ begin
   end;
   Result := Len = 0;
 end;
-{$ENDIF}
 
 {**
   Compares two PAnsiChars without stopping at #0
@@ -453,22 +490,31 @@ end;
   @param SubStr a string to test at the start of the Str.
   @return <code>True</code> if Str started with SubStr;
 }
-function StartsWith(const Str, SubStr: string): Boolean;
+function StartsWith(const Str, SubStr: ZWideString): Boolean;
 var
   LenSubStr: Integer;
 begin
   LenSubStr := Length(SubStr);
   if SubStr = '' then
     Result := True
-   else if LenSubStr <= Length(Str) then
-    //Result := Copy(Str, 1, Length(SubStr)) = SubStr;
-   {$IFDEF DELPHI12_UP}
-   Result := MemLCompUnicode(PChar(Str), PChar(SubStr), LenSubStr)
-   {$ELSE}
-   Result := MemLCompAnsi(PChar(Str), PChar(SubStr), LenSubStr)
-   {$ENDIF}
+  else if LenSubStr <= Length(Str) then
+    Result := MemLCompUnicode(PWideChar(Str), PWideChar(SubStr), LenSubStr)
   else
     Result := False;
+end;
+
+function StartsWith(const Str, SubStr: RawByteString): Boolean; overload;
+var
+  LenSubStr: Integer;
+begin
+  LenSubStr := Length(SubStr);
+  if SubStr = '' then
+    Result := True
+   else
+    if LenSubStr <= Length(Str) then
+      Result := MemLCompAnsi(PAnsiChar(Str), PAnsiChar(SubStr), LenSubStr)
+    else
+      Result := False;
 end;
 
 {**
@@ -477,7 +523,7 @@ end;
   @param SubStr a string to test at the end of the Str.
   @return <code>True</code> if Str ended with SubStr;
 }
-function EndsWith(const Str, SubStr: string): Boolean;
+function EndsWith(const Str, SubStr: ZWideString): Boolean;
 var
   LenSubStr: Integer;
   LenStr: Integer;
@@ -489,44 +535,118 @@ begin
     LenSubStr := Length(SubStr);
     LenStr := Length(Str);
     if LenSubStr <= LenStr then
-      //Result := Copy(Str, LenStr - LenSubStr + 1, LenSubStr) = SubStr
-    {$IFDEF DELPHI12_UP}
-      Result := MemLCompUnicode(PChar(Pointer(Str)) + LenStr - LenSubStr,
+      Result := MemLCompUnicode(PWideChar(Pointer(Str)) + LenStr - LenSubStr,
          Pointer(SubStr), LenSubStr)
-    {$ELSE}
-      Result := MemLCompAnsi(PChar(Pointer(Str)) + LenStr - LenSubStr,
-         Pointer(SubStr), LenSubStr)
-    {$ENDIF}
     else
       Result := False;
   end;
 end;
 
+function EndsWith(const Str, SubStr: RawByteString): Boolean;
+var
+  LenSubStr: Integer;
+  LenStr: Integer;
+begin
+  if SubStr = '' then
+    Result := False // act like Delphi's AnsiEndsStr()
+  else
+  begin
+    LenSubStr := Length(SubStr);
+    LenStr := Length(Str);
+    if LenSubStr <= LenStr then
+      Result := MemLCompAnsi(PAnsiChar(Pointer(Str)) + LenStr - LenSubStr,
+         Pointer(SubStr), LenSubStr)
+    else
+      Result := False;
+  end;
+end;
+
+function ConvertMoneyToFloat(MoneyString: String): String;
+var
+  I: Integer;
+begin
+  if MoneyString = '' then
+    Result := ''
+  else
+  begin
+    if CharInSet(Char(MoneyString[1]), ['0'..'9', '-']) then
+      Result := MoneyString
+    else
+      for i := 1 to Length(MoneyString) do
+        if CharInSet(Char(MoneyString[I]), ['0'..'9', '-']) then
+        begin
+          if I > 1 then
+          begin //Money type
+            Result := Copy(MoneyString, I, Length(MoneyString)-i+1);
+            if Pos(',', Result) > 0 then
+              if Pos('.', Result) > 0  then
+              begin
+                Result := Copy(Result, 1, Pos(',', Result)-1);
+                while Pos('.', Result) > 0  do
+                  Result := Copy(Result, 1, Pos('.', Result)-1)+Copy(Result, Pos('.', Result)+1, Length(Result)); //remove ThousandSeparator
+                Result := Result + '.'+Copy(MoneyString, Pos(',', MoneyString)+1, Length(MoneyString));
+              end
+              else
+                Result[Pos(',', Result)] := '.';
+          end;
+          Break;
+        end;
+  end;
+end;
 {**
   Converts SQL string into float value.
   @param Str an SQL string with comma delimiter.
   @param Def a default value if the string can not be converted.
   @return a converted value or Def if conversion was failt.
 }
-function SQLStrToFloatDef(Str: AnsiString; Def: Extended): Extended;
+{$IFDEF WITH_RAWBYTESTRING}
+function SQLStrToFloatDef(Str: RawByteString; Def: Extended): Extended;
 var
   OldDecimalSeparator: Char;
   OldThousandSeparator: Char;
   AString: String;
 begin
-  OldDecimalSeparator := {$IFDEF WITH_FORMATSETTINGS}FormatSettings.{$ENDIF}DecimalSeparator;
-  OldThousandSeparator := {$IFDEF WITH_FORMATSETTINGS}FormatSettings.{$ENDIF}ThousandSeparator;
-  {$IFDEF WITH_FORMATSETTINGS}FormatSettings.{$ENDIF}DecimalSeparator := '.';
-  {$IFDEF WITH_FORMATSETTINGS}FormatSettings.{$ENDIF}ThousandSeparator := ',';
-  AString := String(Str);
-  if Pos('$', AString) = 1 then
-    AString := Copy(AString, 2, Pred(Length(AString)));
-  If AString = '' then
+  if Str = '' then
     Result := Def
   else
+  begin
+    OldDecimalSeparator := {$IFDEF WITH_FORMATSETTINGS}FormatSettings.{$ENDIF}DecimalSeparator;
+    OldThousandSeparator := {$IFDEF WITH_FORMATSETTINGS}FormatSettings.{$ENDIF}ThousandSeparator;
+    {$IFDEF WITH_FORMATSETTINGS}FormatSettings.{$ENDIF}DecimalSeparator := '.';
+    {$IFDEF WITH_FORMATSETTINGS}FormatSettings.{$ENDIF}ThousandSeparator := ',';
+    if not CharInSet(Char(String(Str)[1]), ['0'..'9', '-']) then
+      AString := ConvertMoneyToFloat(String(Str))
+    else
+      AString := String(Str);
     Result := StrToFloatDef(AString, Def);
-  {$IFDEF WITH_FORMATSETTINGS}FormatSettings.{$ENDIF}DecimalSeparator := OldDecimalSeparator;
-  {$IFDEF WITH_FORMATSETTINGS}FormatSettings.{$ENDIF}ThousandSeparator := OldThousandSeparator;
+    {$IFDEF WITH_FORMATSETTINGS}FormatSettings.{$ENDIF}DecimalSeparator := OldDecimalSeparator;
+    {$IFDEF WITH_FORMATSETTINGS}FormatSettings.{$ENDIF}ThousandSeparator := OldThousandSeparator;
+  end;
+end;
+{$ENDIF}
+
+function SQLStrToFloatDef(Str: String; Def: Extended): Extended;
+var
+  OldDecimalSeparator: Char;
+  OldThousandSeparator: Char;
+  AString: String;
+begin
+  if Str = '' then
+    Result := Def
+  else
+  begin
+    OldDecimalSeparator := {$IFDEF WITH_FORMATSETTINGS}FormatSettings.{$ENDIF}DecimalSeparator;
+    OldThousandSeparator := {$IFDEF WITH_FORMATSETTINGS}FormatSettings.{$ENDIF}ThousandSeparator;
+    {$IFDEF WITH_FORMATSETTINGS}FormatSettings.{$ENDIF}DecimalSeparator := '.';
+    {$IFDEF WITH_FORMATSETTINGS}FormatSettings.{$ENDIF}ThousandSeparator := ',';
+    if not CharInSet(Char(Str[1]), ['0'..'9', '-']) then
+      AString := ConvertMoneyToFloat(Str)
+    else
+      AString := Str;
+    Result := StrToFloatDef(AString, Def);
+    {$IFDEF WITH_FORMATSETTINGS}FormatSettings.{$ENDIF}DecimalSeparator := OldDecimalSeparator;
+    {$IFDEF WITH_FORMATSETTINGS}FormatSettings.{$ENDIF}ThousandSeparator := OldThousandSeparator;
+  end;
 end;
 
 {**
@@ -569,6 +689,12 @@ begin
     SetString(Result, Buffer, Length);
 end;
 
+function BufferToBytes(Buffer: Pointer; Length: LongInt): TByteDynArray;
+begin
+  SetLength(Result, Length);
+  System.Move(Buffer^, Pointer(Result)^, Length);
+end;
+
 {**
   Converts a string into boolean value.
   @param Str a string value.
@@ -602,7 +728,7 @@ end;
 }
 function IsIpAddr(const Str: string): Boolean;
 var
-  I, N, M, Pos: Integer;
+  I, N, M, Pos, Val: Integer;
 begin
   if IsMatch('*.*.*.*', Str) then
   begin
@@ -615,8 +741,10 @@ begin
         Break;
       if Str[I] = '.' then
       begin
-       if StrToInt(Copy(Str, Pos, I - Pos)) > 255 then
-         Break;
+        {ticked #73/#24 patch }
+        Val := StrToIntDef(Copy(Str, Pos, I - Pos), -1);
+        if not ((Val > -1 ) and (Val < 256)) then
+          Break;
        Inc(N);
        Pos := I + 1;
       end;
@@ -736,11 +864,7 @@ end;
 }
 function FloatToSQLStr(Value: Extended): string;
 var
-  {$IFDEF DELPHI12_UP}
-  OldDecimalSeparator: WideChar;
-  {$ELSE}
   OldDecimalSeparator: Char;
-  {$ENDIF}
 begin
   OldDecimalSeparator := {$IFDEF WITH_FORMATSETTINGS}FormatSettings.{$ENDIF}DecimalSeparator;
   {$IFDEF WITH_FORMATSETTINGS}FormatSettings.{$ENDIF}DecimalSeparator := '.';
@@ -829,12 +953,70 @@ end;
   @return a converted array of bytes.
 }
 function StrToBytes(const Value: AnsiString): TByteDynArray;
+var L: Integer;
 begin
-  SetLength(Result, Length(Value));
+  L := Length(Value);
+  SetLength(Result, L);
   if Value <> '' then
-    Move(Value[1], Result[0], Length(Value))
+    Move(Value[1], Result[0], L)
 end;
 
+{$IFDEF WITH_RAWBYTESTRING}
+{**
+  Converts a UTF8String into an array of bytes.
+  @param Value a UTF8String to be converted.
+  @return a converted array of bytes.
+}
+function StrToBytes(const Value: UTF8String): TByteDynArray;
+var L: Integer;
+begin
+  L := Length(Value);
+  SetLength(Result, L);
+  if Value <> '' then
+    Move(Value[1], Result[0], L)
+end;
+{**
+  Converts a RawByteString into an array of bytes.
+  @param Value a RawByteString to be converted.
+  @return a converted array of bytes.
+}
+function StrToBytes(const Value: RawByteString): TByteDynArray;
+var L: Integer;
+begin
+  L := Length(Value);
+  SetLength(Result, L);
+  if Value <> '' then
+    Move(Value[1], Result[0], L)
+end;
+{$ENDIF}
+{**
+  Converts a WideString into an array of bytes.
+  @param Value a String to be converted.
+  @return a converted array of bytes.
+}
+function StrToBytes(const Value: WideString): TByteDynArray;
+var L: Integer;
+begin
+  L := Length(Value)*2;
+  SetLength(Result, L);
+  if Value <> '' then
+    Move(Value[1], Result[0], L)
+end;
+{**
+  Converts a String into an array of bytes.
+  @param Value a String to be converted.
+  @return a converted array of bytes.
+}
+{$IFDEF PWIDECHAR_IS_PUNICODECHAR}
+function StrToBytes(const Value: UnicodeString): TByteDynArray;
+var L: Integer;
+begin
+  L := Length(Value) * SizeOf(Char);
+  SetLength(Result, L);
+  if Value <> '' then
+    Move(Value[1], Result[0], L)
+end;
+{$ENDIF}
 {**
   Converts bytes into a variant representation.
   @param Value an array of bytes to be converted.
@@ -877,10 +1059,31 @@ function AnsiSQLDateToDateTime(const Value: string): TDateTime;
 var
   Year, Month, Day, Hour, Min, Sec, MSec: Word;
   Temp: string;
-  dotPosition:Integer;
+  DateFound: Boolean;
+
+  procedure ExtractTime(AString: String);
+  var dotPos: Integer;
+  begin
+    Hour := StrToIntDef(Copy(AString, 1, 2), 0);
+    Min := StrToIntDef(Copy(AString, 4, 2), 0);
+    Sec := StrToIntDef(Copy(AString, 7, 2), 0);
+
+    //it the time Length is bigger than 8, it can have milliseconds and it ...
+    dotPos := 0;
+    MSec := 0;
+    if Length(AString) > 8 then
+      dotPos :=Pos ('.', AString);
+
+    //if the dot are found, milliseconds are present.
+    if dotPos > 0 then begin
+      MSec := StrToIntDef(LeftStr(RightStr(AString,Length(AString)-dotPos)+'000',3),0);
+    end;
+  end;
 begin
   Temp := Value;
   Result := 0;
+  DateFound := False;
+
   if Length(Temp) >= 10 then
   begin
     Year := StrToIntDef(Copy(Temp, 1, 4), 0);
@@ -891,28 +1094,19 @@ begin
     begin
       try
         Result := EncodeDate(Year, Month, Day);
+        DateFound := True;
       except
       end;
     end;
     Temp := RightStr(Temp, Length(Temp)-11);
   end;
-  if Length(Temp) >= 8 then
+
+  if (Length(Temp) >= 8) or ( not DateFound ) then
   begin
-    Hour := StrToIntDef(Copy(Temp, 1, 2), 0);
-    Min := StrToIntDef(Copy(Temp, 4, 2), 0);
-    Sec := StrToIntDef(Copy(Temp, 7, 2), 0);
-
-    //it the time Length is bigger than 8, it can have milliseconds and it ...
-    dotPosition:=0;
-    MSec:=0;
-    if Length(Temp) > 8 then
-      dotPosition:=Pos('.', Temp);
-
-    //if the dot are found, milliseconds are present.
-    if dotPosition>0 then begin
-      MSec:=StrToIntDef(LeftStr(RightStr(Temp,Length(Temp)-dotPosition)+'000',3),0);
-    end;
-
+    if DateFound then
+      ExtractTime(Temp)
+    else
+      ExtractTime(Value);
     try
       if Result >= 0 then
         Result := Result + EncodeTime(Hour, Min, Sec, MSec)
@@ -923,22 +1117,22 @@ begin
   end;
 end;
 
-{** 
-  Converts Timestamp String to TDateTime 
-  @param Value a timestamp string. 
-  @return a decoded TDateTime value. 
-} 
-function TimestampStrToDateTime(const Value: string): TDateTime; 
-var 
-  Year, Month, Day, Hour, Min, Sec: Integer; 
-  StrLength, StrPos, StrPosPrev: Integer; 
-  // 
-  function CharMatch( matchchars: string ): boolean; 
-  // try to match as much characters as possible 
-  begin 
-    StrPosPrev:= StrPos; 
-    Result:= false; 
-    while StrPos<=StrLength do 
+{**
+  Converts Timestamp String to TDateTime
+  @param Value a timestamp string.
+  @return a decoded TDateTime value.
+}
+function TimestampStrToDateTime(const Value: string): TDateTime;
+var
+  Year, Month, Day, Hour, Min, Sec: Integer;
+  StrLength, StrPos, StrPosPrev: Integer;
+  //
+  function CharMatch( matchchars: string ): boolean;
+  // try to match as much characters as possible
+  begin
+    StrPosPrev:= StrPos;
+    Result:= false;
+    while StrPos<=StrLength do
        if pos(Value[StrPos], matchchars) > 0 then
          begin
             inc(StrPos);
@@ -946,51 +1140,51 @@ var
          end
        else
          break;
-  end; 
-begin 
-  Result := 0; 
-  StrPos:= 1; 
-  StrLength := Length(Value); 
+  end;
+begin
+  Result := 0;
+  StrPos:= 1;
+  StrLength := Length(Value);
 
   if not CharMatch('1234567890') then
      exit; // year
-  Year := StrToIntDef(Copy(Value, StrPosPrev, StrPos-StrPosPrev), 0); 
+  Year := StrToIntDef(Copy(Value, StrPosPrev, StrPos-StrPosPrev), 0);
   if not CharMatch('-/\') then
      exit;
   if not CharMatch('1234567890') then
      exit; // month
-  Month:= StrToIntDef(Copy(Value, StrPosPrev, StrPos-StrPosPrev), 0); 
+  Month:= StrToIntDef(Copy(Value, StrPosPrev, StrPos-StrPosPrev), 0);
   if not CharMatch('-/\') then
      exit;
   if not CharMatch('1234567890') then
      exit; // day
-  Day:= StrToIntDef(Copy(Value, StrPosPrev, StrPos-StrPosPrev), 0); 
+  Day:= StrToIntDef(Copy(Value, StrPosPrev, StrPos-StrPosPrev), 0);
   try
-    Result := EncodeDate(Year, Month, Day); 
+    Result := EncodeDate(Year, Month, Day);
   except
   end;
-  // 
+  //
   if not CharMatch(' ') then
      exit;
   if not CharMatch('1234567890') then
      exit; // hour
-  Hour := StrToIntDef(Copy(Value, StrPosPrev, StrPos-StrPosPrev), 0); 
+  Hour := StrToIntDef(Copy(Value, StrPosPrev, StrPos-StrPosPrev), 0);
   if not CharMatch('-/\') then
      exit;
   if not CharMatch('1234567890') then
      exit; // minute
-  Min:= StrToIntDef(Copy(Value, StrPosPrev, StrPos-StrPosPrev), 0); 
+  Min:= StrToIntDef(Copy(Value, StrPosPrev, StrPos-StrPosPrev), 0);
   if not CharMatch('-/\') then
      exit;
   if not CharMatch('1234567890') then
      exit; // second
-  Sec:= StrToIntDef(Copy(Value, StrPosPrev, StrPos-StrPosPrev), 0); 
+  Sec:= StrToIntDef(Copy(Value, StrPosPrev, StrPos-StrPosPrev), 0);
   try
-    Result := REsult + EncodeTime(Hour, Min, Sec,0); 
+    Result := REsult + EncodeTime(Hour, Min, Sec,0);
   except
   end;
 
-end; 
+end;
 
 
 {**
@@ -998,15 +1192,20 @@ end;
   @param Value an encoded TDateTime value.
   @return a  date and time string.
 }
-function DateTimeToAnsiSQLDate(Value: TDateTime): string;
-//var
-  //a, MSec:Word;
+function DateTimeToAnsiSQLDate(Value: TDateTime; WithMMSec: Boolean = False): string;
+var
+  a, MSec:Word;
 begin
-  //DecodeTime(Value,a,a,a,MSec);
-  //if MSec=0 then
+  if WithMMSec then
+  begin
+    DecodeTime(Value,a,a,a,MSec);
+    if MSec=0 then
+      Result := FormatDateTime('yyyy-mm-dd hh:nn:ss', Value)
+    else
+      Result := FormatDateTime('yyyy-mm-dd hh:nn:ss.zzz', Value);
+  end
+  else
     Result := FormatDateTime('yyyy-mm-dd hh:nn:ss', Value)
-  //else
-  //  Result := FormatDateTime('yyyy-mm-dd hh:nn:ss.zzz', Value);
 end;
 
 { TZSortedList }
@@ -1025,9 +1224,9 @@ begin
     J := R;
     P := SortList^[(L + R) shr 1];
     repeat
-      while SCompare(SortList^[I], P) < 0 do
+      while (I < R) And (SCompare(SortList^[I], P) < 0) do //check I against R too since the pointer can be nil
         Inc(I);
-      while SCompare(SortList^[J], P) > 0 do
+      while (J > L) And (SCompare(SortList^[J], P) > 0) do //check j against L too since the pointer can be nil
         Dec(J);
       if I <= J then
       begin
@@ -1265,8 +1464,8 @@ begin
   OldDecimalSeparator := {$IFDEF WITH_FORMATSETTINGS}FormatSettings.{$ENDIF}DecimalSeparator;
   OldThousandSeparator := {$IFDEF WITH_FORMATSETTINGS}FormatSettings.{$ENDIF}ThousandSeparator;
 
-  if AnsiStrPos(PAnsiChar(Value), PAnsiChar(AnsiString(OldDecimalSeparator))) = nil then
-    if AnsiStrPos(PAnsiChar(Value), PAnsiChar(AnsiString(OldThousandSeparator))) = nil then
+  if {$IFDEF WITH_ANSISTRINGPOS_DEPRECATED}AnsiStrings.{$ENDIF}AnsiStrPos(PAnsiChar(Value), PAnsiChar(AnsiString(OldDecimalSeparator))) = nil then
+    if {$IFDEF WITH_ANSISTRINGPOS_DEPRECATED}AnsiStrings.{$ENDIF}AnsiStrPos(PAnsiChar(Value), PAnsiChar(AnsiString(OldThousandSeparator))) = nil then
       //No DecimalSeparator and no ThousandSeparator
       Result := StrToFloat(String(Value))
     else
@@ -1277,12 +1476,12 @@ begin
       Result := StrToFloat(String(Value));
     end
   else
-    if AnsiStrPos(PAnsiChar(Value), PAnsiChar(AnsiString(OldThousandSeparator))) = nil then
+    if {$IFDEF WITH_ANSISTRINGPOS_DEPRECATED}AnsiStrings.{$ENDIF}AnsiStrPos(PAnsiChar(Value), PAnsiChar(AnsiString(OldThousandSeparator))) = nil then
       //default DecimalSepartor
       Result := StrToFloat(String(Value))
     else
-      if StrLen(AnsiStrPos(PAnsiChar(Value), PAnsiChar(AnsiString(OldDecimalSeparator)))) <
-        StrLen(AnsiStrPos(PAnsiChar(Value), PAnsiChar(AnsiString(OldThousandSeparator)))) then
+      if {$IFDEF WITH_STRLEN_DEPRECATED}AnsiStrings.{$ENDIF}StrLen({$IFDEF WITH_ANSISTRINGPOS_DEPRECATED}AnsiStrings.{$ENDIF}AnsiStrPos(PAnsiChar(Value), PAnsiChar(AnsiString(OldDecimalSeparator)))) <
+          {$IFDEF WITH_STRLEN_DEPRECATED}AnsiStrings.{$ENDIF}StrLen({$IFDEF WITH_ANSISTRINGPOS_DEPRECATED}AnsiStrings.{$ENDIF}AnsiStrPos(PAnsiChar(Value), PAnsiChar(AnsiString(OldThousandSeparator)))) then
           //default DecimalSepartor and ThousandSeparator
         Result := StrToFloat(String(Value))
       else
@@ -1306,5 +1505,75 @@ function ZStrToFloat(Value: AnsiString): Extended;
 begin
   Result := ZStrToFloat(PAnsiChar(Value));
 end;
+
+procedure ZSetString(const Src: PAnsiChar; var Dest: AnsiString);
+begin
+  if Assigned(Src) then
+    ZSetString(Src, {$IFDEF WITH_STRLEN_DEPRECATED}AnsiStrings.{$ENDIF}StrLen(Src), Dest)
+  else
+    Dest := '';
+end;
+
+procedure ZSetString(const Src: PAnsiChar; const Len: Cardinal; var Dest: AnsiString);
+begin
+  if ( Len = 0 ) or ( Src = nil ) then
+    Dest := ''
+  else
+  begin
+    SetLength(Dest, Len);
+    Move(Src^, PAnsiChar(Dest)^, Len);
+  end;
+end;
+
+procedure ZSetString(const Src: PAnsiChar; var Dest: UTF8String);
+begin
+  if Assigned(Src) then
+    ZSetString(Src, {$IFDEF WITH_STRLEN_DEPRECATED}AnsiStrings.{$ENDIF}StrLen(Src), Dest)
+  else
+    Dest := '';
+end;
+
+procedure ZSetString(const Src: PAnsiChar; const Len: Cardinal; var Dest: UTF8String);
+begin
+  if ( Len = 0 ) or ( Src = nil ) then
+    Dest := ''
+  else
+  begin
+    SetLength(Dest, Len);
+    Move(Src^, PAnsiChar(Dest)^, Len);
+  end;
+end;
+
+procedure ZSetString(const Src: PAnsiChar; const Len: Cardinal; var Dest: ZWideString); overload;
+begin
+  if ( Len = 0 ) or ( Src = nil ) then
+    Dest := ''
+  else
+  begin
+    SetLength(Dest, Len div 2);
+    Move(Src^, PWideChar(Dest)^, Len);
+  end;
+end;
+
+{$IFDEF WITH_RAWBYTESTRING}
+procedure ZSetString(const Src: PAnsiChar; var Dest: RawByteString);
+begin
+  if Assigned(Src) then
+    ZSetString(Src, {$IFDEF WITH_STRLEN_DEPRECATED}AnsiStrings.{$ENDIF}StrLen(Src), Dest)
+  else
+    Dest := '';
+end;
+
+procedure ZSetString(const Src: PAnsiChar; const Len: Cardinal; var Dest: RawByteString);
+begin
+  if ( Len = 0 ) or ( Src = nil ) then
+    Dest := ''
+  else
+  begin
+    SetLength(Dest, Len);
+    Move(Src^, PAnsiChar(Dest)^, Len);
+  end;
+end;
+{$ENDIF}
 
 end.

@@ -3,7 +3,7 @@
 {                 Zeos Database Objects                   }
 {       String tokenizing classes for Generic SQL         }
 {                                                         }
-{       Originally written by Sergey Seroukhov                  }
+{       Originally written by Sergey Seroukhov            }
 {                                                         }
 {*********************************************************}
 
@@ -40,12 +40,10 @@
 {                                                         }
 { The project web site is located on:                     }
 {   http://zeos.firmos.at  (FORUM)                        }
-{   http://zeosbugs.firmos.at (BUGTRACKER)                }
-{   svn://zeos.firmos.at/zeos/trunk (SVN Repository)      }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
 {                                                         }
 {   http://www.sourceforge.net/projects/zeoslib.          }
-{   http://www.zeoslib.sourceforge.net                    }
-{                                                         }
 {                                                         }
 {                                                         }
 {                                 Zeos Development Group. }
@@ -58,7 +56,8 @@ interface
 {$I ZParseSql.inc}
 
 uses
-  Classes, SysUtils, ZTokenizer, ZCompatibility, ZSysUtils;
+  Classes, {$IFDEF MSEgui}mclasses,{$ENDIF} SysUtils,
+  ZTokenizer, ZCompatibility;
 
 type
 
@@ -117,13 +116,13 @@ end;
 }
 constructor TZGenericSQLWordState.Create;
 begin
-  SetWordChars(#0, #255, False);
+  SetWordChars(#0, #191, False);
+  SetWordChars(#192, high(char), True);
   SetWordChars('a', 'z', True);
   SetWordChars('A', 'Z', True);
   SetWordChars('0', '9', True);
   SetWordChars('$', '$', True);
   SetWordChars('_', '_', True);
-  SetWordChars(Char($c0), Char($ff), True);
 end;
 
 const
@@ -165,6 +164,9 @@ end;
 
   @return a quoted string token from a reader
 }
+{$IFDEF FPC}
+  {$HINTS OFF}
+{$ENDIF}
 function TZGenericSQLQuoteState.NextToken(Stream: TStream;
   FirstChar: Char; Tokenizer: TZTokenizer): TZToken;
 var
@@ -271,6 +273,9 @@ begin
         Result.TokenType := ttTime;
       end;}
 end;
+{$IFDEF FPC}
+  {$HINTS ON}
+{$ENDIF}
 
 {**
   Encodes a string value.
@@ -324,12 +329,12 @@ begin
   SymbolState := TZGenericSQLSymbolState.Create;
   WordState := TZGenericSQLWordState.Create;
 
-  SetCharacterState(#0, #255, SymbolState);
-  SetCharacterState(#0, ' ', WhitespaceState);
+  SetCharacterState(#0, #32, WhitespaceState);
+  SetCharacterState(#33, #191, SymbolState);
+  SetCharacterState(#192, High(Char), WordState);
 
   SetCharacterState('a', 'z', WordState);
   SetCharacterState('A', 'Z', WordState);
-  SetCharacterState(Chr($c0),  Chr($ff), WordState);
   SetCharacterState('_', '_', WordState);
   SetCharacterState('$', '$', WordState);
 

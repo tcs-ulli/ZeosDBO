@@ -8,7 +8,7 @@
 {*********************************************************}
 
 {@********************************************************}
-{    Copyright (c) 1999-2006 Zeos Development Group       }
+{    Copyright (c) 1999-2012 Zeos Development Group       }
 {                                                         }
 { License Agreement:                                      }
 {                                                         }
@@ -40,12 +40,10 @@
 {                                                         }
 { The project web site is located on:                     }
 {   http://zeos.firmos.at  (FORUM)                        }
-{   http://zeosbugs.firmos.at (BUGTRACKER)                }
-{   svn://zeos.firmos.at/zeos/trunk (SVN Repository)      }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
 {                                                         }
 {   http://www.sourceforge.net/projects/zeoslib.          }
-{   http://www.zeoslib.sourceforge.net                    }
-{                                                         }
 {                                                         }
 {                                                         }
 {                                 Zeos Development Group. }
@@ -58,7 +56,15 @@ interface
 {$I ZComponent.inc}
 
 uses
-  SysUtils, Classes,  ZAbstractConnection;
+  SysUtils, Classes,  ZAbstractConnection, ZClasses;
+
+const
+  ZEOS_MAJOR_VERSION = ZClasses.ZEOS_MAJOR_VERSION;
+  ZEOS_MINOR_VERSION = ZClasses.ZEOS_MINOR_VERSION;
+  ZEOS_SUB_VERSION = ZClasses.ZEOS_SUB_VERSION;
+  ZEOS_STATUS = ZClasses.ZEOS_STATUS;
+  ZEOS_VERSION = ZClasses.ZEOS_VERSION;
+
 
 type
   {** Represents a component which wraps a connection to database. }
@@ -72,7 +78,6 @@ type
     property Protocol: string read GetProtocol write SetProtocol;
     property Catalog: string read FCatalog write FCatalog;
     property LibraryLocation: String read GetLibLocation write SetLibLocation;
-    property PreprepareSQL;
   end;
 
 implementation

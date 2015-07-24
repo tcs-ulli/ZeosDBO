@@ -8,7 +8,7 @@
 {*********************************************************}
 
 {@********************************************************}
-{    Copyright (c) 1999-2006 Zeos Development Group       }
+{    Copyright (c) 1999-2012 Zeos Development Group       }
 {                                                         }
 { License Agreement:                                      }
 {                                                         }
@@ -40,12 +40,10 @@
 {                                                         }
 { The project web site is located on:                     }
 {   http://zeos.firmos.at  (FORUM)                        }
-{   http://zeosbugs.firmos.at (BUGTRACKER)                }
-{   svn://zeos.firmos.at/zeos/trunk (SVN Repository)      }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
 {                                                         }
 {   http://www.sourceforge.net/projects/zeoslib.          }
-{   http://www.zeoslib.sourceforge.net                    }
-{                                                         }
 {                                                         }
 {                                                         }
 {                                 Zeos Development Group. }
@@ -58,7 +56,8 @@ interface
 {$I ZParseSql.inc}
 
 uses
-  Classes, ZSysUtils, ZTokenizer, ZGenericSqlToken, SysUtils, ZCompatibility;
+  Classes, {$IFDEF MSEgui}mclasses,{$ENDIF} SysUtils,
+  ZSysUtils, ZTokenizer, ZGenericSqlToken, ZCompatibility;
 
 type
 
@@ -104,12 +103,12 @@ type
   {** Implements a default tokenizer object. }
   TZMySQLTokenizer = class (TZTokenizer)
   public
-    function AnsiGetEscapeString(const EscapeString: AnsiString;
-      const EscapeMarkSequence: String = '~<|'): String; override;
     constructor Create;
   end;
 
 implementation
+
+uses StrUtils;
 
 { TZMySQLNumberState }
 
@@ -241,61 +240,38 @@ function TZMySQLQuoteState.NextToken(Stream: TStream; FirstChar: Char;
 const BackSlash = Char('\');
 var
   ReadChar: Char;
-  LastChar, TempLastChar: Char;
-  QuoteChar: Char;
-  QuoteCount: Integer;
+  LastChar: Char;
+  //QuoteChar: Char;
+  //QuoteCount: Integer;
 begin
   Result.Value := FirstChar;
-  QuoteCount := 1;
+  //QuoteCount := 1;
   If FirstChar = '`' then
     Result.TokenType := ttQuotedIdentifier
   Else
     Result.TokenType := ttQuoted;
 
-  QuoteChar := FirstChar;
+  //QuoteChar := FirstChar;
 
   LastChar := #0;
-  TempLastChar := #0;
 
   while Stream.Read(ReadChar, SizeOf(Char)) > 0 do
   begin
-    if ReadChar = QuoteChar then
-    begin
-      Inc(QuoteCount);
-      if (TempLastChar = BackSlash) and (ReadChar = QuoteChar ) then
-      begin
-        if Stream.Read(TempLastChar, SizeOf(Char)) > 0 then
-        begin
-          if not ( TempLastChar = QuoteChar ) then
-          begin
-            Inc(QuoteCount);
-            Result.TokenType := ttEscapedQuoted;
-          end;
-          Stream.Seek(-SizeOf(Char), soFromCurrent)
-        end
-        else
-        begin
-          Inc(QuoteCount);
-        end;
-      end;
-    end else
-      if (ReadChar = BackSlash) and (TempLastChar  = BackSlash) then
-        Result.TokenType := ttEscapedQuoted
-      else
-        if ReadChar = BackSlash then
-          TempLastChar := ReadChar
-        else
-          TempLastChar := #0;
-
+    //if ReadChar = QuoteChar then Inc(QuoteCount);
     if (LastChar = FirstChar) and (ReadChar <> FirstChar) then
-      if QuoteCount mod 2 = 0 then
+    begin
+      //if QuoteCount mod 2 = 0 then // only valid for Pascal AnsiQuoted/QuotedStr
       begin
         Stream.Seek(-SizeOf(Char), soFromCurrent);
         Break;
       end;
+    end;
     Result.Value := Result.Value + ReadChar;
     if LastChar = BackSlash then
+//    begin
+//      if Readchar = FirstChar then Inc(QuoteCount);  //Escaped single Quote (A QuoteChar instead of FirstChar would be better..)
       LastChar := #0
+//    end
     else if (LastChar = FirstChar) and (ReadChar = FirstChar) then
       LastChar := #0
     else LastChar := ReadChar;
@@ -426,57 +402,16 @@ end;
 }
 constructor TZMySQLWordState.Create;
 begin
-  SetWordChars(#0, #255, False);
+  SetWordChars(#0, #191, False);
+  SetWordChars(#192, high(char), True);
   SetWordChars('a', 'z', True);
   SetWordChars('A', 'Z', True);
   SetWordChars('0', '9', True);
   SetWordChars('$', '$', True);
   SetWordChars('_', '_', True);
-  SetWordChars(Char($c0), Char($ff), True);
 end;
 
 { TZMySQLTokenizer }
-
-{**
-  Converts a Binary-String to an detectable String.
-  @param BinaryString is the Binary-data-string
-  @param  BinaryMarkSequence represents the detectable String
-  @Result give's out the detectable String
-}
-function TZMySQLTokenizer.AnsiGetEscapeString(const EscapeString: AnsiString;
-  const EscapeMarkSequence: String = '~<|'): String;
-var
-  Temp: String;
-  function GetReverted: String;
-  var
-    I: Integer;
-  begin
-    for I := Length(Self.EscapeMarkSequence) downto 1 do
-      Result := Result + Copy(EscapeMarkSequence, i, 1);
-  end;
-begin
-  Self.EscapeMarkSequence := EscapeMarkSequence; //Checks if BinaryMarkSequence is valid
-  Temp := EscapeMarkSequence+IntToStr(Length(EscapeString))+GetReverted;
-
-  Result := String(EscapeString);
-  if Length(EscapeString) > 1 then //Check for Quotes
-  begin
-    if not ( EscapeString[1] = '''' ) then
-      Result := ''''+Result;
-    if not ( EscapeString[Length(EscapeString)] = '''' ) then
-      Result := Result+'''';
-  end
-  else
-    if Length(EscapeString) = 1 then
-      Result := QuotedStr(Result)
-    else
-    begin
-      Result := 'NULL';
-      Exit;
-    end;
-
-  Result := Temp+Result+Temp;
-end;
 
 {**
   Constructs a tokenizer with a default state table (as
@@ -487,19 +422,18 @@ begin
   WhitespaceState := TZWhitespaceState.Create;
 
   EscapeState := TZEscapeState.Create;
-  EscapeMarkSequence := '~<|'; //Defaults
   SymbolState := TZMySQLSymbolState.Create;
   NumberState := TZMySQLNumberState.Create;
   QuoteState := TZMySQLQuoteState.Create;
   WordState := TZMySQLWordState.Create;
   CommentState := TZMySQLCommentState.Create;
 
-  SetCharacterState(#0, #255, SymbolState);
-  SetCharacterState(#0, ' ', WhitespaceState);
+  SetCharacterState(#0, #32, WhitespaceState);
+  SetCharacterState(#33, #191, SymbolState);
+  SetCharacterState(#192, High(Char), WordState);
 
   SetCharacterState('a', 'z', WordState);
   SetCharacterState('A', 'Z', WordState);
-  SetCharacterState(Chr($c0),  Chr($ff), WordState);
   SetCharacterState('_', '_', WordState);
   SetCharacterState('$', '$', WordState);
 

@@ -8,7 +8,7 @@
 {*********************************************************}
 
 {@********************************************************}
-{    Copyright (c) 1999-2006 Zeos Development Group       }
+{    Copyright (c) 1999-2012 Zeos Development Group       }
 {                                                         }
 { License Agreement:                                      }
 {                                                         }
@@ -40,12 +40,10 @@
 {                                                         }
 { The project web site is located on:                     }
 {   http://zeos.firmos.at  (FORUM)                        }
-{   http://zeosbugs.firmos.at (BUGTRACKER)                }
-{   svn://zeos.firmos.at/zeos/trunk (SVN Repository)      }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
 {                                                         }
 {   http://www.sourceforge.net/projects/zeoslib.          }
-{   http://www.zeoslib.sourceforge.net                    }
-{                                                         }
 {                                                         }
 {                                                         }
 {                                 Zeos Development Group. }
@@ -57,7 +55,8 @@ interface
 
 {$I ZParseSql.inc}
 
-uses Classes, Contnrs, ZClasses, ZTokenizer, ZSelectSchema, ZCompatibility;
+uses Classes, {$IFDEF MSEgui}mclasses,{$ENDIF} Contnrs,
+  ZClasses, ZTokenizer, ZSelectSchema, ZCompatibility;
 
 type
 
@@ -480,6 +479,8 @@ var
   CurrentUpper: string;
   ReadField: Boolean;
   HadWhitespace : Boolean;
+  LastWasBracketSection: Boolean;
+  CurrentUpperIs_AS: Boolean; //place holder to avoid compare the token twice
 
   procedure ClearElements;
   begin
@@ -489,6 +490,51 @@ var
     Field := '';
     Alias := '';
     ReadField := True;
+    LastWasBracketSection := False;
+  end;
+
+  { improve fail of fieldname detection if whitespaces and non ttWord or ttQuotedIdentifier previously detected
+    f.e.: select first 100 skip 10 field1, field2}
+  function CheckNextTokenForCommaAndWhiteSpaces: Boolean;
+  var
+    CurrentValue: string;
+    CurrentType: TZTokenType;
+    I: Integer;
+  begin
+    Result := False;
+    I := 1;
+    //Check to right side to avoid wrong alias detection
+    while SelectTokens.Count > TokenIndex +i do
+    begin
+      CurrentValue := SelectTokens[TokenIndex+i];
+      CurrentType := TZTokenType({$IFDEF FPC}Pointer({$ENDIF}
+        SelectTokens.Objects[TokenIndex+i]{$IFDEF FPC}){$ENDIF});
+      if CurrentType in [ttWhiteSpace, ttSymbol] then
+      begin
+        if (CurrentValue = ',') then
+        begin
+          Result := True;
+          Break;
+        end;
+      end
+      else
+        break;
+      Inc(i);
+    end;
+
+    if Result then
+    begin
+      i := 1;
+      while Tokenindex - i > 0 do
+        if TZTokenType({$IFDEF FPC}Pointer({$ENDIF}
+            SelectTokens.Objects[TokenIndex-i]{$IFDEF FPC}){$ENDIF}) = ttWhiteSpace then
+          Inc(i)
+        else
+          Break;
+      Result := Result and (TokenIndex - I > 0) and
+          not ( TZTokenType({$IFDEF FPC}Pointer({$ENDIF}
+        SelectTokens.Objects[TokenIndex-i]{$IFDEF FPC}){$ENDIF}) = ttWord );
+    end;
   end;
 
 begin
@@ -504,10 +550,9 @@ begin
       SelectTokens.Objects[TokenIndex]{$IFDEF FPC}){$ENDIF});
 
     { Switches to alias part. }
-    if (CurrentType = ttWhitespace) or (CurrentUpper = 'AS') then
-    begin
-      ReadField := ReadField and (Field = '') and (CurrentUpper <> 'AS');
-    end
+    CurrentUpperIs_AS := (CurrentUpper = 'AS');
+    if (CurrentType = ttWhitespace) or CurrentUpperIs_AS then
+      ReadField := ReadField and (Field = '') and not CurrentUpperIs_AS
     { Reads field. }
     else if ReadField and ((CurrentType = ttWord) or (CurrentType = ttQuotedIdentifier) or
       (CurrentValue = '*')) then
@@ -522,18 +567,14 @@ begin
     begin
     end
     { Reads alias. }
-    else if not ReadField and (CurrentType = ttWord) then
-    begin
-      Alias := CurrentValue;
-    end
+    else if not ReadField and (CurrentType in [ttWord, ttQuotedIdentifier]) then
+      Alias := CurrentValue
     { Ends field reading. }
     else if CurrentValue = ',' then
     begin
       if Field <> '' then
-      begin
         SelectSchema.AddField(TZFieldRef.Create(True, Catalog, Schema, Table,
           Field, Alias, nil));
-      end;
       ClearElements;
     end
     { Skips till the next field. }
@@ -545,12 +586,18 @@ begin
       begin
         CurrentValue := SelectTokens[TokenIndex];
         if CurrentValue = '(' then
-          SkipBracketTokens(SelectTokens, TokenIndex)
+        begin
+          SkipBracketTokens(SelectTokens, TokenIndex);
+          LastWasBracketSection := True;
+        end
         else begin
           CurrentType := TZTokenType({$IFDEF FPC}Pointer({$ENDIF}
             SelectTokens.Objects[TokenIndex]{$IFDEF FPC}){$ENDIF});
           if HadWhitespace and (CurrentType in [ttWord, ttQuotedIdentifier]) then
-            Alias := CurrentValue
+            if not LastWasBracketSection and CheckNextTokenForCommaAndWhiteSpaces then
+              Break
+            else
+              Alias := CurrentValue
           else if not (CurrentType in [ttWhitespace, ttComment])
             and (CurrentValue <> ',') then
               Alias := ''
@@ -561,8 +608,7 @@ begin
       end;
       if Alias <> '' then
       begin
-        SelectSchema.AddField(TZFieldRef.Create(False, '', '', '', '',
-          Alias, nil));
+        SelectSchema.AddField(TZFieldRef.Create(False, '', '', '', '', Alias, nil));
         ClearElements;
       end;
       Dec(TokenIndex); // go back 1 token(Because of Inc in next lines)

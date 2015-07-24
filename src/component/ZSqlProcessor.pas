@@ -8,7 +8,7 @@
 {*********************************************************}
 
 {@********************************************************}
-{    Copyright (c) 1999-2006 Zeos Development Group       }
+{    Copyright (c) 1999-2012 Zeos Development Group       }
 {                                                         }
 { License Agreement:                                      }
 {                                                         }
@@ -40,12 +40,10 @@
 {                                                         }
 { The project web site is located on:                     }
 {   http://zeos.firmos.at  (FORUM)                        }
-{   http://zeosbugs.firmos.at (BUGTRACKER)                }
-{   svn://zeos.firmos.at/zeos/trunk (SVN Repository)      }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
 {                                                         }
 {   http://www.sourceforge.net/projects/zeoslib.          }
-{   http://www.zeoslib.sourceforge.net                    }
-{                                                         }
 {                                                         }
 {                                                         }
 {                                 Zeos Development Group. }
@@ -57,8 +55,8 @@ interface
 
 {$I ZComponent.inc}
 
-uses ZCompatibility, Classes, SysUtils, DB, ZDbcIntfs, ZConnection,
-  ZScriptParser, ZSqlStrings, Types;
+uses Types, Classes, SysUtils, {$IFDEF MSEgui}mclasses, mdb{$ELSE}DB{$ENDIF},
+  ZDbcIntfs, ZAbstractConnection, ZScriptParser, ZSqlStrings, ZCompatibility;
 
 type
 
@@ -88,7 +86,7 @@ type
     FParams: TParams;
     FScript: TZSQLStrings;
     FScriptParser: TZSQLScriptParser;
-    FConnection: TZConnection;
+    FConnection: TZAbstractConnection;
     FBeforeExecute: TZProcessorNotifyEvent;
     FAfterExecute: TZProcessorNotifyEvent;
     FOnError: TZProcessorErrorEvent;
@@ -98,7 +96,7 @@ type
     procedure SetScript(Value: TStrings);
     function GetStatementCount: Integer;
     function GetStatement(Index: Integer): string;
-    procedure SetConnection(Value: TZConnection);
+    procedure SetConnection(Value: TZAbstractConnection);
     function GetDelimiterType: TZDelimiterType;
     procedure SetDelimiterType(Value: TZDelimiterType);
     function GetDelimiter: string;
@@ -144,7 +142,7 @@ type
       default ':';
     property Params: TParams read FParams write SetParams;
     property Script: TStrings read GetScript write SetScript;
-    property Connection: TZConnection read FConnection write SetConnection;
+    property Connection: TZAbstractConnection read FConnection write SetConnection;
     property DelimiterType: TZDelimiterType read GetDelimiterType
       write SetDelimiterType default dtDefault;
     property Delimiter: string read GetDelimiter write SetDelimiter;
@@ -218,7 +216,7 @@ end;
   Sets a new SQL connection component.
   @param Value am SQL connection component.
 }
-procedure TZSQLProcessor.SetConnection(Value: TZConnection);
+procedure TZSQLProcessor.SetConnection(Value: TZAbstractConnection);
 begin
   if FConnection <> Value then
   begin

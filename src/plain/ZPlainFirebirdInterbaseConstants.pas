@@ -8,7 +8,7 @@
 {*********************************************************}
 
 {@********************************************************}
-{    Copyright (c) 1999-2006 Zeos Development Group       }
+{    Copyright (c) 1999-2012 Zeos Development Group       }
 {                                                         }
 { License Agreement:                                      }
 {                                                         }
@@ -40,12 +40,10 @@
 {                                                         }
 { The project web site is located on:                     }
 {   http://zeos.firmos.at  (FORUM)                        }
-{   http://zeosbugs.firmos.at (BUGTRACKER)                }
-{   svn://zeos.firmos.at/zeos/trunk (SVN Repository)      }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
 {                                                         }
 {   http://www.sourceforge.net/projects/zeoslib.          }
-{   http://www.zeoslib.sourceforge.net                    }
-{                                                         }
 {                                                         }
 {                                                         }
 {                                 Zeos Development Group. }
@@ -105,31 +103,438 @@ const
   SQL_BOOLEAN                    = 590;
   SQL_DATE                       = SQL_TIMESTAMP;
 
-  { SQL types definitions from RDB$FIELDS}
-  RDB_VARCHAR = 37;
-  RDB_VARCHAR2 = 38;
-  RDB_CSTRING = 40;
-  RDB_CSTRING2 = 41;
-  RDB_CHAR = 14;
-  RDB_CHAR2 = 15;
-  RDB_D_FLOAT = 11;
-  RDB_DOUBLE = 27;
-  RDB_FLOAT = 10;
-  RDB_INT64 = 16;
-  RDB_QUAD = 9;
-  RDB_BLOB_ID = 45;
-  RDB_INTEGER = 8;
-  RDB_SMALLINT = 7;
-  RDB_DATE = 12;
-  RDB_TIME = 13;
-  RDB_TIMESTAMP = 35;
-  RDB_BOOLEAN = 17;
-  RDB_BLOB = 261;
+(* #define BLR_WORD(x)	UCHAR(x), UCHAR((x) >> 8)
+
+ *  WARNING: if you add a new BLR representing a data type, and the value
+ *           is greater than the numerically greatest value which now
+ *           represents a data type, you must change the define for
+ *           DTYPE_BLR_MAX in jrd/align.h, and add the necessary entries
+ *           to all the arrays in that file.
+ *)
+
+  blr_text            = 14;
+  blr_text2           = 15;
+  blr_short           = 7;
+  blr_long            = 8;
+  blr_quad            = 9;
+  blr_float           = 10;
+  blr_double          = 27;
+  blr_d_float         = 11;
+  blr_timestamp       = 35;
+  blr_varying         = 37;
+  blr_varying2        = 38;
+  blr_blob            = 261;
+  blr_cstring         = 40;
+  blr_cstring2        = 41; // added in 3.2 JPN
+  blr_blob_id         = 45; // added from gds.h
+  blr_sql_date        = 12;
+  blr_sql_time        = 13;
+  blr_int64           = 16;
+  blr_blob2           = 17;
+  blr_domain_name     = 18;
+  blr_domain_name2    = 19;
+  blr_not_nullable    = 20;
+  blr_column_name     = 21;
+  blr_column_name2    = 22;
+  blr_bool            = 23;
+
+  // Historical alias for pre V6 applications
+  blr_date		      = blr_timestamp;
+(*
+  // first sub parameter for blr_domain_name[2]
+  blr_domain_type_of  = 0;
+  blr_domain_full     = 1;
+
+  blr_inner           = 0;
+  blr_left            = 1;
+  blr_right           = 2;
+  blr_full            = 3;
+
+  blr_gds_code        = 0;
+  blr_sql_code        = 1;
+  blr_exception       = 2;
+  blr_trigger_code    = 3;
+  blr_default_code    = 4;
+  blr_raise           = 5;
+  blr_exception_msg   = 6;
+  blr_exception_params= 7;
+
+  blr_version4        = 4;
+  blr_version5		(unsigned char)5
+//#define blr_version6		(unsigned char)6
+#define blr_eoc			(unsigned char)76
+#define blr_end			(unsigned char)255
+
+#define blr_assignment		(unsigned char)1
+#define blr_begin		(unsigned char)2
+#define blr_dcl_variable  	(unsigned char)3	/* added from gds.h */
+#define blr_message		(unsigned char)4
+#define blr_erase		(unsigned char)5
+#define blr_fetch		(unsigned char)6
+#define blr_for			(unsigned char)7
+#define blr_if			(unsigned char)8
+#define blr_loop		(unsigned char)9
+#define blr_modify		(unsigned char)10
+#define blr_handler		(unsigned char)11
+#define blr_receive		(unsigned char)12
+#define blr_select		(unsigned char)13
+#define blr_send		(unsigned char)14
+#define blr_store		(unsigned char)15
+#define blr_label		(unsigned char)17
+#define blr_leave		(unsigned char)18
+#define blr_store2		(unsigned char)19
+#define blr_post		(unsigned char)20
+#define blr_literal		(unsigned char)21
+#define blr_dbkey		(unsigned char)22
+#define blr_field		(unsigned char)23
+#define blr_fid			(unsigned char)24
+#define blr_parameter		(unsigned char)25
+#define blr_variable		(unsigned char)26
+#define blr_average		(unsigned char)27
+#define blr_count		(unsigned char)28
+#define blr_maximum		(unsigned char)29
+#define blr_minimum		(unsigned char)30
+#define blr_total		(unsigned char)31
+
+// unused codes: 32..33
+
+#define blr_add			(unsigned char)34
+#define blr_subtract		(unsigned char)35
+#define blr_multiply		(unsigned char)36
+#define blr_divide		(unsigned char)37
+#define blr_negate		(unsigned char)38
+#define blr_concatenate		(unsigned char)39
+#define blr_substring		(unsigned char)40
+#define blr_parameter2		(unsigned char)41
+#define blr_from		(unsigned char)42
+#define blr_via			(unsigned char)43
+#define blr_user_name   	(unsigned char)44	/* added from gds.h */
+#define blr_null		(unsigned char)45
+
+#define blr_equiv			(unsigned char)46
+#define blr_eql			(unsigned char)47
+#define blr_neq			(unsigned char)48
+#define blr_gtr			(unsigned char)49
+#define blr_geq			(unsigned char)50
+#define blr_lss			(unsigned char)51
+#define blr_leq			(unsigned char)52
+#define blr_containing		(unsigned char)53
+#define blr_matching		(unsigned char)54
+#define blr_starting		(unsigned char)55
+#define blr_between		(unsigned char)56
+#define blr_or			(unsigned char)57
+#define blr_and			(unsigned char)58
+#define blr_not			(unsigned char)59
+#define blr_any			(unsigned char)60
+#define blr_missing		(unsigned char)61
+#define blr_unique		(unsigned char)62
+#define blr_like		(unsigned char)63
+
+// unused codes: 64..66
+
+#define blr_rse			(unsigned char)67
+#define blr_first		(unsigned char)68
+#define blr_project		(unsigned char)69
+#define blr_sort		(unsigned char)70
+#define blr_boolean		(unsigned char)71
+#define blr_ascending		(unsigned char)72
+#define blr_descending		(unsigned char)73
+#define blr_relation		(unsigned char)74
+#define blr_rid			(unsigned char)75
+#define blr_union		(unsigned char)76
+#define blr_map			(unsigned char)77
+#define blr_group_by		(unsigned char)78
+#define blr_aggregate		(unsigned char)79
+#define blr_join_type		(unsigned char)80
+
+// unused codes: 81..82
+
+#define blr_agg_count		(unsigned char)83
+#define blr_agg_max		(unsigned char)84
+#define blr_agg_min		(unsigned char)85
+#define blr_agg_total		(unsigned char)86
+#define blr_agg_average		(unsigned char)87
+#define	blr_parameter3		(unsigned char)88	/* same as Rdb definition */
+/* unsupported
+#define blr_run_max		(unsigned char)89
+#define blr_run_min		(unsigned char)90
+#define blr_run_total		(unsigned char)91
+#define blr_run_average		(unsigned char)92
+*/
+#define blr_agg_count2		(unsigned char)93
+#define blr_agg_count_distinct	(unsigned char)94
+#define blr_agg_total_distinct	(unsigned char)95
+#define blr_agg_average_distinct (unsigned char)96
+
+// unused codes: 97..99
+
+#define blr_function		(unsigned char)100
+#define blr_gen_id		(unsigned char)101
+///#define blr_prot_mask		(unsigned char)102
+#define blr_upcase		(unsigned char)103
+///#define blr_lock_state		(unsigned char)104
+#define blr_value_if		(unsigned char)105
+#define blr_matching2		(unsigned char)106
+#define blr_index		(unsigned char)107
+#define blr_ansi_like		(unsigned char)108
+#define blr_scrollable		(unsigned char) 109
+
+// unused codes: 110..117
+
+#define blr_run_count		(unsigned char)118	/* changed from 88 to avoid conflict with blr_parameter3 */
+#define blr_rs_stream		(unsigned char)119
+#define blr_exec_proc		(unsigned char)120
+
+// unused codes: 121..123
+
+#define blr_procedure		(unsigned char)124
+#define blr_pid			(unsigned char)125
+#define blr_exec_pid		(unsigned char)126
+#define blr_singular		(unsigned char)127
+#define blr_abort		(unsigned char)128
+#define blr_block	 	(unsigned char)129
+#define blr_error_handler	(unsigned char)130
+
+#define blr_cast		(unsigned char)131
+
+#define blr_pid2			(unsigned char)132
+#define blr_procedure2		(unsigned char)133
+
+#define blr_start_savepoint	(unsigned char)134
+#define blr_end_savepoint	(unsigned char)135
+
+// unused codes: 136..138
+
+#define blr_plan		(unsigned char)139	/* access plan items */
+#define blr_merge		(unsigned char)140
+#define blr_join		(unsigned char)141
+#define blr_sequential		(unsigned char)142
+#define blr_navigational	(unsigned char)143
+#define blr_indices		(unsigned char)144
+#define blr_retrieve		(unsigned char)145
+
+#define blr_relation2		(unsigned char)146
+#define blr_rid2		(unsigned char)147
+
+// unused codes: 148..149
+
+#define blr_set_generator       (unsigned char)150
+
+#define blr_ansi_any		(unsigned char)151   /* required for NULL handling */
+#define blr_exists		(unsigned char)152   /* required for NULL handling */
+
+// unused codes: 153
+
+#define blr_record_version	(unsigned char)154	/* get tid of record */
+#define blr_stall		(unsigned char)155	/* fake server stall */
+
+// unused codes: 156..157
+
+#define blr_ansi_all		(unsigned char)158   /* required for NULL handling */
+
+#define blr_extract		(unsigned char)159
+
+/* sub parameters for blr_extract */
+
+#define blr_extract_year		(unsigned char)0
+#define blr_extract_month		(unsigned char)1
+#define blr_extract_day			(unsigned char)2
+#define blr_extract_hour		(unsigned char)3
+#define blr_extract_minute		(unsigned char)4
+#define blr_extract_second		(unsigned char)5
+#define blr_extract_weekday		(unsigned char)6
+#define blr_extract_yearday		(unsigned char)7
+#define blr_extract_millisecond	(unsigned char)8
+#define blr_extract_week		(unsigned char)9
+
+#define blr_current_date	(unsigned char)160
+#define blr_current_timestamp	(unsigned char)161
+#define blr_current_time	(unsigned char)162
+
+/* These codes reuse BLR code space */
+
+#define blr_post_arg		(unsigned char)163
+#define blr_exec_into		(unsigned char)164
+#define blr_user_savepoint	(unsigned char)165
+#define blr_dcl_cursor		(unsigned char)166
+#define blr_cursor_stmt		(unsigned char)167
+#define blr_current_timestamp2	(unsigned char)168
+#define blr_current_time2	(unsigned char)169
+#define blr_agg_list		(unsigned char)170
+#define blr_agg_list_distinct	(unsigned char)171
+#define blr_modify2			(unsigned char)172
+
+// unused codes: 173
+
+/* FB 1.0 specific BLR */
+
+#define blr_current_role	(unsigned char)174
+#define blr_skip		(unsigned char)175
+
+/* FB 1.5 specific BLR */
+
+#define blr_exec_sql		(unsigned char)176
+#define blr_internal_info	(unsigned char)177
+#define blr_nullsfirst		(unsigned char)178
+#define blr_writelock		(unsigned char)179
+#define blr_nullslast       (unsigned char)180
+
+/* FB 2.0 specific BLR */
+
+#define blr_lowcase			(unsigned char)181
+#define blr_strlen			(unsigned char)182
+
+/* sub parameter for blr_strlen */
+#define blr_strlen_bit		(unsigned char)0
+#define blr_strlen_char		(unsigned char)1
+#define blr_strlen_octet	(unsigned char)2
+
+#define blr_trim			(unsigned char)183
+
+/* first sub parameter for blr_trim */
+#define blr_trim_both		(unsigned char)0
+#define blr_trim_leading	(unsigned char)1
+#define blr_trim_trailing	(unsigned char)2
+
+/* second sub parameter for blr_trim */
+#define blr_trim_spaces		(unsigned char)0
+#define blr_trim_characters	(unsigned char)1
+
+/* These codes are actions for user-defined savepoints */
+
+#define blr_savepoint_set	(unsigned char)0
+#define blr_savepoint_release	(unsigned char)1
+#define blr_savepoint_undo	(unsigned char)2
+#define blr_savepoint_release_single	(unsigned char)3
+
+/* These codes are actions for cursors */
+
+#define blr_cursor_open			(unsigned char)0
+#define blr_cursor_close		(unsigned char)1
+#define blr_cursor_fetch		(unsigned char)2
+#define blr_cursor_fetch_scroll	(unsigned char)3
+
+/* scroll options */
+
+#define blr_scroll_forward		(unsigned char)0
+#define blr_scroll_backward		(unsigned char)1
+#define blr_scroll_bof			(unsigned char)2
+#define blr_scroll_eof			(unsigned char)3
+#define blr_scroll_absolute		(unsigned char)4
+#define blr_scroll_relative		(unsigned char)5
+
+/* FB 2.1 specific BLR */
+
+#define blr_init_variable	(unsigned char)184
+#define blr_recurse			(unsigned char)185
+#define blr_sys_function	(unsigned char)186
+
+// FB 2.5 specific BLR
+
+#define blr_auto_trans		(unsigned char)187
+#define blr_similar			(unsigned char)188
+#define blr_exec_stmt		(unsigned char)189
+
+// subcodes of blr_exec_stmt
+#define blr_exec_stmt_inputs		(unsigned char) 1	// input parameters count
+#define blr_exec_stmt_outputs		(unsigned char) 2	// output parameters count
+#define blr_exec_stmt_sql			(unsigned char) 3
+#define blr_exec_stmt_proc_block	(unsigned char) 4
+#define blr_exec_stmt_data_src		(unsigned char) 5
+#define blr_exec_stmt_user			(unsigned char) 6
+#define blr_exec_stmt_pwd			(unsigned char) 7
+#define blr_exec_stmt_tran    		(unsigned char) 8	// not implemented yet
+#define blr_exec_stmt_tran_clone	(unsigned char) 9	// make transaction parameters equal to current transaction
+#define blr_exec_stmt_privs			(unsigned char) 10
+#define blr_exec_stmt_in_params		(unsigned char) 11	// not named input parameters
+#define blr_exec_stmt_in_params2	(unsigned char) 12	// named input parameters
+#define blr_exec_stmt_out_params	(unsigned char) 13	// output parameters
+#define blr_exec_stmt_role			(unsigned char) 14
+
+#define blr_stmt_expr				(unsigned char) 190
+#define blr_derived_expr			(unsigned char) 191
+
+// FB 3.0 specific BLR
+
+#define blr_procedure3				(unsigned char) 192
+#define blr_exec_proc2				(unsigned char) 193
+#define blr_function2				(unsigned char) 194
+#define blr_window					(unsigned char) 195
+#define blr_partition_by			(unsigned char) 196
+#define blr_continue_loop			(unsigned char) 197
+#define blr_procedure4				(unsigned char) 198
+#define blr_agg_function			(unsigned char) 199
+#define blr_substring_similar		(unsigned char) 200
+#define blr_bool_as_value			(unsigned char) 201
+#define blr_coalesce				(unsigned char) 202
+#define blr_decode					(unsigned char) 203
+#define blr_exec_subproc			(unsigned char) 204
+#define blr_subproc_decl			(unsigned char) 205
+#define blr_subproc					(unsigned char) 206
+#define blr_subfunc_decl			(unsigned char) 207
+#define blr_subfunc					(unsigned char) 208
+#define blr_record_version2			(unsigned char) 209
+
+#endif // JRD_BLR_H
+*)
+
   { SQL subtypes definitions from RDB$FIELDS}
   CS_NONE = 0;
   CS_BINARY = 1;
   CS_ASCII = 2;
   CS_UNICODE_FSS = 3;
+  CS_UTF8 = 4;
+  CS_SJIS_0208 = 5;
+  CS_EUCJ_0208 = 6;
+  CS_DOS737 = 9;
+  CS_DOS437 = 10;
+  CS_DOS850 = 11;
+  CS_DOS865 = 12;
+  CS_DOS860 = 13;
+  CS_DOS863 = 14;
+  CS_DOS775 = 15;
+  CS_DOS858 = 16;
+  CS_DOS862 = 17;
+  CS_DOS864 = 18;
+  CS_NEXT = 19;
+
+  CS_ISO8859_1 = 21;
+  CS_ISO8859_2 = 22;
+  CS_ISO8859_3 = 23;
+  CS_ISO8859_4 = 24;
+
+  CS_ISO8859_5 = 35;
+  CS_ISO8859_6 = 36;
+  CS_ISO8859_7 = 37;
+  CS_ISO8859_8 = 38;
+  CS_ISO8859_9 = 39;
+  CS_ISO8859_13 = 40;
+  CS_KSC_5601 = 44;
+  CS_DOS852 = 45;
+  CS_DOS857 = 46;
+  CS_DOS861 = 47;
+  CS_DOS866 = 48;
+  CS_DOS869 = 49;
+  CS_CYRL = 50;
+  CS_WIN1250 = 51;
+  CS_WIN1251 = 52;
+  CS_WIN1252 = 53;
+  CS_WIN1253 = 54;
+  CS_WIN1254 = 55;
+
+  CS_WIN1255 = 58;
+  CS_WIN1256 = 59;
+  CS_WIN1257 = 60;
+  CS_BIG_5 = 56;
+  CS_GB_2312 = 57;
+  CS_KOI8R = 63;
+  CS_KOI8U = 64;
+  CS_WIN1258 = 65;
+  CS_TIS620 = 66;
+  CS_GBK = 67;
+  CS_CP943C = 68;
+  CS_GB18030 = 69;
+
   CS_METADATA = CS_UNICODE_FSS;
 
   RDB_NUMBERS_NONE = 0;
@@ -152,12 +557,14 @@ const
   isc_blob_debug_info            = 9;
   isc_blob_max_predefined_subtype= 10;
 
+{ > FB2.5 down}
   { the range 20-30 is reserved for dBASE and Paradox types }
   isc_blob_formatted_memo        = 20;
   isc_blob_paradox_ole           = 21;
   isc_blob_graphic               = 22;
   isc_blob_dbase_ole             = 23;
   isc_blob_typed_binary          = 24;
+{ FB2.5 down < }
 
   {* Blob information items *}
   isc_info_blob_num_segments = 4;
@@ -511,9 +918,9 @@ type
   PISC_ARRAY_BOUND = ^TISC_ARRAY_BOUND;
 
   TISC_ARRAY_DESC = record
-    array_desc_dtype:   UChar;
-    array_desc_scale:   AnsiChar;
-    array_desc_length:  Short;
+    array_desc_dtype:   Byte;
+    array_desc_scale:   ShortInt;
+    array_desc_length:  Word;
     array_desc_field_name: array[0..31] of AnsiChar;
     array_desc_relation_name: array[0..31] of AnsiChar;
     array_desc_dimensions: Short;
@@ -602,161 +1009,161 @@ type
   Tisc_attach_database = function(status_vector: PISC_STATUS;
     db_name_length: Short; db_name: PAnsiChar; db_handle: PISC_DB_HANDLE;
     parm_buffer_length: Short; parm_buffer: PAnsiChar): ISC_STATUS;
-    {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tisc_detach_database = function(status_vector: PISC_STATUS;
     db_handle: PISC_DB_HANDLE): ISC_STATUS;
-    {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tisc_drop_database = function(status_vector: PISC_STATUS;
     db_handle: PISC_DB_HANDLE): ISC_STATUS;
-    {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tisc_database_info = function(status_vector: PISC_STATUS;
     db_handle: PISC_DB_HANDLE; item_list_buffer_length: Short;
     item_list_buffer: PAnsiChar; result_buffer_length: Short;
     result_buffer: PAnsiChar): ISC_STATUS;
-    {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   { Array processing routines }
   Tisc_array_gen_sdl = function(status_vector: PISC_STATUS;
     isc_array_desc: PISC_ARRAY_DESC; isc_arg3: PShort;
     isc_arg4: PAnsiChar; isc_arg5: PShort): ISC_STATUS;
-    {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tisc_array_get_slice = function(status_vector: PISC_STATUS;
     db_handle: PISC_DB_HANDLE; trans_handle: PISC_TR_HANDLE;
     array_id: PISC_QUAD; descriptor: PISC_ARRAY_DESC;
     dest_array: PVoid; slice_length: ISC_LONG): ISC_STATUS;
-    {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tisc_array_lookup_bounds = function(status_vector: PISC_STATUS;
     db_handle: PISC_DB_HANDLE; trans_handle: PISC_TR_HANDLE;
     table_name, column_name: PAnsiChar;
     descriptor: PISC_ARRAY_DESC): ISC_STATUS;
-    {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tisc_array_lookup_desc = function(status_vector: PISC_STATUS;
     db_handle: PISC_DB_HANDLE; trans_handle: PISC_TR_HANDLE;
     table_name, column_name: PAnsiChar;
     descriptor: PISC_ARRAY_DESC): ISC_STATUS;
-    {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tisc_array_set_desc = function(status_vector: PISC_STATUS;
     table_name: PAnsiChar; column_name: PAnsiChar;
     sql_dtype, sql_length, sql_dimensions: PShort;
     descriptor: PISC_ARRAY_DESC): ISC_STATUS;
-    {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tisc_array_put_slice = function(status_vector: PISC_STATUS;
     db_handle: PISC_DB_HANDLE; trans_handle: PISC_TR_HANDLE;
     array_id: PISC_QUAD; descriptor: PISC_ARRAY_DESC;
     source_array: PVoid; slice_length: PISC_LONG): ISC_STATUS;
-    {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tisc_free = function(isc_arg1: PAnsiChar): ISC_LONG;
-    {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tisc_sqlcode = function(status_vector: PISC_STATUS): ISC_LONG;
-    {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tisc_sql_interprete = procedure(sqlcode: Short; buffer: PAnsiChar;
-    buffer_length: Short); {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    buffer_length: Short); {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tisc_interprete = function(buffer: PAnsiChar; status_vector: PPISC_STATUS):
-    ISC_STATUS; {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    ISC_STATUS; {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tfb_interpret = function(buffer: PAnsiChar;  bufsize: integer; status_vector: PPISC_STATUS):
-    ISC_STATUS; {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    ISC_STATUS; {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   { Transaction support routines }
 
   Tisc_start_transaction = function(status_vector: PISC_STATUS;
     tran_handle: PISC_TR_HANDLE; db_handle_count: Short;
     db_handle: PISC_DB_HANDLE; tpb_length: Word; tpb_address: PAnsiChar):
-    ISC_STATUS; {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    ISC_STATUS; {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tisc_start_multiple = function(status_vector: PISC_STATUS;
     tran_handle: PISC_TR_HANDLE; db_handle_count: Short;
     teb_vector_address: PISC_TEB): ISC_STATUS;
-    {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tisc_rollback_transaction = function(status_vector: PISC_STATUS;
     tran_handle: PISC_TR_HANDLE): ISC_STATUS;
-    {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tisc_rollback_retaining = function(status_vector: PISC_STATUS;
     tran_handle: PISC_TR_HANDLE): ISC_STATUS;
-    {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tisc_commit_retaining = function(status_vector: PISC_STATUS;
     tran_handle: PISC_TR_HANDLE): ISC_STATUS;
-    {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tisc_commit_transaction = function(status_vector: PISC_STATUS;
     tran_handle: PISC_TR_HANDLE): ISC_STATUS;
-    {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tisc_transaction_info = function(status_vector: PISC_STATUS;
     tr_handle: PISC_TR_HANDLE; item_list_buffer_length: Short;
     item_list_buffer: PAnsiChar; result_buffer_length: Short;
     result_buffer: PAnsiChar): ISC_STATUS;
-    {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   { Dynamic SQL routines }
 
   Tisc_dsql_allocate_statement = function(status_vector: PISC_STATUS;
     db_handle: PISC_DB_HANDLE; stmt_handle: PISC_STMT_HANDLE): ISC_STATUS;
-    {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tisc_dsql_alloc_statement2 = function(status_vector: PISC_STATUS;
     db_handle: PISC_DB_HANDLE; stmt_handle: PISC_STMT_HANDLE): ISC_STATUS;
-    {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tisc_dsql_describe = function(status_vector: PISC_STATUS;
     stmt_handle: PISC_STMT_HANDLE; dialect: Word; xsqlda: PXSQLDA): ISC_STATUS;
-    {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tisc_dsql_describe_bind = function(status_vector: PISC_STATUS;
     stmt_handle: PISC_STMT_HANDLE; dialect: Word; xsqlda: PXSQLDA): ISC_STATUS;
-    {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tisc_dsql_execute = function(status_vector: PISC_STATUS;
     tran_handle: PISC_TR_HANDLE; stmt_handle: PISC_STMT_HANDLE; dialect: Word;
     xsqlda: PXSQLDA): ISC_STATUS;
-    {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tisc_dsql_execute2 = function(status_vector: PISC_STATUS;
     tran_handle: PISC_TR_HANDLE; stmt_handle: PISC_STMT_HANDLE; dialect: Word;
     in_xsqlda, out_xsqlda: PXSQLDA): ISC_STATUS;
-    {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tisc_dsql_execute_immediate = function(status_vector: PISC_STATUS;
     db_handle: PISC_DB_HANDLE; tran_handle: PISC_TR_HANDLE; length: Word;
     statement: PAnsiChar; dialect: Word; xsqlda: PXSQLDA): ISC_STATUS;
-    {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tisc_dsql_fetch = function(status_vector: PISC_STATUS;
     stmt_handle: PISC_STMT_HANDLE; dialect: Word; xsqlda: PXSQLDA): ISC_STATUS;
-    {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tisc_dsql_free_statement = function(status_vector: PISC_STATUS;
     stmt_handle: PISC_STMT_HANDLE; options: Word): ISC_STATUS;
-    {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tisc_dsql_prepare = function(status_vector: PISC_STATUS;
     tran_handle: PISC_TR_HANDLE; stmt_handle: PISC_STMT_HANDLE;
     length: Word; statement: PAnsiChar; dialect: Word; xsqlda: PXSQLDA):
-    ISC_STATUS; {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    ISC_STATUS; {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tisc_dsql_set_cursor_name = function(status_vector: PISC_STATUS;
     stmt_handle: PISC_STMT_HANDLE; cursor_name: PAnsiChar; _type: Word): ISC_STATUS;
-    {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tisc_dsql_sql_info = function(status_vector: PISC_STATUS;
     stmt_handle: PISC_STMT_HANDLE; item_length: Short; items: PAnsiChar;
     buffer_length: Short; buffer: PAnsiChar): ISC_STATUS;
-    {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   { Blob processing routines }
 
@@ -764,86 +1171,86 @@ type
     db_handle: PISC_DB_HANDLE; tran_handle: PISC_TR_HANDLE;
     blob_handle: PISC_BLOB_HANDLE; blob_id: PISC_QUAD; bpb_length: Short;
     bpb_buffer: PAnsiChar): ISC_STATUS;
-    {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tisc_create_blob2 = function(status_vector: PISC_STATUS;
     db_handle: PISC_DB_HANDLE; tran_handle: PISC_TR_HANDLE;
     blob_handle: PISC_BLOB_HANDLE; blob_id: PISC_QUAD; bpb_length: Short;
     bpb_address: PAnsiChar): ISC_STATUS;
-    {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tisc_blob_info = function(status_vector: PISC_STATUS;
     blob_handle: PISC_BLOB_HANDLE; item_list_buffer_length: Short;
     item_list_buffer: PAnsiChar; result_buffer_length: Short; result_buffer: PAnsiChar):
-    ISC_STATUS; {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    ISC_STATUS; {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tisc_close_blob = function(status_vector: PISC_STATUS;
     blob_handle: PISC_BLOB_HANDLE): ISC_STATUS;
-    {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tisc_cancel_blob = function(status_vector: PISC_STATUS;
     blob_handle: PISC_BLOB_HANDLE): ISC_STATUS;
-    {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tisc_get_segment = function(status_vector: PISC_STATUS;
     blob_handle: PISC_BLOB_HANDLE; actual_seg_length: PWord;
     seg_buffer_length: Word; seg_buffer: PAnsiChar): ISC_STATUS;
-    {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tisc_put_segment = function(status_vector: PISC_STATUS;
     blob_handle: PISC_BLOB_HANDLE; seg_buffer_len: Word; seg_buffer: PAnsiChar):
-    ISC_STATUS; {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    ISC_STATUS; {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   { Event processing routines }
 
   Tisc_event_block = function(event_buffer: PPAnsiChar; result_buffer: PPAnsiChar;
     id_count: Word; event_list: array of PAnsiChar): ISC_LONG;
-    {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tisc_event_counts = procedure(status_vector: PISC_STATUS;
     buffer_length: Short; event_buffer: PAnsiChar; result_buffer: PAnsiChar);
-    {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tisc_cancel_events = function(status_vector: PISC_STATUS;
     db_handle: PISC_DB_HANDLE; event_id: PISC_LONG): ISC_STATUS;
-    {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tisc_que_events = function(status_vector: PISC_STATUS;
     db_handle: PISC_DB_HANDLE; event_id: PISC_LONG; length: Short;
     event_buffer: PAnsiChar; event_function: TISC_CALLBACK;
     event_function_arg: PVoid): ISC_STATUS;
-    {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   { Types convertion routines }
 
   Tisc_decode_date = procedure(ib_date: PISC_QUAD; tm_date: PCTimeStructure);
-    {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tisc_encode_date = procedure(tm_date: PCTimeStructure; ib_date: PISC_QUAD);
-    {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   { Interbase Version 6 routines }
   Tisc_decode_sql_date = procedure(ib_date: PISC_DATE;
-    tm_date: PCTimeStructure); {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    tm_date: PCTimeStructure); {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tisc_decode_sql_time = procedure(ib_time: PISC_TIME;
-    tm_date: PCTimeStructure); {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    tm_date: PCTimeStructure); {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tisc_decode_timestamp = procedure(ib_timestamp: PISC_TIMESTAMP;
-    tm_date: PCTimeStructure); {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    tm_date: PCTimeStructure); {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tisc_encode_sql_date = procedure(tm_date: PCTimeStructure;
-    ib_date: PISC_DATE); {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    ib_date: PISC_DATE); {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tisc_encode_sql_time = procedure(tm_date: PCTimeStructure;
-    ib_time: PISC_TIME); {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    ib_time: PISC_TIME); {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tisc_encode_timestamp = procedure(tm_date: PCTimeStructure;
     ib_timestamp: PISC_TIMESTAMP);
-    {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
   Tisc_vax_integer = function(buffer: PAnsiChar; length: Short): ISC_LONG;
-    {$IFNDEF UNIX} stdcall {$ELSE} cdecl {$ENDIF};
+    {$IFDEF MSWINDOWS} stdcall {$ELSE} cdecl {$ENDIF};
 
 { ************** Collection of Plain API Function types definition ************* }
 TZFirebird_API = record

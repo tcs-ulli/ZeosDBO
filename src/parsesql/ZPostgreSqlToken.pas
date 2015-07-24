@@ -8,7 +8,7 @@
 {*********************************************************}
 
 {@********************************************************}
-{    Copyright (c) 1999-2006 Zeos Development Group       }
+{    Copyright (c) 1999-2012 Zeos Development Group       }
 {                                                         }
 { License Agreement:                                      }
 {                                                         }
@@ -40,12 +40,10 @@
 {                                                         }
 { The project web site is located on:                     }
 {   http://zeos.firmos.at  (FORUM)                        }
-{   http://zeosbugs.firmos.at (BUGTRACKER)                }
-{   svn://zeos.firmos.at/zeos/trunk (SVN Repository)      }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
 {                                                         }
 {   http://www.sourceforge.net/projects/zeoslib.          }
-{   http://www.zeoslib.sourceforge.net                    }
-{                                                         }
 {                                                         }
 {                                                         }
 {                                 Zeos Development Group. }
@@ -58,7 +56,8 @@ interface
 {$I ZParseSql.inc}
 
 uses
-  Classes, ZTokenizer, ZGenericSqlToken, ZMySqlToken, SysUtils;
+  Classes, {$IFDEF MSEgui}mclasses,{$ENDIF} SysUtils,
+  ZTokenizer, ZGenericSqlToken, ZMySqlToken;
 
 type
 
@@ -71,9 +70,17 @@ type
 
   {** Implements a PostgreSQL-specific quote string state object. }
   TZPostgreSQLQuoteState = class (TZMySQLQuoteState)
+  private
+    FStandardConformingStrings: Boolean;
+  protected
+    function GetModifier(Stream: TStream; FirstChar: Char; ResetPosition: Boolean = True): string;
+    function GetDollarQuotedString(Stream: TStream; QuoteChar: Char): string;
+    function GetQuotedString(Stream: TStream; QuoteChar: Char; EscapeSyntax: Boolean): String;
+    function GetQuotedStringWithModifier(Stream: TStream; FirstChar: Char): string;
   public
     function NextToken(Stream: TStream; FirstChar: Char;
       Tokenizer: TZTokenizer): TZToken; override;
+    procedure SetStandardConformingStrings(const Value: Boolean);
   end;
 
   {**
@@ -81,6 +88,8 @@ type
     state, or return a token with just a slash in it.
   }
   TZPostgreSQLCommentState = class (TZCppCommentState)
+  protected
+    function GetMultiLineComment(Stream: TStream): string; override;
   public
     function NextToken(Stream: TStream; FirstChar: Char;
       Tokenizer: TZTokenizer): TZToken; override;
@@ -98,14 +107,29 @@ type
     constructor Create;
   end;
 
+  IZPostgreSQLTokenizer = interface (IZTokenizer)
+    ['{82392175-9065-4048-9974-EE1253B921B4}']
+    procedure SetStandardConformingStrings(const Value: Boolean);
+  end;
+
   {** Implements a default tokenizer object. }
-  TZPostgreSQLTokenizer = class (TZTokenizer)
+  TZPostgreSQLTokenizer = class (TZTokenizer, IZPostgreSQLTokenizer)
+  protected
+    function CheckEscapeState(const ActualState: TZTokenizerState; Stream: TStream;
+        const FirstChar: Char): TZTokenizerState; override;
   public
+    procedure SetStandardConformingStrings(const Value: Boolean);
     constructor Create;
   end;
 
 implementation
+
 uses ZCompatibility;
+
+const
+  NameQuoteChar   = Char('"');
+  DollarQuoteChar = Char('$');
+  SingleQuoteChar = Char('''');
 
 { TZPostgreSQLNumberState }
 
@@ -195,6 +219,147 @@ end;
 { TZPostgreSQLQuoteState }
 
 {**
+  Retrieves string modifier from quoted string.
+  @return a string with modifier for valid quoted string with modifier
+  or empty string otherwise.
+}
+function TZPostgreSQLQuoteState.GetModifier(Stream: TStream;
+    FirstChar: Char; ResetPosition: boolean = True): string;
+var
+  ReadChar: Char;
+  Modifier: string;
+  ReadNum: Integer;
+begin
+  Result := '';
+  if CharInSet(FirstChar, ['E', 'e', 'B', 'b', 'X', 'x', 'U', 'u']) then
+  begin
+    Modifier := FirstChar;
+    ReadNum := Stream.Read(ReadChar, SizeOf(Char));
+    if ReadNum = SizeOf(Char) then
+    begin
+      if (UpperCase(FirstChar) = 'U') and (ReadChar = '&') then // Check for U& modifier
+      begin
+        Modifier := Modifier + ReadChar;
+        ReadNum := ReadNum + Stream.Read(ReadChar, SizeOf(Char));
+      end;
+
+      if (ReadChar = SingleQuoteChar) then
+         Result := Modifier;
+
+      if ResetPosition then
+        Stream.Seek(-ReadNum, soFromCurrent);
+    end;
+  end;
+end;
+
+{**
+  Returns a quoted string token from a reader. This method
+  will get Tag from first char to QuoteChar and will collect
+  characters until reaches same Tag.
+
+  @return a quoted string token from a reader
+}
+function TZPostgreSQLQuoteState.GetDollarQuotedString(Stream: TStream; QuoteChar: Char): string;
+var
+  ReadChar: Char;
+  Tag, TempTag: string;
+  TagState: integer;
+begin
+  Result := QuoteChar;
+  TagState := 0;
+  while Stream.Read(ReadChar, SizeOf(Char)) > 0 do
+  begin
+    if (ReadChar = QuoteChar) then
+    begin
+      if (TagState = 0) then
+      begin
+        TagState := 1;
+        Tag := Result;
+      end
+      else if (TagState = 1) then
+      begin
+        TagState := 2;
+        TempTag := '';
+      end
+      else if (TagState = 2) then
+      begin
+        if TempTag = Tag then
+          TagState := 3
+        else
+          TempTag := '';
+      end;
+    end;
+
+    Result := Result + ReadChar;
+
+    if TagState = 2 then
+      TempTag := TempTag + ReadChar
+    else if TagState = 3 then
+      Break;
+  end;
+end;
+
+{**
+  Returns a quoted string token from a reader. This method
+  will collect characters until it sees same QuoteChar,
+  ommitting doubled chars
+
+  @return a quoted string token from a reader
+}
+function TZPostgreSQLQuoteState.GetQuotedString(Stream: TStream; QuoteChar: Char;
+  EscapeSyntax: Boolean): String;
+const BackSlash = Char('\');
+var
+  ReadChar: Char;
+  LastChar: Char;
+  QuoteCount: Integer;
+begin
+  LastChar := #0;
+  Result := QuoteChar;
+  QuoteCount := 1;
+
+  while Stream.Read(ReadChar, SizeOf(Char)) > 0 do
+  begin
+    if ReadChar = QuoteChar then
+      Inc(QuoteCount);
+
+    if (LastChar = QuoteChar) and (ReadChar <> QuoteChar) then
+    begin
+      if QuoteCount mod 2 = 0 then
+      begin
+        Stream.Seek(-SizeOf(Char), soFromCurrent);
+        Break;
+      end;
+    end;
+    Result := Result + ReadChar;
+    if (LastChar = BackSlash) and EscapeSyntax then
+      LastChar := #0
+    else if (LastChar = QuoteChar) and (ReadChar = QuoteChar) then
+      LastChar := #0
+    else LastChar := ReadChar;
+  end;
+end;
+
+{**
+  Returns a quoted string token with leading modifier from a reader.
+
+  @return a quoted string token from a reader
+}
+function TZPostgreSQLQuoteState.GetQuotedStringWithModifier(Stream: TStream;
+    FirstChar: Char): string;
+var
+  Modifier: string;
+  EscapeSyntax: Boolean;
+begin
+  Modifier := GetModifier(Stream, FirstChar, False);
+  if (Modifier <> '') then
+    FirstChar := SingleQuoteChar;
+  EscapeSyntax := (not FStandardConformingStrings and (Modifier = '')) or
+    (UpperCase(Modifier) = 'E');
+  Result := Modifier + GetQuotedString(Stream, FirstChar, EscapeSyntax);
+end;
+
+{**
   Return a quoted string token from a reader. This method
   will collect characters until it sees a match to the
   character that the tokenizer used to switch to this state.
@@ -203,50 +368,67 @@ end;
 }
 function TZPostgreSQLQuoteState.NextToken(Stream: TStream;
   FirstChar: Char; Tokenizer: TZTokenizer): TZToken;
-const BackSlash = Char('\');
-var
-  ReadChar: Char;
-  LastChar: Char;
-  QuoteChar: Char;
-  QuoteCount: Integer;
 begin
   Result.Value := FirstChar;
-  QuoteCount := 1;
-  If FirstChar = '`' then
-    Result.TokenType := ttQuotedIdentifier
-  Else
-    Result.TokenType := ttQuoted;
-
-  QuoteChar := FirstChar;
-
-  LastChar := #0;
-
-  while Stream.Read(ReadChar, SizeOf(Char)) > 0 do
+  if FirstChar = NameQuoteChar then
   begin
-    if ReadChar = QuoteChar then Inc(QuoteCount);
-    if (LastChar = FirstChar) and (ReadChar <> FirstChar) then
-    begin
-      if QuoteCount mod 2 = 0 then
-      begin
-        Stream.Seek(-SizeOf(Char), soFromCurrent);
-        Break;
-      end;
-    end;
-    Result.Value := Result.Value + ReadChar;
-    if LastChar = BackSlash then
-      LastChar := #0
-    else if (LastChar = FirstChar) and (ReadChar = FirstChar) then
-      LastChar := #0
-    else LastChar := ReadChar;
-  end;
-  if FirstChar = '"' then
     Result.TokenType := ttWord;
+    Result.Value := GetQuotedString(Stream, FirstChar, False);
+  end
+  else if FirstChar = DollarQuoteChar then
+  begin
+    Result.TokenType := ttQuoted;
+    Result.Value := GetDollarQuotedString(Stream, FirstChar);
+  end
+  else
+  begin
+    Result.TokenType := ttQuoted;
+    Result.Value := GetQuotedStringWithModifier(Stream, FirstChar);
+  end;
+end;
+
+{**
+  Sets how backslashes in quoted strings are handled
+  @param True means backslashes are escape characters
+}
+procedure TZPostgreSQLQuoteState.SetStandardConformingStrings(const Value:
+    Boolean);
+begin
+  FStandardConformingStrings := Value;
 end;
 
 { TZPostgreSQLCommentState }
 
 {**
-  Gets a MySQL specific comments like -- or /* */.
+  Ignore everything up to a last closing star and slash, and
+  then return the tokenizer's next token.
+  @return the tokenizer's next token
+}
+function TZPostgreSQLCommentState.GetMultiLineComment(Stream: TStream): string;
+var
+  ReadChar, LastChar: Char;
+  NestedLevel: Integer;
+begin
+  LastChar := #0;
+  NestedLevel := 1;
+  Result := '';
+  while Stream.Read(ReadChar, 1 * SizeOf(Char)) > 0 do
+  begin
+    Result := Result + ReadChar;
+    if (LastChar = '*') and (ReadChar = '/') then
+    begin
+      Dec(NestedLevel);
+      if NestedLevel = 0 then
+        Break;
+    end;
+    if (LastChar = '/') and (ReadChar = '*') then
+      Inc(NestedLevel);
+    LastChar := ReadChar;
+  end;
+end;
+
+{**
+  Gets a PostgreSQL specific comments like -- or /* */.
   @return either just a slash token, or the results of
     delegating to a comment-handling state
 }
@@ -305,6 +487,9 @@ begin
   Add('<>');
   Add('<<');
   Add('>>');
+  Add('~*');
+  Add('!~');
+  Add('!~*');
 end;
 
 { TZPostgreSQLWordState }
@@ -314,15 +499,24 @@ end;
 }
 constructor TZPostgreSQLWordState.Create;
 begin
-  SetWordChars(#0, #255, False);
+  SetWordChars(#0, #191, False);
+  SetWordChars(#192, high(char), True);
   SetWordChars('a', 'z', True);
   SetWordChars('A', 'Z', True);
   SetWordChars('0', '9', True);
   SetWordChars('_', '_', True);
-  SetWordChars(Char($c0), Char($ff), True);
+  SetWordChars('$', '$', True);
 end;
 
-{ TZPostgreSQLTokenizer }
+{**
+  informs the Postgre Tokenizer '\' should be handled as Escape-char
+  @param True means backslashes are quoted strings
+}
+procedure TZPostgreSQLTokenizer.SetStandardConformingStrings(
+  const Value: Boolean);
+begin
+  (QuoteState as TZPostgreSQLQuoteState).SetStandardConformingStrings(Value);
+end;
 
 {**
   Constructs a tokenizer with a default state table (as
@@ -331,7 +525,6 @@ end;
 constructor TZPostgreSQLTokenizer.Create;
 begin
   EscapeState := TZEscapeState.Create;
-  EscapeMarkSequence := '~<|'; //Defaults
   WhitespaceState := TZWhitespaceState.Create;
 
   SymbolState := TZPostgreSQLSymbolState.Create;
@@ -340,22 +533,43 @@ begin
   WordState := TZPostgreSQLWordState.Create;
   CommentState := TZPostgreSQLCommentState.Create;
 
-  SetCharacterState(#0, #255, SymbolState);
-  SetCharacterState(#0, ' ', WhitespaceState);
+  SetCharacterState(#0, #32, WhitespaceState);
+  SetCharacterState(#33, #191, SymbolState);
+  SetCharacterState(#192, High(Char), WordState);
 
   SetCharacterState('a', 'z', WordState);
   SetCharacterState('A', 'Z', WordState);
-  SetCharacterState(Chr($c0),  Chr($ff), WordState);
   SetCharacterState('_', '_', WordState);
 
   SetCharacterState('0', '9', NumberState);
   SetCharacterState('.', '.', NumberState);
 
-  SetCharacterState('"', '"', QuoteState);
-  SetCharacterState(#39, #39, QuoteState);
+  SetCharacterState(NameQuoteChar, NameQuoteChar, QuoteState);
+  SetCharacterState(SingleQuoteChar, SingleQuoteChar, QuoteState);
+  SetCharacterState(DollarQuoteChar, DollarQuoteChar, QuoteState);
 
   SetCharacterState('/', '/', CommentState);
   SetCharacterState('-', '-', CommentState);
+end;
+
+{**
+  Checks if WordState is QuoteState with modifier and sets QuoteState.
+  @param Stream the Read-Stream which has to checked for Next-Chars.
+  @FirstChar The FirstChar which was readed and sets the Symbolstate
+  @returns either the given SymbolState or the QuoteState
+}
+function TZPostgreSQLTokenizer.CheckEscapeState(const ActualState:
+    TZTokenizerState; Stream: TStream; const FirstChar: Char): TZTokenizerState;
+var
+  Modifier: string;
+begin
+  Result := inherited CheckEscapeState(ActualState, Stream, FirstChar);
+  if (Result is TZWordState) then
+  begin
+    Modifier := (QuoteState as TZPostgreSQLQuoteState).GetModifier(Stream, FirstChar);
+    if (Modifier <> '') then
+      Result := QuoteState;
+  end;
 end;
 
 end.

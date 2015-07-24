@@ -9,7 +9,7 @@
 {*********************************************************}
 
 {@********************************************************}
-{    Copyright (c) 1999-2006 Zeos Development Group       }
+{    Copyright (c) 1999-2012 Zeos Development Group       }
 {                                                         }
 { License Agreement:                                      }
 {                                                         }
@@ -41,12 +41,10 @@
 {                                                         }
 { The project web site is located on:                     }
 {   http://zeos.firmos.at  (FORUM)                        }
-{   http://zeosbugs.firmos.at (BUGTRACKER)                }
-{   svn://zeos.firmos.at/zeos/trunk (SVN Repository)      }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
 {                                                         }
 {   http://www.sourceforge.net/projects/zeoslib.          }
-{   http://www.zeoslib.sourceforge.net                    }
-{                                                         }
 {                                                         }
 {                                                         }
 {                                 Zeos Development Group. }
@@ -59,9 +57,9 @@ interface
 {$I ZDbc.inc}
 
 uses
-  Types, Classes, SysUtils, ZClasses, ZSysUtils, ZDbcIntfs, ZDbcMetadata,
-  ZDbcResultSet, ZDbcCachedResultSet, ZDbcResultSetMetadata, ZURL,
-   ZCompatibility, ZDbcConnection{$IFDEF MS_WINDOWS}, Windows{$ENDIF};
+  Types, Classes, {$IFDEF MSEgui}mclasses,{$ENDIF} SysUtils,
+  ZClasses, ZSysUtils, ZDbcIntfs, ZDbcMetadata, ZDbcResultSet, ZDbcConnection,
+  ZDbcCachedResultSet, ZDbcResultSetMetadata, ZURL, ZCompatibility;
 
 type
 
@@ -72,7 +70,6 @@ type
     procedure GetVersion(var MajorVersion, MinorVersion: integer);
   public
     constructor Create(const Metadata: TZAbstractDatabaseMetadata);
-    destructor Destroy; override;
 
     // database/driver/server info:
     function GetDatabaseProductName: string; override;
@@ -194,7 +191,6 @@ type
 //    function DataDefinitionIgnoredInTransactions: Boolean; override; -> Not implemented
 
     // interface details (terms, keywords, etc):
-    function GetIdentifierQuoteString: string; override;
     function GetSchemaTerm: string; override;
     function GetProcedureTerm: string; override;
     function GetCatalogTerm: string; override;
@@ -239,11 +235,11 @@ type
       Unique: Boolean; Approximate: Boolean): IZResultSet; override;
 //     function UncachedGetSequences(const Catalog: string; const SchemaPattern: string;
 //      const SequenceNamePattern: string): IZResultSet; override; -> Not implemented
-//    function UncachedGetProcedures(const Catalog: string; const SchemaPattern: string;
-//      const ProcedureNamePattern: string): IZResultSet; override;
-//    function UncachedGetProcedureColumns(const Catalog: string; const SchemaPattern: string;
-//      const ProcedureNamePattern: string; const ColumnNamePattern: string):
-//      IZResultSet; override;
+    function UncachedGetProcedures(const Catalog: string; const SchemaPattern: string;
+      const ProcedureNamePattern: string): IZResultSet; override;
+    function UncachedGetProcedureColumns(const Catalog: string; const SchemaPattern: string;
+      const ProcedureNamePattern: string; const ColumnNamePattern: string):
+      IZResultSet; override;
     function UncachedGetVersionColumns(const Catalog: string; const Schema: string;
       const Table: string): IZResultSet; override;
     function UncachedGetTypeInfo: IZResultSet; override;
@@ -269,15 +265,7 @@ uses
 }
 constructor TZMySQLDatabaseInfo.Create(const Metadata: TZAbstractDatabaseMetadata);
 begin
-  inherited;
-end;
-
-{**
-  Destroys this object and cleanups the memory.
-}
-destructor TZMySQLDatabaseInfo.Destroy;
-begin
-  inherited;
+  inherited Create(MetaData, '`');
 end;
 
 //----------------------------------------------------------------------
@@ -345,18 +333,6 @@ end;
 function TZMySQLDatabaseInfo.StoresMixedCaseIdentifiers: Boolean;
 begin
   Result := True;
-end;
-
-{**
-  What's the string used to quote SQL identifiers?
-  This returns a space " " if identifier quoting isn't supported.
-  A JDBC Compliant<sup><font size=-2>TM</font></sup>
-  driver always uses a double quote character.
-  @return the quoting string
-}
-function TZMySQLDatabaseInfo.GetIdentifierQuoteString: string;
-begin
-  Result := '`';
 end;
 
 {**
@@ -927,17 +903,17 @@ begin
   if Catalog = '' then
   begin
     if SchemaPattern <> '' then
-      OutCatalog := SchemaPattern
+      OutCatalog := NormalizePatternCase(SchemaPattern)
     else
-      OutCatalog := FDatabase;
+      OutCatalog := NormalizePatternCase(FDatabase);
   end
   else
-    OutCatalog := Catalog;
+    OutCatalog := NormalizePatternCase(Catalog);
 
   if NamePattern = '' then
     OutNamePattern := '%'
   else
-    OutNamePattern := NamePattern;
+    OutNamePattern := NormalizePatternCase(NamePattern);
 end;
 
 {**
@@ -983,7 +959,7 @@ begin
 
     with GetConnection.CreateStatement.ExecuteQuery(
       Format('SHOW TABLES FROM %s LIKE ''%s''',
-      [GetIdentifierConvertor.Quote(LCatalog), LTableNamePattern])) do
+      [IC.Quote(LCatalog), LTableNamePattern])) do
     begin
       while Next do
       begin
@@ -1004,8 +980,8 @@ begin
         try
           if GetConnection.CreateStatement.ExecuteQuery(
             Format('SHOW COLUMNS FROM %s.%s',
-            [GetIdentifierConvertor.Quote(LCatalog),
-             GetIdentifierConvertor.Quote(LTableNamePattern)])).Next then
+            [IC.Quote(LCatalog),
+             IC.Quote(LTableNamePattern)])).Next then
           begin
             Result.MoveToInsertRow;
             Result.UpdateString(1, LCatalog);
@@ -1129,16 +1105,11 @@ function TZMySQLDatabaseMetadata.UncachedGetColumns(const Catalog: string;
   const SchemaPattern: string; const TableNamePattern: string;
   const ColumnNamePattern: string): IZResultSet;
 var
-  I, J: Integer;
+  I: Integer;
   MySQLType: TZSQLType;
   TempCatalog, TempColumnNamePattern, TempTableNamePattern: string;
 
-  { TODO : TempStr is not set to a value in the whole method. => Length(TempStr) = 0 }
-  TempStr: string;
-  TempPos: Integer;
-
-  TypeInfoList: TStrings;
-  TypeInfo, TypeInfoFirst, TypeInfoSecond: String;
+  TypeName, TypeInfoSecond: String;
   Nullable, DefaultValue: String;
   HasDefaultValue: Boolean;
   ColumnSize, ColumnDecimals: Integer;
@@ -1157,13 +1128,12 @@ begin
 
     TableNameLength := 0;
     TableNameList := TStringList.Create;
-    TypeInfoList := TStringList.Create;
     try
       with GetTables(Catalog, SchemaPattern, TableNamePattern, nil) do
       begin
         while Next do
         begin
-          TableNameList.Add(String(GetString(3))); //TABLE_NAME
+          TableNameList.Add(GetString(3)); //TABLE_NAME
           TableNameLength := Max(TableNameLength, Length(TableNameList[TableNameList.Count - 1]));
         end;
         Close;
@@ -1176,8 +1146,8 @@ begin
 
         with GetConnection.CreateStatement.ExecuteQuery(
           Format('SHOW FULL COLUMNS FROM %s.%s LIKE ''%s''',
-          [GetIdentifierConvertor.Quote(TempCatalog),
-          GetIdentifierConvertor.Quote(TempTableNamePattern),
+          [IC.Quote(TempCatalog),
+          IC.Quote(TempTableNamePattern),
           TempColumnNamePattern])) do
         begin
           ColumnIndexes[1] := FindColumn('Field');
@@ -1189,120 +1159,20 @@ begin
           while Next do
           begin
             {initialise some variables}
-            ColumnSize := 0;
-            TypeInfoFirst := '';
-            TypeInfoSecond := '';
-
             Res.MoveToInsertRow;
             Res.UpdateString(1, TempCatalog);
             Res.UpdateString(2, '');
             Res.UpdateString(3, TempTableNamePattern) ;
             Res.UpdateString(4, GetString(ColumnIndexes[1]));
 
-            TypeInfo := GetString(ColumnIndexes[2]);
-            if StrPos(PChar(TypeInfo), '(') <> nil then
-            begin
-              PutSplitString(TypeInfoList, TypeInfo, '()');
-              TypeInfoFirst := TypeInfoList.Strings[0];
-              TypeInfoSecond := TypeInfoList.Strings[1];
-            end
-            else
-              TypeInfoFirst := TypeInfo;
-
-            TypeInfoFirst := LowerCase(TypeInfoFirst);
-            MySQLType := ConvertMySQLTypeToSQLType(TypeInfoFirst, TypeInfo,
-              GetConnection.GetClientCodePageInformations.Encoding,
-              GetConnection.UTF8StringAsWideField);
+            ConvertMySQLColumnInfoFromString(GetString(ColumnIndexes[2]),
+              ConSettings, TypeName,
+              TypeInfoSecond, MySQLType, ColumnSize, ColumnDecimals);
             Res.UpdateInt(5, Ord(MySQLType));
-            Res.UpdateString(6, TypeInfoFirst);
-
-            Res.UpdateInt(7, 0);
-            Res.UpdateInt(9, 0);
-            { the column type is ENUM}
-            if TypeInfoFirst = 'enum' then
-            begin
-              PutSplitString(TypeInfoList, TypeInfoSecond, ',');
-              for J := 0 to TypeInfoList.Count-1 do
-                ColumnSize := Max(ColumnSize, Length(TypeInfoList.Strings[J]));
-
-              Res.UpdateInt(7, ColumnSize);
-              Res.UpdateInt(9, 0);
-            end
-            else
-              { the column type is decimal }
-              if Pos(TypeInfo, ',') > 0 then
-              begin
-                TempPos := FirstDelimiter(',', TypeInfoSecond);
-                ColumnSize := StrToIntDef(Copy(TypeInfoSecond, 1, TempPos - 1), 0);
-                ColumnDecimals := StrToIntDef(Copy(TypeInfoSecond, TempPos + 1,
-                  Length(TempStr) - TempPos), 0);
-                Res.UpdateInt(7, ColumnSize);
-                Res.UpdateInt(9, ColumnDecimals);
-              end
-              else
-              begin
-                { the column type is other }
-                 if TypeInfoSecond <> '' then
-                    ColumnSize := StrToIntDef(TypeInfoSecond, 0)
-                 else if TypeInfoFirst = 'tinyint' then
-                    ColumnSize := 1
-                 else if TypeInfoFirst = 'smallint' then
-                    ColumnSize := 6
-                 else if TypeInfoFirst = 'mediumint' then
-                    ColumnSize := 6
-                 else if TypeInfoFirst = 'int' then
-                    ColumnSize := 11
-                 else if TypeInfoFirst = 'integer' then
-                    ColumnSize := 11
-                 else if TypeInfoFirst = 'bigint' then
-                    ColumnSize := 25
-                 else if TypeInfoFirst = 'int24' then
-                    ColumnSize := 25
-                 else if TypeInfoFirst = 'real' then
-                    ColumnSize := 12
-                 else if TypeInfoFirst = 'float' then
-                    ColumnSize := 12
-                 else if TypeInfoFirst = 'decimal' then
-                    ColumnSize := 12
-                 else if TypeInfoFirst = 'numeric' then
-                    ColumnSize := 12
-                 else if TypeInfoFirst = 'double' then
-                    ColumnSize := 22
-                 else if TypeInfoFirst = 'char' then
-                    ColumnSize := 1
-                 else if TypeInfoFirst = 'varchar' then
-                    ColumnSize := 255
-                 else if TypeInfoFirst = 'date' then
-                    ColumnSize := 10
-                 else if TypeInfoFirst = 'time' then
-                    ColumnSize := 8
-                 else if TypeInfoFirst = 'timestamp' then
-                    ColumnSize := 19
-                 else if TypeInfoFirst = 'datetime' then
-                    ColumnSize := 19
-                 else if TypeInfoFirst = 'tinyblob' then
-                    ColumnSize := 255
-                 else if TypeInfoFirst = 'blob' then
-                    ColumnSize := MAXBUF
-                 else if TypeInfoFirst = 'mediumblob' then
-                    ColumnSize := 16277215//may be 65535
-                 else if TypeInfoFirst = 'longblob' then
-                    ColumnSize := High(Integer)//2147483657//may be 65535
-                 else if TypeInfoFirst = 'tinytext' then
-                    ColumnSize := 255
-                 else if TypeInfoFirst = 'text' then
-                    ColumnSize := 65535
-                 else if TypeInfoFirst = 'mediumtext' then
-                    ColumnSize := 16277215 //may be 65535
-                 else if TypeInfoFirst = 'enum' then
-                    ColumnSize := 255
-                 else if TypeInfoFirst = 'set' then
-                    ColumnSize := 255;
-                Res.UpdateInt(7, ColumnSize);
-                Res.UpdateInt(9, 0);
-              end;
-
+            Res.UpdateString(6, TypeName);
+            Res.UpdateInt(7, ColumnSize);
             Res.UpdateInt(8, MAXBUF);
+            Res.UpdateInt(9, ColumnDecimals);
             Res.UpdateNull(10);
 
             { Sets nullable fields. }
@@ -1349,11 +1219,11 @@ begin
                 // For ENUM types, '' means: default value is first value in enum set
                 // For other types, '' means: no default value
                 HasDefaultValue := false;
-                if Pos('blob', TypeInfoFirst) > 0 then HasDefaultValue := true;
-                if Pos('text', TypeInfoFirst) > 0 then HasDefaultValue := true;
-                if Pos('char', TypeInfoFirst) > 0 then HasDefaultValue := true;
-                if 'set' = TypeInfoFirst then HasDefaultValue := true;
-                if 'enum' =  TypeInfoFirst then
+                if Pos('blob', TypeName) > 0 then HasDefaultValue := true;
+                if Pos('text', TypeName) > 0 then HasDefaultValue := true;
+                if Pos('char', TypeName) > 0 then HasDefaultValue := true;
+                if 'set' = TypeName then HasDefaultValue := true;
+                if 'enum' =  TypeName then
                   begin
                     HasDefaultValue := true;
                     DefaultValue := Copy(TypeInfoSecond, 2,length(TypeInfoSecond)-1);
@@ -1378,7 +1248,7 @@ begin
                 if DefaultValue <> 'CURRENT_TIMESTAMP' then
                   DefaultValue := '''' + DefaultValue + ''''
               end
-              else if (MySQLType = stBoolean) and (TypeInfoFirst = 'enum') then
+              else if (MySQLType = stBoolean) and (TypeName = 'enum') then
               begin
                 if (DefaultValue = 'y') or (DefaultValue = 'Y') then
                   DefaultValue := '1'
@@ -1394,7 +1264,7 @@ begin
             Res.UpdateBoolean(19, //AUTO_INCREMENT
               Trim(LowerCase(GetString(ColumnIndexes[4]))) = 'auto_increment'); //Extra
             Res.UpdateBoolean(20, //CASE_SENSITIVE
-              GetIdentifierConvertor.IsCaseSensitive(GetString(ColumnIndexes[1]))); //Field
+              IC.IsCaseSensitive(GetString(ColumnIndexes[1]))); //Field
             Res.UpdateBoolean(21, True);  //SEARCHABLE
             Res.UpdateBoolean(22, True);  //WRITABLE
             Res.UpdateBoolean(23, True);  //DEFINITELYWRITABLE
@@ -1408,7 +1278,6 @@ begin
       end;
     finally
       TableNameList.Free;
-      TypeInfoList.Free;
     end;
     Result := Res;
 end;
@@ -1445,25 +1314,38 @@ function TZMySQLDatabaseMetadata.UncachedGetColumnPrivileges(const Catalog: stri
   const Schema: string; const Table: string; const ColumnNamePattern: string): IZResultSet;
 var
   I: Integer;
-  LCatalog, LColumnNamePattern: string;
   Host, Database, Grantor, User, FullUser: String;
   AllPrivileges, ColumnName, Privilege: String;
   PrivilegesList: TStrings;
+  ColumnNameCondition, TableNameCondition, SchemaCondition: string;
 begin
   Result:=inherited UncachedGetColumnPrivileges(Catalog, Schema, Table, ColumnNamePattern);
 
-    GetCatalogAndNamePattern(Catalog, Schema, ColumnNamePattern,
-      LCatalog, LColumnNamePattern);
+    If Catalog = '' then
+      If Schema <> '' then
+      SchemaCondition := ConstructNameCondition(Schema,'c.db')
+      else
+      SchemaCondition := ConstructNameCondition(FDatabase,'c.db')
+    else
+      SchemaCondition := ConstructNameCondition(Catalog,'c.db');
+    TableNameCondition := ConstructNameCondition(Table,'c.table_name');
+    ColumnNameCondition := ConstructNameCondition(ColumnNamePattern,'c.column_name');
+    If SchemaCondition <> '' then
+      SchemaCondition := ' and ' + SchemaCondition;
+    If TableNameCondition <> '' then
+      TableNameCondition := ' and ' + TableNameCondition;
+    If ColumnNameCondition <> '' then
+      ColumnNameCondition := ' and ' + ColumnNameCondition;
 
     PrivilegesList := TStringList.Create;
     try
       with GetConnection.CreateStatement.ExecuteQuery(
-        Format('SELECT c.host, c.db, t.grantor, c.user, c.table_name,'
-          + ' c.column_name, c.column_priv FROM mysql.columns_priv c,'
-          + ' mysql.tables_priv t WHERE c.host=t.host AND c.db=t.db'
-          + ' AND c.table_name=t.table_name AND c.db=''%s'''
-          + ' AND c.table_name=''%s'' AND c.column_name LIKE ''%s''',
-          [LCatalog, Table, LColumnNamePattern])) do
+        'SELECT c.host, c.db, t.grantor, c.user, c.table_name,'
+        + ' c.column_name, c.column_priv FROM mysql.columns_priv c,'
+        + ' mysql.tables_priv t WHERE c.host=t.host AND c.db=t.db'
+        + ' AND c.table_name=t.table_name'
+        + SchemaCondition + TableNameCondition + ColumnNameCondition
+      ) do
       begin
         while Next do
         begin
@@ -1484,7 +1366,7 @@ begin
           begin
             Result.MoveToInsertRow;
             Privilege := Trim(PrivilegesList.Strings[I]);
-            Result.UpdateString(1, LCatalog);
+            Result.UpdateString(1, Database);
             Result.UpdateNull(2);
             Result.UpdateString(3, Table);
             Result.UpdateString(4, ColumnName);
@@ -1538,22 +1420,33 @@ function TZMySQLDatabaseMetadata.UncachedGetTablePrivileges(const Catalog: strin
   const SchemaPattern: string; const TableNamePattern: string): IZResultSet;
 var
   I: Integer;
-  LCatalog, LTableNamePattern: string;
   Host, Database, Table, Grantor, User, FullUser: String;
   AllPrivileges, Privilege: String;
   PrivilegesList: TStrings;
+  TableNameCondition, SchemaCondition: string;
 begin
     Result:=inherited UncachedGetTablePrivileges(Catalog, SchemaPattern, TableNamePattern);
 
-    GetCatalogAndNamePattern(Catalog, SchemaPattern, TableNamePattern,
-      LCatalog, LTableNamePattern);
+    If Catalog = '' then
+      If SchemaPattern <> '' then
+      SchemaCondition := ConstructNameCondition(SchemaPattern,'db')
+      else
+      SchemaCondition := ConstructNameCondition(FDatabase,'db')
+    else
+      SchemaCondition := ConstructNameCondition(Catalog,'db');
+    TableNameCondition := ConstructNameCondition(TableNamePattern,'table_name');
+    If SchemaCondition <> '' then
+      SchemaCondition := ' and ' + SchemaCondition;
+    If TableNameCondition <> '' then
+      TableNameCondition := ' and ' + TableNameCondition;
 
     PrivilegesList := TStringList.Create;
     try
       with GetConnection.CreateStatement.ExecuteQuery(
-        Format('SELECT host,db,table_name,grantor,user,table_priv'
-        + ' from mysql.tables_priv WHERE db=''%s'' AND table_name LIKE ''%s''',
-        [LCatalog, LTableNamePattern])) do
+        'SELECT host,db,table_name,grantor,user,table_priv'
+        + ' from mysql.tables_priv WHERE 1=1'
+        + SchemaCondition + TableNameCondition
+      ) do
       begin
         while Next do
         begin
@@ -1617,7 +1510,7 @@ function TZMySQLDatabaseMetadata.UncachedGetPrimaryKeys(const Catalog: string;
   const Schema: string; const Table: string): IZResultSet;
 var
   KeyType: string;
-  LCatalog: string;
+  LCatalog, LTable: string;
   ColumnIndexes : Array[1..3] of integer;
 begin
     if Table = '' then
@@ -1625,20 +1518,13 @@ begin
 
     Result:=inherited UncachedGetPrimaryKeys(Catalog, Schema, Table);
 
-    if Catalog = '' then
-    begin
-      if Schema <> '' then
-        LCatalog := Schema
-      else
-        LCatalog := FDatabase;
-    end
-    else
-      LCatalog := Catalog;
+    GetCatalogAndNamePattern(Catalog, Schema, Table,
+      LCatalog, LTable);
 
     with GetConnection.CreateStatement.ExecuteQuery(
       Format('SHOW KEYS FROM %s.%s',
-      [GetIdentifierConvertor.Quote(LCatalog),
-      GetIdentifierConvertor.Quote(Table)])) do
+      [IC.Quote(LCatalog),
+      IC.Quote(LTable)])) do
     begin
       ColumnIndexes[1] := FindColumn('Key_name');
       ColumnIndexes[2] := FindColumn('Column_name');
@@ -1735,7 +1621,7 @@ function TZMySQLDatabaseMetadata.UncachedGetImportedKeys(const Catalog: string;
 var
   I: Integer;
   KeySeq: Integer;
-  LCatalog: string;
+  LCatalog, LTable: string;
   TableType, Comment, Keys: String;
   CommentList, KeyList: TStrings;
   ColumnIndexes : Array[1..2] of integer;
@@ -1745,22 +1631,15 @@ begin
 
     Result := inherited UncachedGetImportedKeys(Catalog, Schema, Table);
 
-    if Catalog = '' then
-    begin
-      if Schema <> '' then
-        LCatalog := Schema
-      else
-        LCatalog := FDatabase;
-    end
-    else
-      LCatalog := Catalog;
+    GetCatalogAndNamePattern(Catalog, Schema, Table,
+      LCatalog, LTable);
 
     KeyList := TStringList.Create;
     CommentList := TStringList.Create;
     try
       with GetConnection.CreateStatement.ExecuteQuery(
         Format('SHOW TABLE STATUS FROM %s LIKE ''%s''',
-        [GetIdentifierConvertor.Quote(LCatalog), Table])) do
+        [IC.Quote(LCatalog), LTable])) do
       begin
         ColumnIndexes[1] := FindColumn('Type');
         ColumnIndexes[2] := FindColumn('Comment');
@@ -1885,7 +1764,7 @@ function TZMySQLDatabaseMetadata.UncachedGetExportedKeys(const Catalog: string;
 var
   I: Integer;
   KeySeq: Integer;
-  LCatalog: string;
+  LCatalog, LTable: string;
   TableType, Comment, Keys: String;
   CommentList, KeyList: TStrings;
   ColumnIndexes : Array[1..3] of integer;
@@ -1895,22 +1774,15 @@ begin
 
     Result:=inherited UncachedGetExportedKeys(Catalog, Schema, Table);
 
-    if Catalog = '' then
-    begin
-      if Schema <> '' then
-        LCatalog := Schema
-      else
-        LCatalog := FDatabase;
-    end
-    else
-      LCatalog := Catalog;
+    GetCatalogAndNamePattern(Catalog, Schema, Table,
+      LCatalog, LTable);
 
     KeyList := TStringList.Create;
     CommentList := TStringList.Create;
     try
       with GetConnection.CreateStatement.ExecuteQuery(
         Format('SHOW TABLE STATUS FROM %s',
-        [GetIdentifierConvertor.Quote(LCatalog)])) do
+        [IC.Quote(LCatalog)])) do
       begin
         ColumnIndexes[1] := FindColumn('Type');
         ColumnIndexes[2] := FindColumn('Comment');
@@ -2065,7 +1937,7 @@ begin
     try
       with GetConnection.CreateStatement.ExecuteQuery(
         Format('SHOW TABLE STATUS FROM %s',
-        [GetIdentifierConvertor.Quote(LForeignCatalog)])) do
+        [IC.Quote(LForeignCatalog)])) do
       begin
         ColumnIndexes[1] := FindColumn('Type');
         ColumnIndexes[2] := FindColumn('Comment');
@@ -2297,7 +2169,7 @@ function TZMySQLDatabaseMetadata.UncachedGetIndexInfo(const Catalog: string;
   const Schema: string; const Table: string; Unique: Boolean;
   Approximate: Boolean): IZResultSet;
 var
-  LCatalog: string;
+  LCatalog, LTable: string;
   ColumnIndexes : Array[1..7] of integer;
 begin
     if Table = '' then
@@ -2305,20 +2177,13 @@ begin
 
     Result:=inherited UncachedGetIndexInfo(Catalog, Schema, Table, Unique, Approximate);
 
-    if Catalog = '' then
-    begin
-      if Schema <> '' then
-        LCatalog := Schema
-      else
-        LCatalog := FDatabase;
-    end
-    else
-      LCatalog := Catalog;
+    GetCatalogAndNamePattern(Catalog, Schema, Table,
+      LCatalog, LTable);
 
     with GetConnection.CreateStatement.ExecuteQuery(
       Format('SHOW INDEX FROM %s.%s',
-      [GetIdentifierConvertor.Quote(LCatalog),
-      GetIdentifierConvertor.Quote(Table)])) do
+      [IC.Quote(LCatalog),
+      IC.Quote(LTable)])) do
     begin
       ColumnIndexes[1] := FindColumn('Table');
       ColumnIndexes[2] := FindColumn('Non_unique');
@@ -2349,6 +2214,320 @@ begin
         Result.InsertRow;
       end;
       Close;
+    end;
+end;
+
+{**
+  Gets a description of the stored procedures available in a
+  catalog.
+
+  <P>Only procedure descriptions matching the schema and
+  procedure name criteria are returned.  They are ordered by
+  PROCEDURE_SCHEM, and PROCEDURE_NAME.
+
+  <P>Each procedure description has the the following columns:
+   <OL>
+ 	<LI><B>PROCEDURE_CAT</B> String => procedure catalog (may be null)
+ 	<LI><B>PROCEDURE_SCHEM</B> String => procedure schema (may be null)
+ 	<LI><B>PROCEDURE_NAME</B> String => procedure name
+   <LI> reserved for future use
+   <LI> reserved for future use
+   <LI> reserved for future use
+ 	<LI><B>REMARKS</B> String => explanatory comment on the procedure
+ 	<LI><B>PROCEDURE_TYPE</B> short => kind of procedure:
+       <UL>
+       <LI> procedureResultUnknown - May return a result
+       <LI> procedureNoResult - Does not return a result
+       <LI> procedureReturnsResult - Returns a result
+       </UL>
+   </OL>
+
+  @param catalog a catalog name; "" retrieves those without a
+  catalog; null means drop catalog name from the selection criteria
+  @param schemaPattern a schema name pattern; "" retrieves those
+  without a schema
+  @param procedureNamePattern a procedure name pattern
+  @return <code>ResultSet</code> - each row is a procedure description
+  @see #getSearchStringEscape
+}
+function TZMySQLDatabaseMetadata.UncachedGetProcedures(const Catalog: string;
+  const SchemaPattern: string; const ProcedureNamePattern: string): IZResultSet;
+var
+  SQL: string;
+  ProcedureNameCondition, SchemaCondition: string;
+begin
+  If Catalog = '' then
+    If SchemaPattern <> '' then
+    SchemaCondition := ConstructNameCondition(SchemaPattern,'p.db')
+    else
+    SchemaCondition := ConstructNameCondition(FDatabase,'p.db')
+  else
+    SchemaCondition := ConstructNameCondition(Catalog,'p.db');
+  ProcedureNameCondition := ConstructNameCondition(ProcedureNamePattern,'p.name');
+  If SchemaCondition <> '' then
+    SchemaCondition := ' and ' + SchemaCondition;
+  If ProcedureNameCondition <> '' then
+    ProcedureNameCondition := ' and ' + ProcedureNameCondition;
+
+  SQL := 'SELECT NULL AS PROCEDURE_CAT, p.db AS PROCEDURE_SCHEM, '+
+      'p.name AS PROCEDURE_NAME, NULL AS RESERVED1, NULL AS RESERVED2, '+
+      'NULL AS RESERVED3, p.comment AS REMARKS, '+
+      IntToStr(ProcedureReturnsResult)+' AS PROCEDURE_TYPE  from  mysql.proc p '+
+      'WHERE 1=1' + SchemaCondition + ProcedureNameCondition+
+      ' ORDER BY p.db, p.name';
+    Result := CopyToVirtualResultSet(
+    GetConnection.CreateStatement.ExecuteQuery(SQL),
+    ConstructVirtualResultSet(ProceduresColumnsDynArray));
+end;
+
+{**
+  Gets a description of a catalog's stored procedure parameters
+  and result columns.
+
+  <P>Only descriptions matching the schema, procedure and
+  parameter name criteria are returned.  They are ordered by
+  PROCEDURE_SCHEM and PROCEDURE_NAME. Within this, the return value,
+  if any, is first. Next are the parameter descriptions in call
+  order. The column descriptions follow in column number order.
+
+  <P>Each row in the <code>ResultSet</code> is a parameter description or
+  column description with the following fields:
+   <OL>
+ 	<LI><B>PROCEDURE_CAT</B> String => procedure catalog (may be null)
+ 	<LI><B>PROCEDURE_SCHEM</B> String => procedure schema (may be null)
+ 	<LI><B>PROCEDURE_NAME</B> String => procedure name
+ 	<LI><B>COLUMN_NAME</B> String => column/parameter name
+ 	<LI><B>COLUMN_TYPE</B> Short => kind of column/parameter:
+       <UL>
+       <LI> procedureColumnUnknown - nobody knows
+       <LI> procedureColumnIn - IN parameter
+       <LI> procedureColumnInOut - INOUT parameter
+       <LI> procedureColumnOut - OUT parameter
+       <LI> procedureColumnReturn - procedure return value
+       <LI> procedureColumnResult - result column in <code>ResultSet</code>
+       </UL>
+   <LI><B>DATA_TYPE</B> short => SQL type from java.sql.Types
+ 	<LI><B>TYPE_NAME</B> String => SQL type name, for a UDT type the
+   type name is fully qualified
+ 	<LI><B>PRECISION</B> int => precision
+ 	<LI><B>LENGTH</B> int => length in bytes of data
+ 	<LI><B>SCALE</B> short => scale
+ 	<LI><B>RADIX</B> short => radix
+ 	<LI><B>NULLABLE</B> short => can it contain NULL?
+       <UL>
+       <LI> procedureNoNulls - does not allow NULL values
+       <LI> procedureNullable - allows NULL values
+       <LI> procedureNullableUnknown - nullability unknown
+       </UL>
+ 	<LI><B>REMARKS</B> String => comment describing parameter/column
+   </OL>
+
+  <P><B>Note:</B> Some databases may not return the column
+  descriptions for a procedure. Additional columns beyond
+  REMARKS can be defined by the database.
+
+  @param catalog a catalog name; "" retrieves those without a
+  catalog; null means drop catalog name from the selection criteria
+  @param schemaPattern a schema name pattern; "" retrieves those
+  without a schema
+  @param procedureNamePattern a procedure name pattern
+  @param columnNamePattern a column name pattern
+  @return <code>ResultSet</code> - each row describes a stored procedure parameter or
+       column
+  @see #getSearchStringEscape
+}
+function TZMySQLDatabaseMetadata.UncachedGetProcedureColumns(const Catalog: string;
+  const SchemaPattern: string; const ProcedureNamePattern: string;
+  const ColumnNamePattern: string): IZResultSet;
+var
+  SQL, TypeName, Temp: string;
+  ParamList, Params, Names, Returns: TStrings;
+  I, ColumnSize, Precision: Integer;
+  FieldType: TZSQLType;
+  ProcedureNameCondition, SchemaCondition: string;
+
+  function GetNextName(const AName: String; NameEmpty: Boolean = False): String;
+  var N: Integer;
+  begin
+    if (Names.IndexOf(AName) = -1) and not NameEmpty then
+    begin
+      Names.Add(AName);
+      Result := AName;
+    end
+    else
+      for N := 1 to MaxInt do
+        if Names.IndexOf(AName+IntToStr(N)) = -1 then
+        begin
+          Names.Add(AName+IntToStr(N));
+          Result := AName+IntToStr(N);
+          Break;
+        end;
+  end;
+
+  function DecomposeParamFromList(AList: TStrings): String;
+  var
+    J, I, N: Integer;
+    Temp: String;
+    procedure AddTempString(Const Value: String);
+    begin
+      if Temp = '' then
+        Temp := Trim(Value)
+      else
+        Temp := Temp + LineEnding+ Trim(Value);
+    end;
+
+  begin
+    J := 0;
+    Temp := '';
+    for I := 0 to AList.Count -1 do
+      if J < AList.Count then
+      begin
+        if (Pos('(', (AList[J])) > 0) and (Pos(')', (AList[J])) = 0) then
+          if ( Pos('real', LowerCase(AList[J])) > 0 ) or
+             ( Pos('float', LowerCase(AList[J])) > 0 ) or
+             ( Pos('decimal', LowerCase(AList[J])) > 0 ) or
+             ( Pos('numeric', LowerCase(AList[J])) > 0 ) or
+             ( Pos('double', LowerCase(AList[J])) > 0 ) then
+          begin
+            AddTempString(AList[j]+','+AList[j+1]);
+            Inc(j);
+          end
+          else
+            if ( Pos('set', LowerCase(AList[J])) > 0 ) and
+              ( Pos(')', LowerCase(AList[J])) = 0 ) then
+            begin
+              TypeName := AList[J];
+              for N := J+1 to AList.Count-1 do
+              begin
+                TypeName := TypeName +','+AList[N];
+                if Pos(')', AList[N]) > 0 then
+                  Break;
+              end;
+              AddTempString(TypeName);
+              J := N;
+            end
+            else
+              AddTempString(AList[j])
+        else
+          if not (AList[j] = '') then
+            AddTempString(AList[j]);
+        Inc(J);
+      end;
+    Result := Temp;
+  end;
+begin
+  If Catalog = '' then
+    If SchemaPattern <> '' then
+    SchemaCondition := ConstructNameCondition(SchemaPattern,'p.db')
+    else
+    SchemaCondition := ConstructNameCondition(FDatabase,'p.db')
+  else
+    SchemaCondition := ConstructNameCondition(Catalog,'p.db');
+  ProcedureNameCondition := ConstructNameCondition(ProcedureNamePattern,'p.name');
+  If SchemaCondition <> '' then
+    SchemaCondition := ' and ' + SchemaCondition;
+  If ProcedureNameCondition <> '' then
+    ProcedureNameCondition := ' and ' + ProcedureNameCondition;
+
+  Result := inherited UncachedGetProcedureColumns(Catalog, SchemaPattern, ProcedureNamePattern, ColumnNamePattern);
+
+  SQL := 'SELECT p.db AS PROCEDURE_CAT, NULL AS PROCEDURE_SCHEM, '+
+      'p.name AS PROCEDURE_NAME, p.param_list AS PARAMS, p.comment AS REMARKS, '+
+    IntToStr(ProcedureReturnsResult)+' AS PROCEDURE_TYPE, p.returns AS RETURN_VALUES '+
+    ' from  mysql.proc p where 1 = 1'+SchemaCondition+ProcedureNameCondition+
+    ' ORDER BY p.db, p.name';
+
+    try
+      with GetConnection.CreateStatement.ExecuteQuery(SQL) do
+      begin
+        ParamList := TStringList.Create;
+        Params := TStringList.Create;
+        Names := TStringList.Create;
+        Returns := TStringList.Create;
+        while Next do
+        begin
+          PutSplitString(ParamList, Trim(GetString(4)), ',');
+          PutSplitString(ParamList, DecomposeParamFromList(ParamList), LineEnding);
+
+          PutSplitString(Returns, Trim(GetString(7)), ',');
+          PutSplitString(Returns, DecomposeParamFromList(Returns), LineEnding);
+
+          for I := 0 to Returns.Count-1 do
+          begin
+            Returns[i] := 'RETURNS '+Returns[i];
+            ParamList.Add(Returns[i]);
+          end;
+
+          for i := 0 to ParamList.Count -1 do
+          begin
+            PutSplitString(Params, ParamList[i], ' ');
+            if Params.Count = 2 then {no name available}
+              if Params[0] = 'RETURNS' then
+                Params.Insert(1,'')
+              else
+                if (UpperCase(Params[1]) = 'IN') or
+                    (UpperCase(Params[1]) = 'INOUT') or
+                    (UpperCase(Params[1]) = 'OUT') then
+                  Params.Insert(1,'')
+                else
+                  Params.Insert(0,'IN'); //Function in value
+
+            Result.MoveToInsertRow;
+            Result.UpdateString(1, GetString(1)); //PROCEDURE_CAT
+            Result.UpdateString(2, GetString(2)); //PROCEDURE_SCHEM
+            Result.UpdateString(3, GetString(3)); //PROCEDURE_NAME
+            ConvertMySQLColumnInfoFromString(Params[2],
+              ConSettings, TypeName, Temp,
+              FieldType, ColumnSize, Precision);
+            { process COLUMN_NAME }
+            if Params[1] = '' then
+              if Params[0] = 'RETURNS' then
+                Result.UpdateString(4, 'ReturnValue')
+              else
+                Result.UpdateString(4, GetNextName('$', True))
+            else
+              if IC.IsQuoted(Params[1]) then
+                Result.UpdateString(4, GetNextName(Copy(Params[1], 2, Length(Params[1])-2), (Length(Params[1])=2)))
+              else
+                Result.UpdateString(4, GetNextName(Params[1]));
+            { COLUMN_TYPE }
+            if UpperCase(Params[0]) = 'OUT' then
+              Result.UpdateInt(5, Ord(pctOut))
+            else
+              if UpperCase(Params[0]) = 'INOUT' then
+                Result.UpdateInt(5, Ord(pctInOut))
+              else
+                if UpperCase(Params[0]) = 'IN' then
+                  Result.UpdateInt(5, Ord(pctIn))
+                else
+                  if UpperCase(Params[0]) = 'RETURNS' then
+                    Result.UpdateInt(5, Ord(pctReturn))
+                  else
+                    Result.UpdateInt(5, Ord(pctUnknown));
+
+            { DATA_TYPE }
+            Result.UpdateInt(6, Ord(FieldType));
+            { TYPE_NAME }
+            Result.UpdateString(7, TypeName);
+            { PRECISION }
+            Result.UpdateInt(8, ColumnSize);
+            { LENGTH }
+            Result.UpdateInt(9, Precision);
+
+            Result.UpdateNull(10);
+            Result.UpdateNull(11);
+            Result.UpdateInt(12, Ord(ntNullableUnknown));
+            Result.UpdateNull(13);
+            Result.InsertRow;
+          end;
+        end;
+        Close;
+      end;
+    finally
+      FreeAndNil(Names);
+      FreeAndNil(Params);
+      FreeAndNil(ParamList);
+      FreeAndNil(Returns);
     end;
 end;
 
@@ -2417,6 +2596,7 @@ function TZMySQLDatabaseMetadata.UncachedGetCollationAndCharSet(const Catalog, S
   TableNamePattern, ColumnNamePattern: string): IZResultSet; //EgonHugeist
 var
   SQL, LCatalog: string;
+  ColumnNameCondition, TableNameCondition, SchemaCondition: string;
 begin
     if Catalog = '' then
     begin
@@ -2427,10 +2607,25 @@ begin
     end
     else
       LCatalog := Catalog;
+  If Catalog = '' then
+    If SchemaPattern <> '' then
+      SchemaCondition := ConstructNameCondition(SchemaPattern,'TABLE_SCHEMA')
+    else
+      SchemaCondition := ConstructNameCondition(FDatabase,'TABLE_SCHEMA')
+  else
+    SchemaCondition := ConstructNameCondition(Catalog,'TABLE_SCHEMA');
+  TableNameCondition := ConstructNameCondition(TableNamePattern,'TABLE_NAME');
+  ColumnNameCondition := ConstructNameCondition(ColumnNamePattern,'COLUMN_NAME');
+  If SchemaCondition <> '' then
+    SchemaCondition := ' and ' + SchemaCondition;
+  If TableNameCondition <> '' then
+    TableNameCondition := ' and ' + TableNameCondition;
+  If ColumnNameCondition <> '' then
+    ColumnNameCondition := ' and ' + ColumnNameCondition;
 
   Result:=inherited UncachedGetCollationAndCharSet(Catalog, SchemaPattern, TableNamePattern, ColumnNamePattern);
 
-  if LCatalog <> '' then
+  if SchemaCondition <> '' then
   begin
     if TableNamePattern <> '' then
     begin
@@ -2440,9 +2635,7 @@ begin
           'FROM INFORMATION_SCHEMA.COLUMNS CLMS '+
           'LEFT JOIN INFORMATION_SCHEMA.CHARACTER_SETS CS '+
           'ON CS.DEFAULT_COLLATE_NAME = CLMS.COLLATION_NAME '+
-          'WHERE TABLE_SCHEMA = '''+LCatalog+ ''' AND '+
-          'TABLE_NAME = '''+TableNamePattern+''' AND '+
-          'COLUMN_NAME = '''+TableNamePattern+''';';
+          'WHERE 1=1'+ SchemaCondition + TableNameCondition + ColumnNameCondition;
         with GetConnection.CreateStatement.ExecuteQuery(SQL) do
         begin
           if Next then
@@ -2467,8 +2660,7 @@ begin
           'FROM INFORMATION_SCHEMA.TABLES TBLS LEFT JOIN '+
           'INFORMATION_SCHEMA.CHARACTER_SETS CS ON '+
           'TBLS.TABLE_COLLATION = CS.DEFAULT_COLLATE_NAME '+
-          'WHERE TABLE_SCHEMA = '''+LCatalog+''''+
-          'AND TBLS.TABLE_NAME = '''+TableNamePattern+''';';
+          'WHERE 1=1'+ SchemaCondition + TableNameCondition;
         with GetConnection.CreateStatement.ExecuteQuery(SQL) do
         begin
           if Next then
@@ -2489,11 +2681,12 @@ begin
     end
     else
     begin
+      SchemaCondition := ConstructNameCondition(LCatalog, 'and SCHEMA_NAME');
       SQL := 'SELECT S.DEFAULT_COLLATION_NAME, S.DEFAULT_CHARACTER_SET_NAME, '+
         'CS.MAXLEN FROM INFORMATION_SCHEMA.SCHEMATA S '+
         'LEFT JOIN INFORMATION_SCHEMA.CHARACTER_SETS CS '+
         'ON CS.DEFAULT_COLLATE_NAME = S.DEFAULT_COLLATION_NAME '+
-        'WHERE S.SCHEMA_NAME = '''+LCatalog+'''';
+        'WHERE 1=1 '+ SchemaCondition;
       with GetConnection.CreateStatement.ExecuteQuery(SQL) do
       begin
         if Next then
@@ -2513,8 +2706,6 @@ begin
       end;
     end;
   end;
-  //else
-    //raise Exception.Create('Error: No Patterns defined!');
 end;
 
 {**
