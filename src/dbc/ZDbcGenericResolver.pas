@@ -8,7 +8,7 @@
 {*********************************************************}
 
 {@********************************************************}
-{    Copyright (c) 1999-2006 Zeos Development Group       }
+{    Copyright (c) 1999-2012 Zeos Development Group       }
 {                                                         }
 { License Agreement:                                      }
 {                                                         }
@@ -40,12 +40,10 @@
 {                                                         }
 { The project web site is located on:                     }
 {   http://zeos.firmos.at  (FORUM)                        }
-{   http://zeosbugs.firmos.at (BUGTRACKER)                }
-{   svn://zeos.firmos.at/zeos/trunk (SVN Repository)      }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
 {                                                         }
 {   http://www.sourceforge.net/projects/zeoslib.          }
-{   http://www.zeoslib.sourceforge.net                    }
-{                                                         }
 {                                                         }
 {                                                         }
 {                                 Zeos Development Group. }
@@ -58,8 +56,9 @@ interface
 {$I ZDbc.inc}
 
 uses
-  Types, Classes, SysUtils, Contnrs, ZVariant, ZDbcIntfs,
-  ZDbcCache, ZDbcCachedResultSet, ZCompatibility, ZSelectSchema;
+  Types, Classes, {$IFDEF MSEgui}mclasses,{$ENDIF} SysUtils, Contnrs,
+  ZVariant, ZDbcIntfs, ZDbcCache, ZDbcCachedResultSet, ZCompatibility,
+  ZSelectSchema;
 
 type
 
@@ -148,7 +147,7 @@ type
     destructor Destroy; override;
 
     function FormWhereClause(Columns: TObjectList;
-      OldRowAccessor: TZRowAccessor): string;
+      OldRowAccessor: TZRowAccessor): string; virtual;
     function FormInsertStatement(Columns: TObjectList;
       NewRowAccessor: TZRowAccessor): string;
     function FormUpdateStatement(Columns: TObjectList;
@@ -308,12 +307,16 @@ end;
 
 function TZGenericCachedResolver.CreateResolverStatement(SQL: String): IZPreparedStatement;
 var
-  Temp : TSTrings;
+  Temp : TStrings;
 begin
-  if StrToBoolEx(FStatement.GetParameters.Values['preferpreparedresolver']) then
+  if StrToBoolEx(FStatement.GetParameters.Values['preferprepared']) then
     begin
       Temp := TStringList.Create;
       Temp.Values['preferprepared'] := 'true';
+      if not ( Connection.GetParameters.Values['chunk_size'] = '' ) then //ordered by precedence
+        Temp.Values['chunk_size'] := Connection.GetParameters.Values['chunk_size']
+      else
+        Temp.Values['chunk_size'] := FStatement.GetParameters.Values['chunk_size'];
       Result := Connection.PrepareStatementWithParams(SQL, Temp);
       Temp.Free;
     end
@@ -437,7 +440,11 @@ begin
   { Tryes to define primary keys. }
   if not WhereAll then
   begin
-    PrimaryKeys := DatabaseMetadata.GetPrimaryKeys(Catalog, Schema, Table);
+    {For exact results: quote all identifiers SEE: http://sourceforge.net/p/zeoslib/tickets/81/
+    If table names have mixed case ConstructNameCondition will return wrong results
+    and we fall back to WhereAll}
+    PrimaryKeys := DatabaseMetadata.GetPrimaryKeys(IdentifierConvertor.Quote(Catalog),
+      IdentifierConvertor.Quote(Schema), IdentifierConvertor.Quote(Table));
     while PrimaryKeys.Next do
     begin
       ColumnName := PrimaryKeys.GetString(4);
@@ -597,7 +604,7 @@ begin
       stUnicodeString:
         Statement.SetUnicodeString(I + 1,
           RowAccessor.GetUnicodeString(ColumnIndex, WasNull));
-      stBytes:
+      stBytes, stGUID:
         Statement.SetBytes(I + 1, RowAccessor.GetBytes(ColumnIndex, WasNull));
       stDate:
         Statement.SetDate(I + 1, RowAccessor.GetDate(ColumnIndex, WasNull));
@@ -644,23 +651,7 @@ begin
     Result := Result + IdentifierConvertor.Quote(Current.ColumnName);
     if OldRowAccessor.IsNull(Current.ColumnIndex) then
     begin
-      if not (Metadata.IsNullable(Current.ColumnIndex) = ntNullable) then
-      begin
-        case OldRowAccessor.GetColumnType(Current.ColumnIndex) of
-          stDate:
-            Result := Result+ '=' + QuotedStr('0000-00-00')+
-              ' OR '+Result + ' IS NULL';
-          stTime:
-            Result := Result+ '=' + QuotedStr('00:00:00')+
-              ' OR '+Result + ' IS NULL';
-          stTimeStamp:
-            Result := Result+ '=' + QuotedStr('0000-00-00 00:00:00')+
-              ' OR '+Result + ' IS NULL';
-          else Result := Result + ' IS NULL';
-        end;
-      end
-      else
-        Result := Result + ' IS NULL ';
+      Result := Result + ' IS NULL ';
       Columns.Delete(N);
     end
     else
@@ -867,9 +858,10 @@ begin
                             or StrToBoolEx(Sender.GetStatement.GetParameters.Values['ValidateUpdateCount']);
 
       lUpdateCount := Statement.ExecuteUpdatePrepared;
-      if  (lValidateUpdateCount)
-      and (lUpdateCount <> 1   ) then
+      {$IFDEF WITH_VALIDATE_UPDATE_COUNT}
+      if  (lValidateUpdateCount) and (lUpdateCount <> 1   ) then
         raise EZSQLException.Create(Format(SInvalidUpdateCount, [lUpdateCount]));
+      {$ENDIF}
     end;
   finally
     FreeAndNil(SQLParams);
@@ -940,7 +932,7 @@ begin
                 RowAccessor.SetString(Current.ColumnIndex, ResultSet.GetString(I));
               stUnicodeString, stUnicodeStream:
                 RowAccessor.SetUnicodeString(Current.ColumnIndex, ResultSet.GetUnicodeString(I));
-              stBytes:
+              stBytes, stGUID:
                 RowAccessor.SetBytes(Current.ColumnIndex, ResultSet.GetBytes(I));
               stDate:
                 RowAccessor.SetDate(Current.ColumnIndex, ResultSet.GetDate(I));

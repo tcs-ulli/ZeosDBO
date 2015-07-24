@@ -8,7 +8,7 @@
 {*********************************************************}
 
 {@********************************************************}
-{    Copyright (c) 1999-2006 Zeos Development Group       }
+{    Copyright (c) 1999-2012 Zeos Development Group       }
 {                                                         }
 { License Agreement:                                      }
 {                                                         }
@@ -40,12 +40,10 @@
 {                                                         }
 { The project web site is located on:                     }
 {   http://zeos.firmos.at  (FORUM)                        }
-{   http://zeosbugs.firmos.at (BUGTRACKER)                }
-{   svn://zeos.firmos.at/zeos/trunk (SVN Repository)      }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
 {                                                         }
 {   http://www.sourceforge.net/projects/zeoslib.          }
-{   http://www.zeoslib.sourceforge.net                    }
-{                                                         }
 {                                                         }
 {                                                         }
 {                                 Zeos Development Group. }
@@ -57,22 +55,23 @@ interface
 
 {$I ZDbc.inc}
 
-uses Classes, SysUtils, ZVariant, ZDbcIntfs;
+uses Classes, SysUtils, ZVariant, ZDbcIntfs, ZPlainDBLibDriver, ZCompatibility;
 
 {**
   Converts an ODBC native types into ZDBC SQL types.
   @param FieldType dblibc native field type.
   @return a SQL undepended type.
 }
-function ConvertODBCToSqlType(FieldType: SmallInt): TZSQLType;
+function ConvertODBCToSqlType(FieldType: SmallInt; CtrlsCPType: TZControlsCodePage): TZSQLType;
 
 {**
   Converts a DBLib native types into ZDBC SQL types.
   @param FieldType dblibc native field type.
   @return a SQL undepended type.
 }
-function ConvertDBLibToSqlType(FieldType: SmallInt): TZSQLType;
-function ConvertFreeTDSToSqlType(FieldType: SmallInt): TZSQLType;
+function ConvertDBLibToSqlType(FieldType: SmallInt; CtrlsCPType: TZControlsCodePage): TZSQLType;
+function ConvertFreeTDSToSqlType(const FieldType: SmallInt;
+  const CtrlsCPType: TZControlsCodePage): TZSQLType;
 
 {**
   Convert string DBLib field type to SqlType
@@ -109,34 +108,44 @@ function ConvertDBLibNullability(DBLibNullability: Byte): TZColumnNullableType;
   @param ParameterIndex the first parameter is 1, the second is 2, ...
   @return a string representation of the parameter.
 }
-function PrepareSQLParameter(Value: TZVariant; ParamType: TZSQLType): string;
+function PrepareSQLParameter(Value: TZVariant; ParamType: TZSQLType;
+  ConSettings: PZConSettings; PlainDriver: IZDBLibPlainDriver;
+  const NChar: Boolean = False): RawByteString;
 
 implementation
 
-uses Types, ZCompatibility, ZSysUtils, ZPlainDbLibConstants, ZPlainDBLibDriver;
+uses Types, ZSysUtils, ZPlainDbLibConstants, ZEncoding, ZDbcUtils
+  {$IFDEF WITH_UNITANSISTRINGS}, AnsiStrings{$ENDIF};
 
 {**
   Converts an ODBC native types into ZDBC SQL types.
   @param FieldType dblibc native field type.
   @return a SQL undepended type.
 }
-function ConvertODBCToSqlType(FieldType: SmallInt): TZSQLType;
+function ConvertODBCToSqlType(FieldType: SmallInt;
+  CtrlsCPType: TZControlsCodePage): TZSQLType;
 begin
   case FieldType of
     1, 12, -8, -9: Result := stString;
-    -7: Result := stBoolean;
+    -7{bit}: Result := stBoolean;
 //Bug #889223, bug with tinyint on mssql
 //    -6: Result := stByte;
+    -5: Result := stLong;
     -6: Result := stShort;
     5: Result := stShort;
     4: Result := stInteger;
     2, 3, 6, 7, 8: Result := stDouble;
     11, 93: Result := stTimestamp;
     -1, -10: Result := stAsciiStream;
-    -3, -4, -11: Result := stBinaryStream;
-    -2: Result := stBytes;
+    -4{image}: Result := stBinaryStream;
+    -2{binary},-3{varbinary},-11{uniqueidentifier}: Result := stBytes;
   else
     Result := stUnknown;
+  end;
+  if CtrlsCPType = cCP_UTF16 then
+  case Result of
+    stString: Result := stUnicodeString;
+    stAsciiStream: Result := stUnicodeStream;
   end;
 end;
 
@@ -145,7 +154,8 @@ end;
   @param FieldType dblibc native field type.
   @return a SQL undepended type.
 }
-function ConvertDBLibToSqlType(FieldType: SmallInt): TZSQLType;
+function ConvertDBLibToSqlType(FieldType: SmallInt;
+  CtrlsCPType: TZControlsCodePage): TZSQLType;
 begin
   case FieldType of
     DBLIBSQLCHAR: Result := stString;
@@ -167,6 +177,11 @@ begin
   else
     Result := stUnknown;
   end;
+  if CtrlsCPType = cCP_UTF16 then
+  case Result of
+    stString: Result := stUnicodeString;
+    stAsciiStream: Result := stUnicodeStream;
+  end;
 end;
 
 {**
@@ -174,29 +189,37 @@ end;
   @param FieldType dblibc native field type.
   @return a SQL undepended type.
 }
-function ConvertFreeTDSToSqlType(FieldType: SmallInt): TZSQLType;
+function ConvertFreeTDSToSqlType(const FieldType: SmallInt;
+  const CtrlsCPType: TZControlsCodePage): TZSQLType;
 begin
   case FieldType of
-	SYBCHAR, SYBVARCHAR, XSYBCHAR, XSYBVARCHAR: Result := stString;
-  SYBINTN, SYBINT4:                           Result := stInteger;
-  SYBINT8, SYBNUMERIC:                        Result := stBigDecimal;
-  SYBINT1, SYBINT2:                           Result := stShort;
-  SYBFLT8, SYBFLTN, SYBREAL, SYBDECIMAL:      Result := stDouble;
-  SYBDATETIME, SYBDATETIME4, SYBDATETIMN:     Result := stTimestamp;
-  SYBBIT, SYBBITN:                            Result := stBoolean;
-  SYBTEXT:                                    Result := stAsciiStream;
-  SYBNTEXT:                                   Result := stUnicodeStream;
-  SYBIMAGE, SYBBINARY, SYBVARBINARY,
-  XSYBBINARY, XSYBVARBINARY:                  Result := stBinaryStream;
-  SYBMONEY4, SYBMONEY, SYBMONEYN:             Result := stDouble;
-  SYBVOID:                                    Result := stUnknown;
-	SYBNVARCHAR, XSYBNCHAR, XSYBNVARCHAR:       Result := stUnicodeString;
-  SYBMSXML:                                   Result := stBinaryStream;
-  SYBUNIQUE:                                  Result := stString;
-  SYBVARIANT:                                 Result := stString;
-  SYBMSUDT:                                   Result := stString;
-  else
-    Result := stUnknown;
+    SYBCHAR, SYBVARCHAR, XSYBCHAR, XSYBVARCHAR: Result := stString;
+    SYBINTN, SYBINT4:                           Result := stInteger;
+    SYBINT8:                                    Result := stLong;
+    SYBNUMERIC:                                 Result := stBigDecimal;
+    SYBINT1, SYBINT2:                           Result := stShort;
+    SYBFLT8, SYBFLTN, SYBREAL, SYBDECIMAL:      Result := stDouble;
+    SYBDATETIME, SYBDATETIME4, SYBDATETIMN:     Result := stTimestamp;
+    SYBBIT, SYBBITN:                            Result := stBoolean;
+    SYBTEXT:                                    Result := stAsciiStream;
+    SYBNTEXT:                                   Result := stUnicodeStream;
+    SYBIMAGE:                                   Result := stBinaryStream;
+    SYBBINARY, SYBVARBINARY,
+    XSYBBINARY, XSYBVARBINARY:                  Result := stBytes;
+    SYBMONEY4, SYBMONEY, SYBMONEYN:             Result := stDouble;
+    SYBVOID:                                    Result := stUnknown;
+    SYBNVARCHAR, XSYBNCHAR, XSYBNVARCHAR:       Result := stUnicodeString;
+    SYBMSXML:                                   Result := stBinaryStream;
+    SYBUNIQUE:                                  Result := stString;
+    SYBVARIANT:                                 Result := stString;
+    SYBMSUDT:                                   Result := stString;
+    else
+      Result := stUnknown;
+  end;
+  if CtrlsCPType = cCP_UTF16 then
+  case Result of
+    stString: Result := stUnicodeString;
+    stAsciiStream: Result := stUnicodeStream;
   end;
 end;
 
@@ -251,7 +274,7 @@ begin
     stByte: Result := 'tinyint';
     stShort: Result := 'smallint';
     stInteger: Result := 'int';
-    stLong: Result := 'int';
+    stLong: Result := 'bigint';
     stFloat: Result := 'float(24)';
     stDouble: Result := 'float(53)';
     stBigDecimal: Result := 'float(53)';
@@ -308,7 +331,7 @@ begin
     stByte: Result := 'tinyint';
     stShort: Result := 'smallint';
     stInteger: Result := 'int';
-    stLong: Result := 'int';
+    stLong: Result := 'bigint';
     stFloat: Result := 'float(24)';
     stDouble: Result := 'float(53)';
     stBigDecimal: Result := 'float(53)';
@@ -343,11 +366,12 @@ end;
   @param ParameterIndex the first parameter is 1, the second is 2, ...
   @return a string representation of the parameter.
 }
-function PrepareSQLParameter(Value: TZVariant; ParamType: TZSQLType): string;
+function PrepareSQLParameter(Value: TZVariant; ParamType: TZSQLType;
+  ConSettings: PZConSettings; PlainDriver: IZDBLibPlainDriver;
+    const NChar: Boolean = False): RawByteString;
 var
   TempBytes: TByteDynArray;
   TempBlob: IZBlob;
-  TempString: Ansistring;
 begin
   TempBytes := nil;
 
@@ -362,52 +386,64 @@ begin
         else
           Result := '0';
       stByte, stShort, stInteger, stLong, stFloat, stDouble, stBigDecimal:
-        Result := SoftVarManager.GetAsString(Value);
+        Result := RawByteString(SoftVarManager.GetAsString(Value));
       stString:
-        Result := AnsiQuotedStr(SoftVarManager.GetAsString(Value), '''');
+        if NChar then
+          Result := {$IFDEF WITH_UNITANSISTRINGS}AnsiStrings.{$ENDIF}AnsiQuotedStr(PlainDriver.ZPlainString(SoftVarManager.GetAsString(Value), ConSettings, zCP_UTF8), '''')
+        else
+          Result := {$IFDEF WITH_UNITANSISTRINGS}AnsiStrings.{$ENDIF}AnsiQuotedStr(PlainDriver.ZPlainString(SoftVarManager.GetAsString(Value), ConSettings), '''');
       stUnicodeString:
-        Result := 'N'+QuotedStr(SoftVarManager.GetAsUnicodeString(Value));
+        if NChar then
+          Result := {$IFDEF WITH_UNITANSISTRINGS}AnsiStrings.{$ENDIF}AnsiQuotedStr(UTF8Encode(SoftVarManager.GetAsUnicodeString(Value)),'''')
+        else
+          Result := {$IFDEF WITH_UNITANSISTRINGS}AnsiStrings.{$ENDIF}AnsiQuotedStr(PlainDriver.ZPlainString(SoftVarManager.GetAsUnicodeString(Value), ConSettings),'''');
       stBytes:
         begin
-          TempBytes := StrToBytes(AnsiString(SoftVarManager.GetAsString(Value)));
+          TempBytes := SoftVarManager.GetAsBytes(Value);
           if Length(TempBytes) = 0 then
             Result := 'NULL'
           else
-          begin
-            SetLength(Result, (2 * Length(TempBytes)));
-            BinToHex(PAnsiChar(TempBytes), PAnsiChar(AnsiString(Result)), Length(TempBytes));
-            Result := '0x' + Result;
-          end;
+            Result := GetSQLHexAnsiString(PAnsiChar(TempBytes), Length(TempBytes), True);
         end;
       stDate:
-        Result := '''' + FormatDateTime('yyyymmdd',
-          SoftVarManager.GetAsDateTime(Value)) + '''';
+        Result := RawByteString('''' + FormatDateTime(ConSettings^.DateFormat,
+          SoftVarManager.GetAsDateTime(Value)) + '''');
       stTime:
-        Result := '''' + FormatDateTime('hh":"mm":"ss":"zzz',
-          SoftVarManager.GetAsDateTime(Value)) + '''';
+        Result := RawByteString('''' + FormatDateTime('hh":"mm":"ss":"zzz',
+          SoftVarManager.GetAsDateTime(Value)) + '''');
       stTimestamp:
-        Result := '''' + FormatDateTime('yyyymmdd hh":"mm":"ss":"zzz',
-          SoftVarManager.GetAsDateTime(Value)) + '''';
-      stAsciiStream, stUnicodeStream:
-        begin
-          TempBlob := DefVarManager.GetAsInterface(Value) as IZBlob;
-          if not TempBlob.IsEmpty then
-            Result := AnsiQuotedStr(StringReplace(String(TempBlob.GetString), #0, '', [rfReplaceAll]), '''')
-          else
-            Result := 'NULL';
-        end;
-      stBinaryStream:
+        Result := RawByteString('''' + FormatDateTime(ConSettings^.DateFormat+' hh":"mm":"ss":"zzz',
+          SoftVarManager.GetAsDateTime(Value)) + '''');
+      stAsciiStream, stUnicodeStream, stBinaryStream:
         begin
           TempBlob := DefVarManager.GetAsInterface(Value) as IZBlob;
           if not TempBlob.IsEmpty then
           begin
-            TempString := TempBlob.GetString;
-            SetLength(Result, (2 * Length(TempString)));
-            BinToHex(PAnsiChar(TempString), PAnsiChar(AnsiString(Result)), Length(TempString));
-            Result := '0x' + Result;
+            if ParamType = stBinaryStream then
+              Result := GetSQLHexAnsiString(PAnsiChar(TempBlob.GetBuffer), TempBlob.Length, True)
+            else
+              if NChar then
+              {$IFDEF WITH_UNITANSISTRINGS}
+                Result := AnsiStrings.AnsiQuotedStr(AnsiStrings.StringReplace(
+                  GetValidatedAnsiStringFromBuffer(TempBlob.GetBuffer,
+                    TempBlob.Length, ConSettings, zCP_UTF8), #0, '', [rfReplaceAll]), '''')
+              else
+                Result := AnsiStrings.AnsiQuotedStr(AnsiStrings.StringReplace(
+                  GetValidatedAnsiStringFromBuffer(TempBlob.GetBuffer,
+                    TempBlob.Length, TempBlob.WasDecoded, ConSettings), #0, '', [rfReplaceAll]), '''')
+              {$ELSE}
+                Result := AnsiQuotedStr(StringReplace(
+                  GetValidatedAnsiStringFromBuffer(TempBlob.GetBuffer,
+                    TempBlob.Length, ConSettings, zCP_UTF8), #0, '', [rfReplaceAll]), '''')
+              else
+                Result := AnsiQuotedStr(StringReplace(
+                  GetValidatedAnsiStringFromBuffer(TempBlob.GetBuffer,
+                    TempBlob.Length, TempBlob.WasDecoded, ConSettings), #0, '', [rfReplaceAll]), '''')
+              {$ENDIF}
           end
           else
             Result := 'NULL';
+          TempBlob := nil;
         end;
       else
         Result := 'NULL';

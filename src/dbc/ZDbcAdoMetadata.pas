@@ -8,7 +8,7 @@
 {*********************************************************}
 
 {@********************************************************}
-{    Copyright (c) 1999-2006 Zeos Development Group       }
+{    Copyright (c) 1999-2012 Zeos Development Group       }
 {                                                         }
 { License Agreement:                                      }
 {                                                         }
@@ -40,12 +40,10 @@
 {                                                         }
 { The project web site is located on:                     }
 {   http://zeos.firmos.at  (FORUM)                        }
-{   http://zeosbugs.firmos.at (BUGTRACKER)                }
-{   svn://zeos.firmos.at/zeos/trunk (SVN Repository)      }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
 {                                                         }
 {   http://www.sourceforge.net/projects/zeoslib.          }
-{   http://www.zeoslib.sourceforge.net                    }
-{                                                         }
 {                                                         }
 {                                                         }
 {                                 Zeos Development Group. }
@@ -68,7 +66,6 @@ type
   TZAdoDatabaseInfo = class(TZAbstractDatabaseInfo)
   public
     constructor Create(const Metadata: TZAbstractDatabaseMetadata);
-    destructor Destroy; override;
 
     // database/driver/server info:
     function GetDatabaseProductName: string; override;
@@ -121,6 +118,7 @@ type
     function SupportsCatalogsInTableDefinitions: Boolean; override;
     function SupportsCatalogsInIndexDefinitions: Boolean; override;
     function SupportsCatalogsInPrivilegeDefinitions: Boolean; override;
+    function SupportsOverloadPrefixInStoredProcedureName: Boolean; override;
     function SupportsPositionedDelete: Boolean; override;
     function SupportsPositionedUpdate: Boolean; override;
     function SupportsSelectForUpdate: Boolean; override;
@@ -145,6 +143,8 @@ type
     function SupportsResultSetConcurrency(_Type: TZResultSetType;
       Concurrency: TZResultSetConcurrency): Boolean; override;
 //    function SupportsBatchUpdates: Boolean; override; -> Not implemented
+    function SupportsNonEscapedSearchStrings: Boolean; override;
+    function SupportsUpdateAutoIncrementFields: Boolean; override;
 
     // maxima:
     function GetMaxBinaryLiteralLength: Integer; override;
@@ -190,7 +190,6 @@ type
     function DataDefinitionIgnoredInTransactions: Boolean; override;
 
     // interface details (terms, keywords, etc):
-    function GetIdentifierQuoteString: string; override;
     function GetSchemaTerm: string; override;
     function GetProcedureTerm: string; override;
     function GetCatalogTerm: string; override;
@@ -216,6 +215,7 @@ type
     function BuildRestrictions(SchemaId: Integer; const Args: array of const): Variant;
   protected
     function CreateDatabaseInfo: IZDatabaseInfo; override; // technobot 2008-06-27
+    function DecomposeObjectString(const S: String): String; override;
 
     function UncachedGetTables(const Catalog: string; const SchemaPattern: string;
       const TableNamePattern: string; const Types: TStringDynArray): IZResultSet; override;
@@ -299,18 +299,11 @@ var
 {**
   Constructs this object.
   @param Metadata the interface of the correpsonding database metadata object
+  @param IdentifierQuotes the default Quotes for Identifiers used by the driver
 }
 constructor TZAdoDatabaseInfo.Create(const Metadata: TZAbstractDatabaseMetadata);
 begin
-  inherited;
-end;
-
-{**
-  Destroys this object and cleanups the memory.
-}
-destructor TZAdoDatabaseInfo.Destroy;
-begin
-  inherited;
+  inherited Create(MetaData, '[]');
 end;
 
 //----------------------------------------------------------------------
@@ -451,18 +444,6 @@ end;
 function TZAdoDatabaseInfo.StoresMixedCaseQuotedIdentifiers: Boolean;
 begin
   Result := True;
-end;
-
-{**
-  What's the string used to quote SQL identifiers?
-  This returns a space " " if identifier quoting isn't supported.
-  A JDBC Compliant<sup><font size=-2>TM</font></sup>
-  driver always uses a double quote character.
-  @return the quoting string
-}
-function TZAdoDatabaseInfo.GetIdentifierQuoteString: string;
-begin
-  Result := '[]';
 end;
 
 {**
@@ -734,6 +715,15 @@ end;
   @return <code>true</code> if so; <code>false</code> otherwise
 }
 function TZAdoDatabaseInfo.SupportsCatalogsInPrivilegeDefinitions: Boolean;
+begin
+  Result := True;
+end;
+
+{**
+  Can a stored procedure have an additional overload suffix?
+  @return <code>true</code> if so; <code>false</code> otherwise
+}
+function TZAdoDatabaseInfo.SupportsOverloadPrefixInStoredProcedureName: Boolean;
 begin
   Result := True;
 end;
@@ -1206,6 +1196,24 @@ begin
   Result := True;
 end;
 
+{**
+  Does the Database or Actual Version understand non escaped search strings?
+  @return <code>true</code> if the DataBase does understand non escaped
+  search strings
+}
+function TZAdoDatabaseInfo.SupportsNonEscapedSearchStrings: Boolean;
+begin
+  Result := True;
+end;
+
+{**
+  Does the Database support updating auto incremental fields?
+  @return <code>true</code> if the DataBase allows it.
+}
+function TZAdoDatabaseInfo.SupportsUpdateAutoIncrementFields: Boolean;
+begin
+  Result := False;
+end;
 
 { TZAdoDatabaseMetadata }
 
@@ -1241,6 +1249,16 @@ begin
   Result := TZAdoDatabaseInfo.Create(Self);
 end;
 
+function TZAdoDatabaseMetadata.DecomposeObjectString(const S: String): String;
+begin
+  if S = '' then
+    Result := S
+  else
+    if IC.IsQuoted(S) then
+       Result := IC.ExtractQuote(S)
+    else
+      Result := s;
+end;
 {**
   Gets a description of the stored procedures available in a
   catalog.
@@ -1390,15 +1408,16 @@ begin
           Result.UpdateStringByName('COLUMN_NAME',
             GetStringByName('PARAMETER_NAME'));
           case GetShortByName('PARAMETER_TYPE') of
-            1: Result.UpdateShortByName('COLUMN_TYPE', 1); //ptInput
-            2: Result.UpdateShortByName('COLUMN_TYPE', 3); //ptInputOutput
-            3: Result.UpdateShortByName('COLUMN_TYPE', 2); //ptOutput
-            4: Result.UpdateShortByName('COLUMN_TYPE', 4); //ptResult
+            1: Result.UpdateShortByName('COLUMN_TYPE', Ord(pctIn));
+            2: Result.UpdateShortByName('COLUMN_TYPE', Ord(pctInOut));
+            3: Result.UpdateShortByName('COLUMN_TYPE', Ord(pctOut));
+            4: Result.UpdateShortByName('COLUMN_TYPE', Ord(pctReturn));
           else
-            Result.UpdateShortByName('COLUMN_TYPE', 0); //ptUnknown
+            Result.UpdateShortByName('COLUMN_TYPE', Ord(pctUnknown));
           end;
           Result.UpdateShortByName('DATA_TYPE',
-            Ord(ConvertAdoToSqlType(GetShortByName('DATA_TYPE'))));
+            Ord(ConvertAdoToSqlType(GetShortByName('DATA_TYPE'),
+              ConSettings.CPType)));
           Result.UpdateStringByName('TYPE_NAME',
             GetStringByName('TYPE_NAME'));
           Result.UpdateIntByName('PRECISION',
@@ -1659,12 +1678,14 @@ function TZAdoDatabaseMetadata.UncachedGetColumns(const Catalog: string;
 var
   AdoRecordSet: ZPlainAdo.RecordSet;
   Flags: Integer;
+  SQLType: TZSQLType;
 begin
   Result:=inherited UncachedGetColumns(Catalog, SchemaPattern,
       TableNamePattern, ColumnNamePattern);
 
     AdoRecordSet := AdoOpenSchema(adSchemaColumns,
-      [Catalog, SchemaPattern, TableNamePattern, ColumnNamePattern]);
+      [DecomposeObjectString(Catalog), DecomposeObjectString(SchemaPattern),
+      DecomposeObjectString(TableNamePattern), DecomposeObjectString(ColumnNamePattern)]);
     if Assigned(AdoRecordSet) then
     begin
       AdoRecordSet.Sort := 'ORDINAL_POSITION';
@@ -1681,16 +1702,18 @@ begin
             GetStringByName('TABLE_NAME'));
           Result.UpdateStringByName('COLUMN_NAME',
             GetStringByName('COLUMN_NAME'));
-          Result.UpdateShortByName('DATA_TYPE',
-            Ord(ConvertAdoToSqlType(GetShortByName('DATA_TYPE'))));
+
+          SQLType := ConvertAdoToSqlType(GetShortByName('DATA_TYPE'),
+            ConSettings.CPType);
           Flags := GetIntByName('COLUMN_FLAGS');
   //!!!If the field type is long then this is the only way to know it because it just returns string type
-          if ConvertAdoToSqlType(GetShortByName('DATA_TYPE')) = stString then
-            if (GetIntByName('COLUMN_FLAGS') and DBCOLUMNFLAGS_ISLONG) <> 0 then
-              Result.UpdateShortByName('DATA_TYPE', Ord(stAsciiStream));
-          if ConvertAdoToSqlType(GetShortByName('DATA_TYPE')) = stUnicodeString then
-            if (GetIntByName('COLUMN_FLAGS') and DBCOLUMNFLAGS_ISLONG) <> 0 then
-              Result.UpdateShortByName('DATA_TYPE', Ord(stUnicodeStream));
+          if ((Flags and DBCOLUMNFLAGS_ISLONG) <> 0 ) and (SQLType in [stBytes, stString, stUnicodeString]) then
+            case SQLType of
+              stBytes: SQLType := stBinaryStream;
+              stString: SQLType := stAsciiStream;
+              stUnicodeString: SQLType := stUnicodeStream;
+            end;
+          Result.UpdateShortByName('DATA_TYPE', Ord(SQLType));
           Result.UpdateIntByName('COLUMN_SIZE',
             GetIntByName('CHARACTER_MAXIMUM_LENGTH'));
           Result.UpdateIntByName('BUFFER_LENGTH',
@@ -1713,11 +1736,13 @@ begin
             GetIntByName('CHARACTER_OCTET_LENGTH'));
           Result.UpdateIntByName('ORDINAL_POSITION',
             GetIntByName('ORDINAL_POSITION'));
-          Result.UpdateStringByName('IS_NULLABLE',
-            GetStringByName('IS_NULLABLE'));
+          if UpperCase(GetStringByName('IS_NULLABLE')) = 'FALSE' then
+            Result.UpdateStringByName('IS_NULLABLE', 'NO')
+          else
+            Result.UpdateStringByName('IS_NULLABLE', 'YES');
 
           Result.UpdateBooleanByName('WRITABLE',
-            (Flags and (DBCOLUMNFLAGS_WRITE or DBCOLUMNFLAGS_WRITEUNKNOWN) <> 0)); 
+            (Flags and (DBCOLUMNFLAGS_WRITE or DBCOLUMNFLAGS_WRITEUNKNOWN) <> 0));
 
           Result.UpdateBooleanByName('DEFINITELYWRITABLE',
             (Flags and (DBCOLUMNFLAGS_WRITE) <> 0));
@@ -1725,7 +1750,7 @@ begin
             (Flags and (DBCOLUMNFLAGS_WRITE or DBCOLUMNFLAGS_WRITEUNKNOWN) = 0));
           Result.UpdateBooleanByName('SEARCHABLE',
             (Flags and (DBCOLUMNFLAGS_ISLONG) = 0));
-
+          Result.UpdateNullByName('AUTO_INCREMENT');
           Result.InsertRow;
         end;
         Close;
@@ -1929,7 +1954,8 @@ begin
           Result.UpdateStringByName('COLUMN_NAME',
             GetStringByName('COLUMN_NAME'));
           Result.UpdateShortByName('DATA_TYPE',
-            Ord(ConvertAdoToSqlType(GetShortByName('DATA_TYPE'))));
+            Ord(ConvertAdoToSqlType(GetShortByName('DATA_TYPE'),
+              ConSettings.CPType)));
           Result.UpdateStringByName('TYPE_NAME',
             GetStringByName('TYPE_NAME'));
           Result.UpdateIntByName('COLUMN_SIZE',
@@ -2234,6 +2260,22 @@ function TZAdoDatabaseMetadata.UncachedGetCrossReference(const PrimaryCatalog: s
   const ForeignSchema: string; const ForeignTable: string): IZResultSet;
 var
   AdoRecordSet: ZPlainAdo.RecordSet;
+
+  function GetRuleType(const Rule: String): TZImportedKey;
+  begin
+    if Rule = 'RESTRICT' then
+      Result := ikRestrict
+    else if Rule = 'NO ACTION' then
+      Result := ikNoAction
+    else if Rule = 'CASCADE' then
+      Result := ikCascade
+    else if Rule = 'SET DEFAULT' then
+      Result := ikSetDefault
+    else if Rule = 'SET NULL' then
+      Result := ikSetNull
+    else
+      Result := ikNotDeferrable; //impossible!
+  end;
 begin
     Result:=inherited UncachedGetCrossReference(PrimaryCatalog, PrimarySchema, PrimaryTable,
                                                 ForeignCatalog, ForeignSchema, ForeignTable);
@@ -2266,10 +2308,10 @@ begin
             GetStringByName('FK_COLUMN_NAME'));
           Result.UpdateShortByName('KEY_SEQ',
             GetShortByName('ORDINAL'));
-    //!!!      Result.UpdateShortByName('UPDATE_RULE',
-    //!!!        GetShortByName('UPDATE_RULE'));
-    //!!!      Result.UpdateShortByName('DELETE_RULE',
-    //!!!        GetShortByName('DELETE_RULE'));
+          Result.UpdateShortByName('UPDATE_RULE',
+            Ord(GetRuleType(GetStringByName('UPDATE_RULE'))));
+          Result.UpdateShortByName('DELETE_RULE',
+            Ord(GetRuleType(GetStringByName('DELETE_RULE'))));
           Result.UpdateStringByName('FK_NAME',
             GetStringByName('FK_NAME'));
           Result.UpdateStringByName('PK_NAME',
@@ -2346,7 +2388,8 @@ begin
           Result.UpdateStringByName('TYPE_NAME',
             GetStringByName('TYPE_NAME'));
           Result.UpdateShortByName('DATA_TYPE',
-            Ord(ConvertAdoToSqlType(GetShortByName('DATA_TYPE'))));
+            Ord(ConvertAdoToSqlType(GetShortByName('DATA_TYPE'),
+              ConSettings.CPType)));
           Result.UpdateIntByName('PRECISION',
             0);//GetIntByName('PRECISION'));
           Result.UpdateStringByName('LITERAL_PREFIX',
@@ -2599,22 +2642,25 @@ begin
       FAdoConnection := AdoConnection.GetAdoConnection;
     end;
     (FAdoConnection as ADOConnectionConstruction).Get_Session(OleDBSession);
-    OleDBSession.QueryInterface(IDBSchemaRowset, SchemaRS);
-    if Assigned(SchemaRS) then
+    if Assigned(OleDBSession) then
     begin
-      SchemaRS.GetSchemas(Nr, PG, PInteger(IA));
-      OriginalPG := PG;
-      SetLength(SupportedSchemas, Nr);
-      for I := 0 to Nr - 1 do
+      OleDBSession.QueryInterface(IDBSchemaRowset, SchemaRS);
+      if Assigned(SchemaRS) then
       begin
-        SupportedSchemas[I].SchemaGuid := PG^;
-        SupportedSchemas[I].SupportedRestrictions := IA^[I];
-        SupportedSchemas[I].AdoSchemaId := ConvertOleDBToAdoSchema(PG^);
-        Inc({$IFDEF DELPHI16_UP}NativeInt{$ELSE}Integer{$ENDIF}(PG), SizeOf(TGuid));  //M.A. Inc(Integer(PG), SizeOf(TGuid));
+        SchemaRS.GetSchemas(Nr, PG, PInteger(IA));
+        OriginalPG := PG;
+        SetLength(SupportedSchemas, Nr);
+        for I := 0 to Nr - 1 do
+        begin
+          SupportedSchemas[I].SchemaGuid := PG^;
+          SupportedSchemas[I].SupportedRestrictions := IA^[I];
+          SupportedSchemas[I].AdoSchemaId := ConvertOleDBToAdoSchema(PG^);
+          Inc({$IFDEF DELPHI16_UP}NativeInt{$ELSE}Integer{$ENDIF}(PG), SizeOf(TGuid));  //M.A. Inc(Integer(PG), SizeOf(TGuid));
+        end;
+        FSupportedSchemasInitialized := True;
+        if Assigned(OriginalPG) then ZAdoMalloc.Free(OriginalPG);
+        if Assigned(IA) then ZAdoMalloc.Free(IA);
       end;
-      FSupportedSchemasInitialized := True;
-      if Assigned(OriginalPG) then ZAdoMalloc.Free(OriginalPG);
-      if Assigned(IA) then ZAdoMalloc.Free(IA);
     end;
   end;
 end;
@@ -2675,7 +2721,7 @@ begin
     if (SupportedSchemas[SchemaIndex].SupportedRestrictions
       and (1 shl I)) <> 0 then
     begin
-      {$IFDEF DELPHI12_UP}
+      {$IFDEF UNICODE}
       Result[I] := string(Args[I].VPWideChar);
       if (Args[I].VType = VtUnicodeString) then
         if string(Args[I].VPWideChar) = '' then

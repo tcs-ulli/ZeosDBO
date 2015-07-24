@@ -8,7 +8,7 @@
 {*********************************************************}
 
 {@********************************************************}
-{    Copyright (c) 1999-2006 Zeos Development Group       }
+{    Copyright (c) 1999-2012 Zeos Development Group       }
 {                                                         }
 { License Agreement:                                      }
 {                                                         }
@@ -40,12 +40,10 @@
 {                                                         }
 { The project web site is located on:                     }
 {   http://zeos.firmos.at  (FORUM)                        }
-{   http://zeosbugs.firmos.at (BUGTRACKER)                }
-{   svn://zeos.firmos.at/zeos/trunk (SVN Repository)      }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
 {                                                         }
 {   http://www.sourceforge.net/projects/zeoslib.          }
-{   http://www.zeoslib.sourceforge.net                    }
-{                                                         }
 {                                                         }
 {                                                         }
 {                                 Zeos Development Group. }
@@ -63,9 +61,9 @@ uses
     Comobj,
   {$ENDIF}
 {$ENDIF}
-  Types, Classes, SysUtils, Contnrs, ZSysUtils, ZClasses, ZDbcIntfs,
-  ZDbcResultSetMetadata, ZDbcCachedResultSet, ZDbcCache, ZCompatibility,
-  ZSelectSchema, ZURL, ZDbcConnection;
+  Types, Classes, {$IFDEF MSEgui}mclasses,{$ENDIF} SysUtils, Contnrs,
+  ZSysUtils, ZClasses, ZDbcIntfs, ZDbcResultSetMetadata, ZDbcCachedResultSet,
+  ZDbcCache, ZCompatibility, ZSelectSchema, ZURL, ZDbcConnection;
 
 const
   procedureColumnUnknown = 0;
@@ -79,14 +77,10 @@ const
   procedureNullableUnknown = 2;
 
 type
-  {$IFDEF DELPHI12_UP}
-  TZWildcardsSet=  TSysCharSet;
-  {$ELSE}
-  TZWildcardsSet= set of Char;
-  {$ENDIF}
+  TZWildcardsSet= {$IFDEF UNICODE}TSysCharSet{$ELSE}set of Char{$ENDIF};
 
   {** Defines a metadata resultset column definition. }
-  TZMetadataColumnDef = packed record
+  TZMetadataColumnDef = {$ifndef FPC_REQUIRES_PROPER_ALIGNMENT}packed{$endif} record
     Name: string;
     SQLType: TZSQLType;
     Length: Integer
@@ -110,24 +104,33 @@ type
       override;
   public
     constructor CreateWithStatement(const SQL: string; Statement: IZStatement;
-      ClientCodePage: PZCodePage);
+      ConSettings: PZConSettings);
     constructor CreateWithColumns(ColumnsInfo: TObjectList; const SQL: string;
-      ClientCodePage: PZCodePage);
+      ConSettings: PZConSettings);
     destructor Destroy; override;
   end;
 
   {** Implements Abstract Database Metadata. }
+
+  { TZAbstractDatabaseMetadata }
+
   TZAbstractDatabaseMetadata = class(TContainedObject, IZDatabaseMetadata)
   private
     FConnection: Pointer;
     FUrl: TZURL;
     FCachedResultSets: IZHashMap;
     FDatabaseInfo: IZDatabaseInfo;
+    FConSettings: PZConSettings;
+    FIC: IZIdentifierConvertor;
     function GetInfo: TStrings;
     function GetURLString: String;
+    function StripEscape(const Pattern: string): string;
+    function HasNoWildcards(const Pattern: string): boolean;
   protected
     FDatabase: String;
     WildcardsArray: array of char; //Added by Cipto
+    function EscapeString(const S: string): string; virtual;
+    function DecomposeObjectString(const S: String): String; virtual;
     function CreateDatabaseInfo: IZDatabaseInfo; virtual; // technobot 2008-06-24
     function GetStatement: IZSTatement; // technobot 2008-06-28 - moved from descendants
 
@@ -139,19 +142,17 @@ type
     function CopyToVirtualResultSet(SrcResultSet: IZResultSet;
       DestResultSet: IZVirtualResultSet): IZVirtualResultSet;
     function CloneCachedResultSet(ResultSet: IZResultSet): IZResultSet;
-    //Added by Cipto
+    function ConstructNameCondition(Pattern: string; Column: string): string; virtual;
     function AddEscapeCharToWildcards(const Pattern:string): string;
     function GetWildcardsSet:TZWildcardsSet;
     procedure FillWildcards; virtual;
-    //End Added by Cipto
-
-    //property Url: string read FUrl;
-    //property Info: TStrings read FInfo;
+    function NormalizePatternCase(Pattern:String): string;
     property Url: string read GetURLString;
     property Info: TStrings read GetInfo;
     property CachedResultSets: IZHashMap read FCachedResultSets
       write FCachedResultSets;
-
+    property ConSettings: PZConSettings read FConSettings write FConSettings;
+    property IC: IZIdentifierConvertor read FIC;
   protected
     function UncachedGetTables(const Catalog: string; const SchemaPattern: string;
       const TableNamePattern: string; const Types: TStringDynArray): IZResultSet; virtual;
@@ -305,9 +306,12 @@ type
   private
     FMetadata: TZAbstractDatabaseMetadata;
   protected
+    FIdentifierQuotes: String;
     property Metadata: TZAbstractDatabaseMetadata read FMetadata;
   public
-    constructor Create(const Metadata: TZAbstractDatabaseMetadata);
+    constructor Create(const Metadata: TZAbstractDatabaseMetadata); overload;
+    constructor Create(const Metadata: TZAbstractDatabaseMetadata;
+      const IdentifierQuotes: String); overload;
     destructor Destroy; override;
 
     // database/driver/server info:
@@ -361,6 +365,7 @@ type
     function SupportsCatalogsInTableDefinitions: Boolean; virtual;
     function SupportsCatalogsInIndexDefinitions: Boolean; virtual;
     function SupportsCatalogsInPrivilegeDefinitions: Boolean; virtual;
+    function SupportsOverloadPrefixInStoredProcedureName: Boolean; virtual;
     function SupportsPositionedDelete: Boolean; virtual;
     function SupportsPositionedUpdate: Boolean; virtual;
     function SupportsSelectForUpdate: Boolean; virtual;
@@ -385,6 +390,8 @@ type
     function SupportsResultSetConcurrency(_Type: TZResultSetType;
       Concurrency: TZResultSetConcurrency): Boolean; virtual;
     function SupportsBatchUpdates: Boolean; virtual;
+    function SupportsNonEscapedSearchStrings: Boolean; virtual;
+    function SupportsUpdateAutoIncrementFields: Boolean; virtual;
 
     // maxima:
     function GetMaxBinaryLiteralLength: Integer; virtual;
@@ -430,7 +437,7 @@ type
     function DataDefinitionIgnoredInTransactions: Boolean; virtual;
 
     // interface details (terms, keywords, etc):
-    function GetIdentifierQuoteString: string; virtual;
+    function GetIdentifierQuoteString: string;
     function GetSchemaTerm: string; virtual;
     function GetProcedureTerm: string; virtual;
     function GetCatalogTerm: string; virtual;
@@ -448,9 +455,10 @@ type
   TZDefaultIdentifierConvertor = class (TZAbstractObject,
     IZIdentifierConvertor)
   private
-    FMetadata: IZDatabaseMetadata;
+    FMetadata: Pointer;
+    function GetMetaData: IZDatabaseMetadata;
   protected
-    property Metadata: IZDatabaseMetadata read FMetadata write FMetadata;
+    property Metadata: IZDatabaseMetadata read GetMetaData;
 
     function IsLowerCase(const Value: string): Boolean;
     function IsUpperCase(const Value: string): Boolean;
@@ -496,7 +504,7 @@ var
 
 implementation
 
-uses ZVariant, ZCollections;
+uses ZVariant, ZCollections, ZMessages;
 
 { TZAbstractDatabaseInfo }
 
@@ -506,8 +514,30 @@ uses ZVariant, ZCollections;
 }
 constructor TZAbstractDatabaseInfo.Create(const Metadata: TZAbstractDatabaseMetadata);
 begin
+  Create(MetaData, '"');
+end;
+
+{**
+  Constructs this object.
+  @param Metadata the interface of the correpsonding database metadata object
+  @param IdentifierQuotes
+    What's the string used to quote SQL identifiers?
+    This returns a space " " if identifier quoting isn't supported.
+    A JDBC Compliant<sup><font size=-2>TM</font></sup>
+    driver always uses a double quote character.
+}
+constructor TZAbstractDatabaseInfo.Create(const Metadata: TZAbstractDatabaseMetadata;
+  const IdentifierQuotes: String);
+begin
   inherited Create;
   FMetadata := Metadata;
+  if FMetaData.FUrl.Properties.IndexOfName('identifier_quotes') > -1 then //prevent to loose emty quotes '' !!!
+    FIdentifierQuotes := FMetaData.FUrl.Properties.Values['identifier_quotes']
+  else
+    if IdentifierQuotes = '' then
+      FIdentifierQuotes := '"'
+    else
+      FIdentifierQuotes := IdentifierQuotes;
 end;
 
 {**
@@ -759,7 +789,7 @@ end;
 }
 function TZAbstractDatabaseInfo.GetIdentifierQuoteString: string;
 begin
-  Result := '"';
+  Result := FIdentifierQuotes;
 end;
 
 {**
@@ -1243,6 +1273,15 @@ begin
 end;
 
 {**
+  Can a stored procedure have an additional overload suffix?
+  @return <code>true</code> if so; <code>false</code> otherwise
+}
+function TZAbstractDatabaseInfo.SupportsOverloadPrefixInStoredProcedureName: Boolean;
+begin
+  Result := False;
+end;
+
+{**
   Is positioned DELETE supported?
   @return <code>true</code> if so; <code>false</code> otherwise
 }
@@ -1717,6 +1756,24 @@ begin
   Result := True;
 end;
 
+{**
+  Does the Database or Actual Version understand non escaped search strings?
+  @return <code>true</code> if the DataBase does understand non escaped
+  search strings
+}
+function TZAbstractDatabaseInfo.SupportsNonEscapedSearchStrings: Boolean;
+begin
+  Result := False;
+end;
+
+{**
+  Does the Database support updating auto incremental fields?
+  @return <code>true</code> if the DataBase allows it.
+}
+function TZAbstractDatabaseInfo.SupportsUpdateAutoIncrementFields: Boolean;
+begin
+  Result := True;
+end;
 
 { TZAbstractDatabaseMetadata }
 
@@ -1729,11 +1786,13 @@ constructor TZAbstractDatabaseMetadata.Create(Connection: TZAbstractConnection;
   const Url: TZURL);
 begin
   inherited Create(Connection as IZConnection);
+  FIC := Self.GetIdentifierConvertor;
   FConnection := Pointer(Connection as IZConnection);
   FUrl := Url;
   FCachedResultSets := TZHashMap.Create;
   FDatabaseInfo := CreateDatabaseInfo;
   FDatabase := Url.Database;
+  FConSettings := IZConnection(FConnection).GetConSettings;
   FillWildcards;
 end;
 
@@ -1747,9 +1806,89 @@ begin
   Result := FURL.URL;
 end;
 
+{**
+   Remove escapes from pattren string
+   @param Pattern a sql pattern
+   @return string without escapes
+}
+function TZAbstractDatabaseMetadata.StripEscape(const Pattern: string): string;
+var
+  I: Integer;
+  PreviousChar: Char;
+  EscapeChar: string;
+begin
+  PreviousChar := #0;
+  Result := '';
+  EscapeChar := GetDatabaseInfo.GetSearchStringEscape;
+  for I := 1 to Length(Pattern) do
+  begin
+    if (Pattern[i] <> EscapeChar) then
+    begin
+      Result := Result + Pattern[I];
+      PreviousChar := Pattern[I];
+    end
+    else
+    begin
+      if (PreviousChar = EscapeChar) then
+      begin
+        Result := Result + Pattern[I];
+        PreviousChar := #0;
+      end
+      else
+        PreviousChar := Pattern[i];
+    end;
+  end;
+end;
+
+{**
+   Check if pattern does not contain wildcards
+   @param Pattern a sql pattern
+   @return if pattern contain wildcards return true otherwise false
+}
+function TZAbstractDatabaseMetadata.HasNoWildcards(const Pattern: string
+  ): boolean;
+var
+  I: Integer;
+  PreviousCharWasEscape: Boolean;
+  EscapeChar,PreviousChar: Char;
+  WildcardsSet: TZWildcardsSet;
+begin
+  Result := False;
+  PreviousChar := #0;
+  PreviousCharWasEscape := False;
+  EscapeChar := Char(GetDatabaseInfo.GetSearchStringEscape[1]);
+  WildcardsSet := GetWildcardsSet;
+  for I := 1 to Length(Pattern) do
+  begin
+    if (not PreviousCharWasEscape) and CharInset(Pattern[I], WildcardsSet) then
+     Exit;
+
+    PreviousCharWasEscape := (Pattern[I] = EscapeChar) and (PreviousChar <> EscapeChar);
+    if (PreviousCharWasEscape) and (Pattern[I] = EscapeChar) then
+      PreviousChar := #0
+    else
+      PreviousChar := Pattern[I];
+  end;
+  Result := True;
+end;
+
+function TZAbstractDatabaseMetadata.EscapeString(const S: string): string;
+begin
+  Result := '''' + S + '''';
+end;
+
+function TZAbstractDatabaseMetadata.DecomposeObjectString(const S: String): String;
+begin
+  if IC.IsQuoted(s) then
+    Result := IC.ExtractQuote(s)
+  else
+    Result := s;
+end;
+
 {**  Destroys this object and cleanups the memory.}
 destructor TZAbstractDatabaseMetadata.Destroy;
 begin
+  FIC := nil;
   FUrl := nil;
   FCachedResultSets.Clear;
   FCachedResultSets := nil;
@@ -1772,7 +1911,7 @@ end;
   Creates and returns a statement object.
   @return the statement object
 }
-function TZAbstractDatabaseMetadata.GetStatement: IZStatement;
+function TZAbstractDatabaseMetadata.GetStatement: IZSTatement;
 begin
   Result := GetConnection.CreateStatement;
 end;
@@ -1814,7 +1953,7 @@ begin
     end;
 
     Result := TZVirtualResultSet.CreateWithColumns(ColumnsInfo, '',
-      IZConnection(FConnection).GetClientCodePageInformations);
+      IZConnection(FConnection).GetConSettings);
     with Result do
     begin
       SetType(rtScrollInsensitive);
@@ -1974,10 +2113,42 @@ begin
     ResultSet.BeforeFirst;
     Result := CopyToVirtualResultSet(ResultSet,
       TZVirtualResultSet.CreateWithColumns(ColumnsInfo, '',
-        IZConnection(Self.FConnection).GetClientCodePageInformations));
+        IZConnection(Self.FConnection).GetConSettings));
     ResultSet.BeforeFirst;
   finally
     ColumnsInfo.Free;
+  end;
+end;
+
+{**
+   Takes a name patternand column name and retuen an appropriate SQL clause
+    @param Pattern a sql pattren
+    @parma Column a sql column name
+    @return processed string for query
+}
+function TZAbstractDatabaseMetadata.ConstructNameCondition(Pattern: string;
+  Column: string): string;
+const
+  Spaces = '';
+var
+  WorkPattern: string;
+begin
+  Result := '';
+  if (Length(Pattern) > 2 * 31) then
+    raise EZSQLException.Create(SPattern2Long);
+
+  if (Pattern = '%') or (Pattern = '') then
+     Exit;
+  WorkPattern:=NormalizePatternCase(Pattern);
+  if HasNoWildcards(WorkPattern) then
+  begin
+    WorkPattern := StripEscape(WorkPattern);
+    Result := Format('%s = %s', [Column, EscapeString(WorkPattern)]);
+  end
+  else
+  begin
+    Result := Format('%s like %s',
+      [Column, EscapeString(WorkPattern+'%')]);
   end;
 end;
 
@@ -1997,9 +2168,6 @@ end;
 function TZAbstractDatabaseMetadata.GetUserName: string;
 begin
   Result := FURL.UserName;
-  {Result := FInfo.Values['UID'];
-  if Result = '' then
-    Result := FInfo.Values['username'];}
 end;
 
 {**
@@ -3943,8 +4111,8 @@ begin
     Result := ConstructVirtualResultSet(IndexInfoColumnsDynArray);
 end;
 
-function TZAbstractDatabaseMetadata.GetSequences(const Catalog, SchemaPattern,
-  SequenceNamePattern: string): IZResultSet;
+function TZAbstractDatabaseMetadata.GetSequences(const Catalog: string;
+  const SchemaPattern: string; const SequenceNamePattern: string): IZResultSet;
 var
   Key: string;
 begin
@@ -3963,8 +4131,8 @@ begin
   end;
 end;
 
-function TZAbstractDatabaseMetadata.UncachedGetSequences(const Catalog, SchemaPattern,
-  SequenceNamePattern: string): IZResultSet;
+function TZAbstractDatabaseMetadata.UncachedGetSequences(const Catalog: string;
+  const SchemaPattern: string; const SequenceNamePattern: string): IZResultSet;
 begin
     Result := ConstructVirtualResultSet(SequenceColumnsDynArray);
 end;
@@ -4086,15 +4254,21 @@ end;
 }
 function TZAbstractDatabaseMetadata.AddEscapeCharToWildcards(
   const Pattern: string): string;
-var i:Integer;
-    EscapeChar : string;
+var
+  i:Integer;
+  EscapeChar : string;
 begin
-  EscapeChar:=GetDatabaseInfo.GetSearchStringEscape;
-  if WildcardsArray<>nil then
+  if GetDatabaseInfo.SupportsNonEscapedSearchStrings then
+    Result := Pattern
+  else
   begin
-    Result:=StringReplace(Pattern,EscapeChar,EscapeChar+EscapeChar,[rfReplaceAll]);
-    for i:=0 to High(WildcardsArray) do
-      Result:=StringReplace(Result,WildcardsArray[i],EscapeChar+WildcardsArray[i],[rfReplaceAll]);
+    EscapeChar := GetDatabaseInfo.GetSearchStringEscape;
+    if WildcardsArray<>nil then
+    begin
+      Result:=StringReplace(Pattern,EscapeChar,EscapeChar+EscapeChar,[rfReplaceAll]);
+      for i:=0 to High(WildcardsArray) do
+        Result:=StringReplace(Result,WildcardsArray[i],EscapeChar+WildcardsArray[i],[rfReplaceAll]);
+    end;
   end;
 end;
 
@@ -4104,13 +4278,23 @@ end;
 }
 procedure TZAbstractDatabaseMetadata.FillWildcards;
 begin
-  try
-    SetLength(WildcardsArray,2);
-    WildcardsArray[0]:='_';
-    WildcardsArray[1]:='%';
-  except
-    WildcardsArray:=nil;
-  end;
+  SetLength(WildcardsArray,1);
+  WildcardsArray[0]:='%';
+  {SetLength(WildcardsArray,2);
+  WildcardsArray[0]:='_';  <---- seems to be a trublemaker, no idea how to test it with our tests. See http://zeoslib.sourceforge.net/viewtopic.php?f=40&t=13184
+  WildcardsArray[1]:='%';}
+end;
+
+function TZAbstractDatabaseMetadata.NormalizePatternCase(Pattern:String): string;
+begin
+  if not GetIdentifierConvertor.IsQuoted(Pattern) then
+    if FDatabaseInfo.StoresUpperCaseIdentifiers then
+      Result := UpperCase(Pattern)
+    else if FDatabaseInfo.StoresLowerCaseIdentifiers then
+      Result := LowerCase(Pattern)
+    else Result := Pattern
+  else
+    Result := GetIdentifierConvertor.ExtractQuote(Pattern);
 end;
 
 {**
@@ -4435,9 +4619,9 @@ end;
   @param SQL an SQL query string.
 }
 constructor TZVirtualResultSet.CreateWithStatement(const SQL: string;
-   Statement: IZStatement; ClientCodePage: PZCodePage);
+   Statement: IZStatement; ConSettings: PZConSettings);
 begin
-  inherited CreateWithStatement(SQL, Statement, ClientCodePage);
+  inherited CreateWithStatement(SQL, Statement, ConSettings);
 end;
 
 {**
@@ -4446,9 +4630,9 @@ end;
   @param SQL an SQL query string.
 }
 constructor TZVirtualResultSet.CreateWithColumns(ColumnsInfo: TObjectList;
-  const SQL: string; ClientCodePage: PZCodePage);
+  const SQL: string; ConSettings: PZConSettings);
 begin
-  inherited CreateWithColumns(ColumnsInfo, SQL, ClientCodePage);
+  inherited CreateWithColumns(ColumnsInfo, SQL, ConSettings);
 end;
 
 {**
@@ -4488,7 +4672,15 @@ constructor TZDefaultIdentifierConvertor.Create(
   Metadata: IZDatabaseMetadata);
 begin
   inherited Create;
-  FMetadata := Metadata;
+  FMetadata := Pointer(Metadata);
+end;
+
+function TZDefaultIdentifierConvertor.GetMetaData;
+begin
+  if Assigned(FMetadata) then
+    Result := IZDatabaseMetadata(FMetadata)
+  else
+    Result := nil;
 end;
 
 {**
@@ -4564,7 +4756,8 @@ function TZDefaultIdentifierConvertor.IsCaseSensitive(const Value: string): Bool
 const
   AnsiSQLKeywords = 'insert,update,delete,select,drop,create,from,set,values,'
     + 'where,order,group,by,having,into,as,table,index,primary,key,on,is,null,'
-    + 'char,varchar,integer,number,alter,column,value';
+    + 'char,varchar,integer,number,alter,column,value,'
+    + 'current,top,login,status,version';
 var
   Keywords: string;
 begin
@@ -4714,9 +4907,9 @@ const
     (Name: 'PROCEDURE_CAT'; SQLType: stString; Length: 255),
     (Name: 'PROCEDURE_SCHEM'; SQLType: stString; Length: 255),
     (Name: 'PROCEDURE_NAME'; SQLType: stString; Length: 255),
+    (Name: 'PROCEDURE_OVERLOAD'; SQLType: stString; Length: 255),
     (Name: 'RESERVED1'; SQLType: stString; Length: 255),
     (Name: 'RESERVED2'; SQLType: stString; Length: 255),
-    (Name: 'RESERVED3'; SQLType: stString; Length: 255),
     (Name: 'REMARKS'; SQLType: stString; Length: 255),
     (Name: 'PROCEDURE_TYPE'; SQLType: stShort; Length: 0)
   );

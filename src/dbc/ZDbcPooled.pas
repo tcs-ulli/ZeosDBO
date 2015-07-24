@@ -1,3 +1,51 @@
+{*********************************************************}
+{                                                         }
+{                 Zeos Database Objects                   }
+{                                                         }
+{*********************************************************}
+
+{@********************************************************}
+{    Copyright (c) 1999-2012 Zeos Development Group       }
+{                                                         }
+{ License Agreement:                                      }
+{                                                         }
+{ This library is distributed in the hope that it will be }
+{ useful, but WITHOUT ANY WARRANTY; without even the      }
+{ implied warranty of MERCHANTABILITY or FITNESS FOR      }
+{ A PARTICULAR PURPOSE.  See the GNU Lesser General       }
+{ Public License for more details.                        }
+{                                                         }
+{ The source code of the ZEOS Libraries and packages are  }
+{ distributed under the Library GNU General Public        }
+{ License (see the file COPYING / COPYING.ZEOS)           }
+{ with the following  modification:                       }
+{ As a special exception, the copyright holders of this   }
+{ library give you permission to link this library with   }
+{ independent modules to produce an executable,           }
+{ regardless of the license terms of these independent    }
+{ modules, and to copy and distribute the resulting       }
+{ executable under terms of your choice, provided that    }
+{ you also meet, for each linked independent module,      }
+{ the terms and conditions of the license of that module. }
+{ An independent module is a module which is not derived  }
+{ from or based on this library. If you modify this       }
+{ library, you may extend this exception to your version  }
+{ of the library, but you are not obligated to do so.     }
+{ If you do not wish to do so, delete this exception      }
+{ statement from your version.                            }
+{                                                         }
+{                                                         }
+{ The project web site is located on:                     }
+{   http://zeos.firmos.at  (FORUM)                        }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
+{                                                         }
+{   http://www.sourceforge.net/projects/zeoslib.          }
+{                                                         }
+{                                                         }
+{                                 Zeos Development Group. }
+{********************************************************@}
+
 unit ZDbcPooled;
 
 interface
@@ -7,22 +55,10 @@ interface
 implementation
 
 uses
-{$IFNDEF UNIX}
-  Windows,
-{$ENDIF}
-  Classes,
-  Contnrs,
-  DateUtils,
-  SysUtils,
-  Types,
+  Classes, {$IFDEF MSEgui}mclasses,{$ENDIF} Contnrs, DateUtils, SysUtils, Types,
   SyncObjs,
-  ZCompatibility,
-  ZClasses,
-  ZURL,
-  ZDbcConnection,
-  ZDbcIntfs,
-  ZPlainDriver,
-  ZMessages;
+  ZCompatibility, ZClasses, ZURL, ZDbcConnection, ZDbcIntfs, ZPlainDriver,
+  ZMessages, ZVariant;
 
 type
   TConnectionPool = class;
@@ -78,23 +114,26 @@ type
 
   { This class embedds a real connection and redirects all methods to it.
     When it is droped or closed, it returns the real connection to the pool. }
+
+  { TZDbcPooledConnection }
+
   TZDbcPooledConnection = class(TZCodePagedObject, IZConnection)
   private
     FConnection: IZConnection;
     FConnectionPool: TConnectionPool;
-    FPreprepareSQL: Boolean;
-    FUTF8StringAsWideField: Boolean;
+    FAutoEncodeStrings: Boolean;
     FUseMetadata: Boolean;
+    {$IFDEF ZEOS_TEST_ONLY}
+    FTestMode: Byte;
+    {$ENDIF}
     function GetConnection: IZConnection;
-    function GetUTF8StringAsWideField: Boolean;
-    procedure SetUTF8StringAsWideField(const Value: Boolean);
   protected // IZConnection
     FClientCodePage: String;
     procedure CheckCharEncoding(CharSet: String;
       const DoArrange: Boolean = False);
     function GetClientCodePageInformations: PZCodePage; //EgonHugeist
-    function GetPreprepareSQL: Boolean; //EgonHugeist
-    procedure SetPreprepareSQL(const Value: Boolean);
+    function GetAutoEncodeStrings: Boolean; //EgonHugeist
+    procedure SetAutoEncodeStrings(const Value: Boolean);
     function CreateStatement: IZStatement;
     function PrepareStatement(const SQL: string): IZPreparedStatement;
     function PrepareCall(const SQL: string): IZCallableStatement;
@@ -112,7 +151,7 @@ type
     procedure CommitPrepared(const transactionid: string);
     procedure RollbackPrepared(const transactionid: string);
     function PingServer: Integer;
-    function EscapeString(Value : AnsiString) : AnsiString;
+    function EscapeString(Value : RawByteString) : RawByteString;
     procedure Open;
     procedure Close;
     function IsClosed: Boolean;
@@ -135,15 +174,19 @@ type
   public
     constructor Create(const ConnectionPool: TConnectionPool);
     destructor Destroy; override;
-    function GetAnsiEscapeString(const Value: AnsiString;
-      const EscapeMarkSequence: String = '~<|'): String;
-    function GetEscapeString(const Value: String;
-      const EscapeMarkSequence: String = '~<|'): String; overload; virtual;
-    function GetEscapeString(const Value: PAnsiChar;
-      const EscapeMarkSequence: String = '~<|'): String; overload; virtual;
+    function GetBinaryEscapeString(const Value: RawByteString): String; overload;
+    function GetBinaryEscapeString(const Value: TByteDynArray): String; overload;
+    function GetEscapeString(const Value: ZWideString): ZWideString; overload; virtual;
+    function GetEscapeString(const Value: RawByteString): RawByteString; overload; virtual;
     function GetEncoding: TZCharEncoding;
+    function GetConSettings: PZConSettings;
+    {$IFDEF ZEOS_TEST_ONLY}
+    function GetTestMode : Byte;
+    procedure SetTestMode(Mode: Byte);
+    {$ENDIF}
   end;
 
+  {$WARNINGS OFF}
   TZDbcPooledConnectionDriver = class(TZAbstractDriver)
   private
     PoolList: TObjectList;
@@ -162,6 +205,7 @@ type
     constructor Create; override;
     destructor Destroy; override;
   end;
+  {$WARNINGS ON}
 
 { TConnectionPool }
 
@@ -223,17 +267,17 @@ begin
 
   while True do
   begin
-  FCriticalSection.Enter;
-  try
+    FCriticalSection.Enter;
+    try
       // Try to get an existing connection
       I := 0;
       while I < FSlotsInUse.Size do
       begin
         if (FConnections[I] <> nil) and (not FSlotsInUse[I]) then
-    begin
+        begin
           try
             // Test for dead connections
-            FConnections[I].Rollback; // PingServer didn´t work (tested with FB)
+            FConnections[I].Rollback; // PingServer did not work (tested with FB)
             FSlotsInUse[I] := True;
             Break;
           except
@@ -286,7 +330,9 @@ begin
     if FWait then
       Sleep(100)
     else
-      raise Exception.Create(ClassName + '.Acquire'+LineEnding+'O pool de conexões atingiu o limite máximo');
+      raise Exception.Create(ClassName + '.Acquire'+LineEnding+'O pool de conexatingiu o limite maximo');
+            //2013-10-13 mse: please replace non ASCII characters (>127) by the 
+            //#nnn notation in order to have encoding independent sources
   end;
 
   //
@@ -372,6 +418,9 @@ end;
 constructor TZDbcPooledConnection.Create(const ConnectionPool: TConnectionPool);
 begin
   FConnectionPool := ConnectionPool;
+  {$IFDEF ZEOS_TEST_ONLY}
+  FTestMode := 0;
+  {$ENDIF}
 end;
 
 destructor TZDbcPooledConnection.Destroy;
@@ -449,7 +498,7 @@ begin
   Result := GetConnection.CreateStatementWithParams(Info);
 end;
 
-function TZDbcPooledConnection.EscapeString(Value: AnsiString): AnsiString;
+function TZDbcPooledConnection.EscapeString(Value: RawByteString): RawByteString;
 begin
   Result := GetConnection.EscapeString(Value);
 end;
@@ -598,10 +647,8 @@ end;
 procedure TZDbcPooledConnection.CheckCharEncoding(CharSet: String;
   const DoArrange: Boolean = False);
 begin
-  Self.ClientCodePage := Self.GetIZPlainDriver.ValidateCharEncoding(CharSet, DoArrange);
-
-  FPreprepareSQL := FPreprepareSQL and (ClientCodePage^.Encoding in [ceUTF8, ceUTF16{$IFNDEF MSWINDOWS}, ceUTF32{$ENDIF}]);
-  FClientCodePage := ClientCodePage^.Name; //resets the developer choosen ClientCodePage
+  Self.GetConSettings.ClientCodePage := GetIZPlainDriver.ValidateCharEncoding(CharSet, DoArrange);
+  FClientCodePage := ConSettings.ClientCodePage^.Name; //resets the developer choosen ClientCodePage
 end;
 
 
@@ -610,42 +657,16 @@ end;
     Zeos is now able to preprepare direct insered SQL-Statements.
     Means do the UTF8-preparation if the CharacterSet was choosen.
     So we do not need to do the SQLString + UTF8Encode(Edit1.Test) for example.
-  @result True if coPreprepareSQL was choosen in the TZAbstractConnection
+  @result True if coAutoEncodeStrings was choosen in the TZAbstractConnection
 }
-function TZDbcPooledConnection.GetPreprepareSQL: Boolean;
+function TZDbcPooledConnection.GetAutoEncodeStrings: Boolean;
 begin
-  Result := FPreprepareSQL;
+  Result := FAutoEncodeStrings;
 end;
 
-procedure TZDbcPooledConnection.SetPreprepareSQL(const Value: Boolean);
+procedure TZDbcPooledConnection.SetAutoEncodeStrings(const Value: Boolean);
 begin
-  FPreprepareSQL := Value;
-end;
-
-function TZDbcPooledConnection.GetUTF8StringAsWideField: Boolean;
-begin
-  {$IFDEF LAZARUSUTF8HACK}
-  Result := False;
-  {$ELSE}
-    {$IFDEF DELPHI12_UP}
-    Result := True;
-    {$ELSE}
-    Result := FUTF8StringAsWideField;
-    {$ENDIF}
-  {$ENDIF}
-end;
-
-procedure TZDbcPooledConnection.SetUTF8StringAsWideField(const Value: Boolean);
-begin
-  {$IFDEF LAZARUSUTF8HACK}
-  FUTF8StringAsWideField := False;
-  {$ELSE}
-    {$IFDEF DELPHI12_UP}
-    FUTF8StringAsWideField := True;
-    {$ELSE}
-    FUTF8StringAsWideField := Value;
-    {$ENDIF}
-  {$ENDIF}
+  FAutoEncodeStrings := Value;
 end;
 
 {**
@@ -656,28 +677,47 @@ end;
   @param EscapeMarkSequence represents a Tokenizer detectable EscapeSequence (Len >= 3)
   @result the detectable Binary String
 }
-function TZDbcPooledConnection.GetAnsiEscapeString(const Value: AnsiString;
-  const EscapeMarkSequence: String = '~<|'): String;
+function TZDbcPooledConnection.GetBinaryEscapeString(const Value: RawByteString): String;
 begin
-  Result := Self.GetDriver.GetTokenizer.AnsiGetEscapeString(Value, EscapeMarkSequence);
+  Result := GetConnection.GetBinaryEscapeString(Value);
 end;
 
-function TZDbcPooledConnection.GetEscapeString(const Value: String;
-  const EscapeMarkSequence: String = '~<|'): String;
+function TZDbcPooledConnection.GetBinaryEscapeString(const Value: TByteDynArray): String;
 begin
-  Result := Self.GetDriver.GetTokenizer.GetEscapeString(Value);
+  Result := GetConnection.GetBinaryEscapeString(Value);
 end;
 
-function TZDbcPooledConnection.GetEscapeString(const Value: PAnsiChar;
-  const EscapeMarkSequence: String = '~<|'): String;
+function TZDbcPooledConnection.GetEscapeString(const Value: ZWideString): ZWideString;
 begin
-  GetEscapeString(String(Value));
+  Result := GetConnection.GetEscapeString(Value);
+end;
+
+function TZDbcPooledConnection.GetEscapeString(const Value: RawByteString): RawByteString;
+begin
+  Result := GetConnection.GetEscapeString(Value);
 end;
 
 function TZDbcPooledConnection.GetEncoding: TZCharEncoding;
 begin
-  Result := ClientCodePage^.Encoding;
+  Result := ConSettings.ClientCodePage^.Encoding;
 end;
+
+function TZDbcPooledConnection.GetConSettings: PZConSettings;
+begin
+  Result := @ConSettings;
+end;
+
+{$IFDEF ZEOS_TEST_ONLY}
+function TZDbcPooledConnection.GetTestMode: Byte;
+begin
+  Result := FTestMode;
+end;
+
+procedure TZDbcPooledConnection.SetTestMode(Mode: Byte);
+begin
+  FTestMode := Mode;
+end;
+{$ENDIF}
 
 {**
   Result 100% Compiler-Compatible
@@ -689,7 +729,7 @@ end;
 }
 function TZDbcPooledConnection.GetClientCodePageInformations: PZCodePage; //EgonHugeist
 begin
-  Result := ClientCodePage
+  Result := ConSettings.ClientCodePage
 end;
 
 { TZDbcPooledConnectionDriver }
@@ -740,7 +780,7 @@ begin
     //
     // Search for an existing pool for the URL.
     // There is room to improve the algorithm used to decide when a pool is
-    // compatible with a given URL. For now, i´m just comparing the URL strings.
+    // compatible with a given URL. For now, i am just comparing the URL strings.
     //
     for I := 0 to PoolList.Count - 1 do
       if URLList[I] = TempURL.URL then

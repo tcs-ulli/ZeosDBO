@@ -8,7 +8,7 @@
 {*********************************************************}
 
 {@********************************************************}
-{    Copyright (c) 1999-2006 Zeos Development Group       }
+{    Copyright (c) 1999-2012 Zeos Development Group       }
 {                                                         }
 { License Agreement:                                      }
 {                                                         }
@@ -40,12 +40,10 @@
 {                                                         }
 { The project web site is located on:                     }
 {   http://zeos.firmos.at  (FORUM)                        }
-{   http://zeosbugs.firmos.at (BUGTRACKER)                }
-{   svn://zeos.firmos.at/zeos/trunk (SVN Repository)      }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
 {                                                         }
 {   http://www.sourceforge.net/projects/zeoslib.          }
-{   http://www.zeoslib.sourceforge.net                    }
-{                                                         }
 {                                                         }
 {                                                         }
 {                                 Zeos Development Group. }
@@ -65,7 +63,7 @@ uses
 {$ENDIF}
   Forms, DB, ExtCtrls, StdCtrls, Controls, ComCtrls,
   Classes, SysUtils, {$IFNDEF FPC}Windows, {$ELSE}LCLIntf, LResources, {$ENDIF}
-  Menus, ZConnection, ZAbstractDataset,
+  Menus, ZAbstractDataset,
 {$IFDEF UNIX}
   {$IFNDEF FPC}
     QMenus, QTypes, QExtCtrls, QStdCtrls, QControls, QComCtrls,
@@ -218,10 +216,17 @@ begin
     EditUpdateSQL(TZUpdateSQL(Component));
 end;
 
+{$IFDEF FPC}
+  {$HINTS OFF}
+{$ENDIF}
 function TZUpdateSqlEditor.GetVerb(Index: Integer): string;
 begin
   Result := 'UpdateSql editor...';
 end;
+{$IFDEF FPC}
+  {$HINTS ON}
+{$ENDIF}
+
 
 function TZUpdateSqlEditor.GetVerbCount: Integer;
 begin
@@ -389,14 +394,12 @@ var
   P, TokenStart: PChar;
   IsParam: Boolean;
 
+  {$IFNDEF FPC}
   function IsKatakana(const Chr: Byte): Boolean;
   begin
-    {$IFNDEF FPC}
     Result := (SysLocale.PriLangID = LANG_JAPANESE) and (Chr in [$A1..$DF]);
-    {$ELSE}
-    Result := False;
-    {$ENDIF}
   end;
+  {$ENDIF}
 
 begin
   if FToken = stEnd then SysUtils.Abort;
@@ -420,7 +423,7 @@ begin
             while TRUE do
             begin
               if CharInSet(P^, ['A'..'Z', 'a'..'z', '0'..'9', '_', '.', '"', '$']) or
-                 IsKatakana(Byte(P^)) then
+                 {$IFNDEF FPC}IsKatakana(Byte(P^)){$ELSE}False{$ENDIF} then
                 Inc(P)
               else
                 if CharInSet(P^, LeadBytes) then

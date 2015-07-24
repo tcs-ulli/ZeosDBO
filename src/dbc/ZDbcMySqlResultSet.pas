@@ -8,7 +8,7 @@
 {*********************************************************}
 
 {@********************************************************}
-{    Copyright (c) 1999-2006 Zeos Development Group       }
+{    Copyright (c) 1999-2012 Zeos Development Group       }
 {                                                         }
 { License Agreement:                                      }
 {                                                         }
@@ -40,12 +40,10 @@
 {                                                         }
 { The project web site is located on:                     }
 {   http://zeos.firmos.at  (FORUM)                        }
-{   http://zeosbugs.firmos.at (BUGTRACKER)                }
-{   svn://zeos.firmos.at/zeos/trunk (SVN Repository)      }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
 {                                                         }
 {   http://www.sourceforge.net/projects/zeoslib.          }
-{   http://www.zeoslib.sourceforge.net                    }
-{                                                         }
 {                                                         }
 {                                                         }
 {                                 Zeos Development Group. }
@@ -58,10 +56,10 @@ interface
 {$I ZDbc.inc}
 
 uses
-  Classes, SysUtils, Types, ZSysUtils, ZDbcIntfs,
-  Contnrs, ZDbcResultSet, ZDbcResultSetMetadata,
-  ZCompatibility, ZDbcCache, ZDbcCachedResultSet, ZDbcGenericResolver,
-  ZDbcMySqlStatement, ZPlainMySqlDriver, ZPlainMySqlConstants;
+  Classes, {$IFDEF MSEgui}mclasses,{$ENDIF} SysUtils, Types, Contnrs,
+  ZDbcIntfs, ZDbcResultSet, ZDbcResultSetMetadata, ZCompatibility, ZDbcCache,
+  ZDbcCachedResultSet, ZDbcGenericResolver, ZDbcMySqlStatement,
+  ZPlainMySqlDriver, ZPlainMySqlConstants;
 
 type
   {** Implements MySQL ResultSet Metadata. }
@@ -78,13 +76,15 @@ type
     FRowHandle: PZMySQLRow;
     FPlainDriver: IZMySQLPlainDriver;
     FUseResult: Boolean;
+    FIgnoreUseResult: Boolean;
     TempStr: String;
   protected
     procedure Open; override;
-    function InternalGetString(ColumnIndex: Integer): Ansistring; override;
+    function InternalGetString(ColumnIndex: Integer): RawByteString; override;
   public
     constructor Create(PlainDriver: IZMySQLPlainDriver; Statement: IZStatement;
-      SQL: string; Handle: PZMySQLConnect; UseResult: Boolean);
+      SQL: string; Handle: PZMySQLConnect; UseResult: Boolean;
+      AffectedRows: PInteger; IgnoreUseResult: Boolean = False);
     destructor Destroy; override;
 
     procedure Close; override;
@@ -92,7 +92,7 @@ type
     function IsNull(ColumnIndex: Integer): Boolean; override;
     function GetPChar(ColumnIndex: Integer): PChar; override;
     function GetBoolean(ColumnIndex: Integer): Boolean; override;
-    function GetByte(ColumnIndex: Integer): ShortInt; override;
+    function GetByte(ColumnIndex: Integer): Byte; override;
     function GetShort(ColumnIndex: Integer): SmallInt; override;
     function GetInt(ColumnIndex: Integer): Integer; override;
     function GetLong(ColumnIndex: Integer): Int64; override;
@@ -103,13 +103,11 @@ type
     function GetDate(ColumnIndex: Integer): TDateTime; override;
     function GetTime(ColumnIndex: Integer): TDateTime; override;
     function GetTimestamp(ColumnIndex: Integer): TDateTime; override;
-    function GetAsciiStream(ColumnIndex: Integer): TStream; override;
-    function GetUnicodeStream(ColumnIndex: Integer): TStream; override;
-    function GetBinaryStream(ColumnIndex: Integer): TStream; override;
     function GetBlob(ColumnIndex: Integer): IZBlob; override;
 
     function MoveAbsolute(Row: Integer): Boolean; override;
     function Next: Boolean; override;
+    procedure ReleaseHandle;
   end;
 
   {** Implements Prepared MySQL ResultSet. }
@@ -121,12 +119,12 @@ type
     FPlainDriver: IZMySQLPlainDriver;
     FUseResult: Boolean;
     FColumnArray: TZMysqlColumnBuffer;
-    FBindBuffer: TZMysqlBindBuffer;
-    function bufferasint64(ColumnIndex: Integer):   Int64;
-    function bufferasextended(ColumnIndex: Integer):Extended;
+    FBindBuffer: TZMySqlResultSetBindBuffer;
+    function bufferasint64(ColumnIndex: Integer): Int64;
+    function bufferasextended(ColumnIndex: Integer): Extended;
 
   protected
-    function InternalGetString(ColumnIndex: Integer): Ansistring; override;
+    function InternalGetString(ColumnIndex: Integer): RawByteString; override;
     procedure Open; override;
   public
     constructor Create(PlainDriver: IZMySQLPlainDriver; Statement: IZStatement;
@@ -137,7 +135,7 @@ type
 
     function IsNull(ColumnIndex: Integer): Boolean; override;
     function GetBoolean(ColumnIndex: Integer): Boolean; override;
-    function GetByte(ColumnIndex: Integer): ShortInt; override;
+    function GetByte(ColumnIndex: Integer): Byte; override;
     function GetShort(ColumnIndex: Integer): SmallInt; override;
     function GetInt(ColumnIndex: Integer): Integer; override;
     function GetLong(ColumnIndex: Integer): Int64; override;
@@ -168,6 +166,8 @@ type
     constructor Create(PlainDriver: IZMySQLPlainDriver; Handle: PZMySQLConnect;
       Statement: IZMysqlStatement; Metadata: IZResultSetMetadata);
 
+    function FormWhereClause(Columns: TObjectList;
+      OldRowAccessor: TZRowAccessor): string; override;
     procedure PostUpdates(Sender: IZCachedResultSet; UpdateType: TZRowUpdateType;
       OldRowAccessor, NewRowAccessor: TZRowAccessor); override;
 
@@ -183,7 +183,7 @@ type
 implementation
 
 uses
-  Math, ZMessages, ZDbcMySqlUtils, ZMatchPattern, ZDbcMysql;
+  Math, ZMessages, ZDbcMySqlUtils, ZMatchPattern, ZDbcMysql, ZEncoding, ZSysUtils;
 
 { TZMySQLResultSetMetadata }
 
@@ -212,11 +212,11 @@ end;
 }
 constructor TZMySQLResultSet.Create(PlainDriver: IZMySQLPlainDriver;
   Statement: IZStatement; SQL: string; Handle: PZMySQLConnect;
-  UseResult: Boolean);
+  UseResult: Boolean; AffectedRows: PInteger; IgnoreUseResult: Boolean = False);
 begin
   inherited Create(Statement, SQL, TZMySQLResultSetMetadata.Create(
     Statement.GetConnection.GetMetadata, SQL, Self),
-      Statement.GetConnection.GetClientCodePageInformations);
+      Statement.GetConnection.GetConSettings);
 
   FHandle := Handle;
   FQueryHandle := nil;
@@ -224,8 +224,11 @@ begin
   FPlainDriver := PlainDriver;
   ResultSetConcurrency := rcReadOnly;
   FUseResult := UseResult;
+  FIgnoreUseResult := IgnoreUseResult;
 
   Open;
+  if Assigned(AffectedRows) then
+    AffectedRows^ := LastRowNo;
 end;
 
 {**
@@ -247,7 +250,7 @@ begin
   if ResultSetConcurrency = rcUpdatable then
     raise EZSQLException.Create(SLiveResultSetsAreNotSupported);
 
-  if FUseResult then
+  if FUseResult and (not FIgnoreUseResult) then
   begin
     FQueryHandle := FPlainDriver.UseResult(FHandle);
     LastRowNo := 0;
@@ -274,8 +277,7 @@ begin
       Break;
 
     ColumnsInfo.Add(GetMySQLColumnInfoFromFieldHandle(FPlainDriver,
-     FieldHandle, GetStatement.GetConnection.GetEncoding,
-     GetStatement.GetConnection.UTF8StringAsWideField,FUseResult));
+     FieldHandle, ConSettings, FUseResult));
   end;
 
   inherited Open;
@@ -297,7 +299,17 @@ end;
 procedure TZMySQLResultSet.Close;
 begin
   if FQueryHandle <> nil then
+  begin
     FPlainDriver.FreeResult(FQueryHandle);
+    while(FPlainDriver.RetrieveNextRowset(FHandle) = 0) do
+    begin
+      FQueryHandle := FPlainDriver.StoreResult(FHandle);
+      if FQueryHandle <> nil then
+      begin
+        FPlainDriver.FreeResult(FQueryHandle);
+      end;
+    end;
+  end;
   FQueryHandle := nil;
   FRowHandle := nil;
   inherited Close;
@@ -362,7 +374,7 @@ end;
   @return the column value; if the value is SQL <code>NULL</code>, the
     value returned is <code>null</code>
 }
-function TZMySQLResultSet.InternalGetString(ColumnIndex: Integer): Ansistring;
+function TZMySQLResultSet.InternalGetString(ColumnIndex: Integer): RawByteString;
 var
   LengthPointer: PULong;
   Length: ULong;
@@ -384,7 +396,14 @@ begin
   LastWasNull := Buffer = nil;
   Result := '';
   if not LastWasNull then
+  {$IFDEF WITH_RAWBYTESTRING}
+  begin
+    SetLength(Result, Length);
+    Move(Buffer^, PAnsiChar(Result)^, Length);
+  end;
+  {$ELSE}
     SetString(Result, Buffer, Length);
+  {$ENDIF}
 end;
 
 {**
@@ -417,12 +436,12 @@ end;
   @return the column value; if the value is SQL <code>NULL</code>, the
     value returned is <code>0</code>
 }
-function TZMySQLResultSet.GetByte(ColumnIndex: Integer): ShortInt;
+function TZMySQLResultSet.GetByte(ColumnIndex: Integer): Byte;
 begin
 {$IFNDEF DISABLE_CHECKING}
   CheckColumnConvertion(ColumnIndex, stByte);
 {$ENDIF}
-  Result := ShortInt(StrToIntDef(String(InternalGetString(ColumnIndex)), 0));
+  Result := Byte(StrToIntDef(String(InternalGetString(ColumnIndex)), 0));
 end;
 
 {**
@@ -596,7 +615,6 @@ begin
 {$ENDIF}
   Value := String(InternalGetString(ColumnIndex));
 
-  LastWasNull := (LastWasNull or (Copy(Value, 1, 8)='00:00:00'));
   if LastWasNull then
   begin
     Result := 0;
@@ -642,95 +660,6 @@ begin
 end;
 
 {**
-  Gets the value of the designated column in the current row
-  of this <code>ResultSet</code> object as
-  a stream of ASCII characters. The value can then be read in chunks from the
-  stream. This method is particularly
-  suitable for retrieving large <char>LONGVARCHAR</char> values.
-  The JDBC driver will
-  do any necessary conversion from the database format into ASCII.
-
-  <P><B>Note:</B> All the data in the returned stream must be
-  read prior to getting the value of any other column. The next
-  call to a <code>getXXX</code> method implicitly closes the stream.  Also, a
-  stream may return <code>0</code> when the method
-  <code>InputStream.available</code>
-  is called whether there is data available or not.
-
-  @param columnIndex the first column is 1, the second is 2, ...
-  @return a Java input stream that delivers the database column value
-    as a stream of one-byte ASCII characters; if the value is SQL
-    <code>NULL</code>, the value returned is <code>null</code>
-}
-function TZMySQLResultSet.GetAsciiStream(ColumnIndex: Integer): TStream;
-begin
-{$IFNDEF DISABLE_CHECKING}
-  CheckColumnConvertion(ColumnIndex, stAsciiStream);
-{$ENDIF}
-  Result := TStringStream.Create(InternalGetString(ColumnIndex));
-end;
-
-{**
-  Gets the value of a column in the current row as a stream of
-  Gets the value of the designated column in the current row
-  of this <code>ResultSet</code> object as
-  as a stream of Unicode characters.
-  The value can then be read in chunks from the
-  stream. This method is particularly
-  suitable for retrieving large<code>LONGVARCHAR</code>values.  The JDBC driver will
-  do any necessary conversion from the database format into Unicode.
-  The byte format of the Unicode stream must be Java UTF-8,
-  as specified in the Java virtual machine specification.
-
-  <P><B>Note:</B> All the data in the returned stream must be
-  read prior to getting the value of any other column. The next
-  call to a <code>getXXX</code> method implicitly closes the stream.  Also, a
-  stream may return <code>0</code> when the method
-  <code>InputStream.available</code>
-  is called whether there is data available or not.
-
-  @param columnIndex the first column is 1, the second is 2, ...
-  @return a Java input stream that delivers the database column value
-    as a stream in Java UTF-8 byte format; if the value is SQL
-    <code>NULL</code>, the value returned is <code>null</code>
-}
-function TZMySQLResultSet.GetUnicodeStream(ColumnIndex: Integer): TStream;
-begin
-{$IFNDEF DISABLE_CHECKING}
-  CheckColumnConvertion(ColumnIndex, stUnicodeStream);
-{$ENDIF}
-  Result := TStringStream.Create(InternalGetString(ColumnIndex));
-end;
-
-{**
-  Gets the value of a column in the current row as a stream of
-  Gets the value of the designated column in the current row
-  of this <code>ResultSet</code> object as a binary stream of
-  uninterpreted bytes. The value can then be read in chunks from the
-  stream. This method is particularly
-  suitable for retrieving large <code>LONGVARBINARY</code> values.
-
-  <P><B>Note:</B> All the data in the returned stream must be
-  read prior to getting the value of any other column. The next
-  call to a <code>getXXX</code> method implicitly closes the stream.  Also, a
-  stream may return <code>0</code> when the method
-  <code>InputStream.available</code>
-  is called whether there is data available or not.
-
-  @param columnIndex the first column is 1, the second is 2, ...
-  @return a Java input stream that delivers the database column value
-    as a stream of uninterpreted bytes;
-    if the value is SQL <code>NULL</code>, the value returned is <code>null</code>
-}
-function TZMySQLResultSet.GetBinaryStream(ColumnIndex: Integer): TStream;
-begin
-{$IFNDEF DISABLE_CHECKING}
-  CheckColumnConvertion(ColumnIndex, stBinaryStream);
-{$ENDIF}
-  Result := TStringStream.Create(InternalGetString(ColumnIndex));
-end;
-
-{**
   Returns the value of the designated column in the current row
   of this <code>ResultSet</code> object as a <code>Blob</code> object
   in the Java programming language.
@@ -750,11 +679,19 @@ begin
   try
     if not IsNull(ColumnIndex) then
     begin
-      Stream := TStringStream.Create(InternalGetString(ColumnIndex));
-      Result := TZAbstractBlob.CreateWithStream(Stream)
+      case GetMetaData.GetColumnType(ColumnIndex) of
+        stAsciiStream: Stream := TStringStream.Create(GetValidatedAnsiString(InternalGetString(ColumnIndex), ConSettings, True));
+        stUnicodeStream: Stream := GetValidatedUnicodeStream(InternalGetString(ColumnIndex), ConSettings, True);
+        else
+          Stream := TStringStream.Create(InternalGetString(ColumnIndex));
+      end;
+      if not Assigned(Stream) then //improve TZTestCompMySQLBugReport.Test1045286
+        Stream := TMemoryStream.Create;
+      Result := TZAbstractBlob.CreateWithStream(Stream, GetStatement.GetConnection,
+        GetMetaData.GetColumnType(ColumnIndex) = stUnicodeStream);
     end
     else
-      Result := TZAbstractBlob.CreateWithStream(nil);
+      Result := TZAbstractBlob.CreateWithStream(nil, GetStatement.GetConnection);
   finally
     if Assigned(Stream) then
       Stream.Free;
@@ -845,8 +782,8 @@ begin
   Result := False;
   if (MaxRows > 0) and (RowNo >= MaxRows) then
     Exit;
-
-  FRowHandle := FPlainDriver.FetchRow(FQueryHandle);
+  if Assigned(FQueryHandle) then
+    FRowHandle := FPlainDriver.FetchRow(FQueryHandle);
   if FRowHandle <> nil then
   begin
     RowNo := RowNo + 1;
@@ -862,6 +799,12 @@ begin
   end;
 end;
 
+procedure TZMySQLResultSet.ReleaseHandle;
+begin
+  if FQueryHandle <> nil then
+    FPlainDriver.FreeResult(FQueryHandle);
+  FQueryHandle := nil;
+end;
 { TZMySQLPreparedResultSet }
 
 {**
@@ -881,7 +824,7 @@ var
 begin
   inherited Create(Statement, SQL, TZMySQLResultSetMetadata.Create(
     Statement.GetConnection.GetMetadata, SQL, Self),
-    Statement.GetConnection.GetClientCodePageInformations);
+    Statement.GetConnection.GetConSettings);
 
   FHandle := Handle;
   tempPrepStmt := Statement as IZMysqlPreparedStatement;
@@ -936,25 +879,24 @@ begin
   end;
 
     { Initialize Bind Array and Column Array }
-  FBindBuffer := TZMysqlBindBuffer.Create(FPlainDriver,FieldCount,FColumnArray);
+  FBindBuffer := TZMySqlResultSetBindBuffer.Create(FPlainDriver,FieldCount,FColumnArray);
 
   { Fills the column info. }
   ColumnsInfo.Clear;
   for I := 0 to FPlainDriver.GetFieldCount(FResultMetaData) - 1 do
-    begin
+  begin
     FPlainDriver.SeekField(FResultMetaData, I);
     FieldHandle := FPlainDriver.FetchField(FResultMetaData);
     if FieldHandle = nil then
       Break;
 
     ColumnInfo := GetMySQLColumnInfoFromFieldHandle(FPlainDriver,
-     FieldHandle, GetStatement.GetConnection.GetEncoding,
-     GetStatement.GetConnection.UTF8StringAsWideField,FUseResult);
+     FieldHandle, GetStatement.GetConnection.GetConSettings, FUseResult);
 
     ColumnsInfo.Add(ColumnInfo);
 
-    FBindBuffer.AddColumn(FPlainDriver.GetFieldType(FieldHandle),ColumnInfo.MaxLenghtBytes,false);
-    end;
+    FBindBuffer.AddColumn(FPlainDriver, FieldHandle);
+  end;
   FPlainDriver.FreeResult(FResultMetaData);
   FResultMetaData := nil;
 
@@ -979,12 +921,19 @@ end;
 }
 procedure TZMySQLPreparedResultSet.Close;
 begin
-  if FResultMetaData <> nil then
+  if Assigned(FResultMetaData) then
     FPlainDriver.FreeResult(FResultMetaData);
   FResultMetaData := nil;
-  FBindBuffer.Free;
-
+  if Assigned(FBindBuffer) then
+    FreeAndNil(FBindBuffer);
+  if Assigned(FPrepStmt) then
+    begin
+      FPlainDriver.FreePreparedResult(FPrepStmt);
+      while(FPlainDriver.GetPreparedNextResult(FPrepStmt) = 0) do
+        FPlainDriver.FreePreparedResult(FPrepStmt);
+    end;
   inherited Close;
+
 end;
 
 {**
@@ -1013,12 +962,12 @@ end;
   @return the column value; if the value is SQL <code>NULL</code>, the
     value returned is <code>null</code>
 }
-function TZMySQLPreparedResultSet.InternalGetString(ColumnIndex: Integer): AnsiString;
+function TZMySQLPreparedResultSet.InternalGetString(ColumnIndex: Integer): RawByteString;
 begin
 {$IFNDEF DISABLE_CHECKING}
   CheckClosed;
 {$ENDIF}
-  Result := StrPas(PAnsiChar(FColumnArray[ColumnIndex - 1].buffer));
+  Result := PAnsiChar(FColumnArray[ColumnIndex - 1].buffer);
   LastWasNull := FColumnArray[ColumnIndex-1].is_null =1;
 end;
 
@@ -1052,17 +1001,12 @@ end;
   @return the column value; if the value is SQL <code>NULL</code>, the
     value returned is <code>0</code>
 }
-function TZMySQLPreparedResultSet.GetByte(ColumnIndex: Integer): ShortInt;
-var
-   full64: Int64;
-   bitmask: Int64;
+function TZMySQLPreparedResultSet.GetByte(ColumnIndex: Integer): Byte;
 begin
 {$IFNDEF DISABLE_CHECKING}
   CheckColumnConvertion(ColumnIndex, stByte);
 {$ENDIF}
-  full64 := bufferasInt64(ColumnIndex);
-  bitmask := $FF;
-  Result := Byte(full64 and bitmask);
+  Result := Byte(bufferasInt64(ColumnIndex));
   LastWasNull := FColumnArray[ColumnIndex-1].is_null =1;
 end;
 
@@ -1076,17 +1020,11 @@ end;
     value returned is <code>0</code>
 }
 function TZMySQLPreparedResultSet.GetShort(ColumnIndex: Integer): SmallInt;
-var
-    full64: Int64;
-    bitmask: Int64;
 Begin
 {$IFNDEF DISABLE_CHECKING}
   CheckColumnConvertion(ColumnIndex, stShort);
 {$ENDIF}
- full64 := bufferasInt64(ColumnIndex);
- bitmask := $FFFFFFFF;
- Result := Integer(full64 and bitmask);
-
+ Result := Integer(bufferasInt64(ColumnIndex));
  LastWasNull := FColumnArray[ColumnIndex-1].is_null =1;
 end;
 
@@ -1118,17 +1056,12 @@ end;
     value returned is <code>0</code>
 }
 function TZMySQLPreparedResultSet.GetLong(ColumnIndex: Integer): Int64;
-var
-    full64: Int64;
-    bitmask: Int64;
 Begin
 {$IFNDEF DISABLE_CHECKING}
   CheckColumnConvertion(ColumnIndex, stLong);
 {$ENDIF}
- full64 := bufferasInt64(ColumnIndex);
- bitmask := $FFFFFFFF;
- Result := Integer(full64 and bitmask);
- LastWasNull := FColumnArray[ColumnIndex-1].is_null =1;
+  Result := bufferasInt64(ColumnIndex);
+  LastWasNull := FColumnArray[ColumnIndex-1].is_null =1;
 end;
 
 {**
@@ -1324,11 +1257,16 @@ end;
     <code>NULL</code>, the value returned is <code>null</code>
 }
 function TZMySQLPreparedResultSet.GetUnicodeStream(ColumnIndex: Integer): TStream;
+var
+  WS: ZWideString;
 begin
 {$IFNDEF DISABLE_CHECKING}
   CheckColumnConvertion(ColumnIndex, stUnicodeStream);
 {$ENDIF}
-  Result := TStringStream.Create(InternalGetString(ColumnIndex));
+  WS := ZDbcUnicodeString(InternalGetString(ColumnIndex));
+  Result := TMemoryStream.Create;
+  Result.Write(PWideChar(WS)^, Length(WS) *2);
+  Result.Position := 0;
   LastWasNull := FColumnArray[ColumnIndex-1].is_null =1;
 end;
 
@@ -1389,14 +1327,17 @@ begin
   try
     if not LastWasNull then
     begin
-      if TZAbstractResultSetMetadata(Metadata).GetColumnType(ColumnIndex) = stBinaryStream then
-        Stream := GetBinaryStream(ColumnIndex)
+      case GetMetadata.GetColumnType(ColumnIndex) of
+        stBinaryStream: Stream := GetBinaryStream(ColumnIndex);
+        stUnicodeStream: Stream := GetUnicodeStream(ColumnIndex);
       else
-      Stream := TStringStream.Create(InternalGetString(ColumnIndex));
-        Result := TZAbstractBlob.CreateWithStream(Stream)
+        Stream := TStringStream.Create(GetValidatedAnsiString(InternalGetString(ColumnIndex), ConSettings, True));
+      end;
+      Result := TZAbstractBlob.CreateWithStream(Stream, GetStatement.GetConnection,
+        GetMetadata.GetColumnType(ColumnIndex) = stUnicodeStream)
     end
     else
-      Result := TZAbstractBlob.CreateWithStream(nil);
+      Result := TZAbstractBlob.CreateWithStream(nil, GetStatement.GetConnection);
   finally
     if Assigned(Stream) then
       Stream.Free;
@@ -1405,23 +1346,78 @@ end;
 
 function TZMySQLPreparedResultSet.bufferasint64(ColumnIndex: Integer): Int64;
 begin
-   Case FColumnArray[ColumnIndex-1].length of
-   1: Result := pshortint(FColumnArray[ColumnIndex-1].buffer)^;
-   2: Result := psmallint(FColumnArray[ColumnIndex-1].buffer)^;
-   4: Result := plongint(FColumnArray[ColumnIndex-1].buffer)^;
-   8: Result := pint64(FColumnArray[ColumnIndex-1].buffer)^;
-   else
-    Result := 0;
-   End
+  //http://dev.mysql.com/doc/refman/5.1/de/numeric-types.html
+  if FBindBuffer.GetBufferIsSigned(ColumnIndex) then
+    Case FBindBuffer.GetBufferType(ColumnIndex) of
+      FIELD_TYPE_DECIMAL:   Result := 0;
+      FIELD_TYPE_TINY:      Result := PByte(FColumnArray[ColumnIndex-1].buffer)^;
+      FIELD_TYPE_SHORT:     Result := PWord(FColumnArray[ColumnIndex-1].buffer)^;
+      FIELD_TYPE_LONG:      Result := PCardinal(FColumnArray[ColumnIndex-1].buffer)^;
+      FIELD_TYPE_FLOAT:     Result := 0;
+      FIELD_TYPE_DOUBLE:    Result := 0;
+      FIELD_TYPE_NULL:      Result := 0;
+      FIELD_TYPE_TIMESTAMP: Result := 0;
+      FIELD_TYPE_LONGLONG:  Result := PULongLong(FColumnArray[ColumnIndex-1].buffer)^;
+      FIELD_TYPE_INT24:     Result := PCardinal(FColumnArray[ColumnIndex-1].buffer)^;
+      (*FIELD_TYPE_DATE      = 10,
+      FIELD_TYPE_TIME      = 11,
+      FIELD_TYPE_DATETIME  = 12,*)
+      FIELD_TYPE_YEAR:      Result := PWord(FColumnArray[ColumnIndex-1].buffer)^;
+      (*FIELD_TYPE_NEWDATE   = 14,
+      FIELD_TYPE_VARCHAR   = 15, //<--ADDED by fduenas 20-06-2006
+      FIELD_TYPE_BIT: ;
+      FIELD_TYPE_NEWDECIMAL = 246, //<--ADDED by fduenas 20-06-2006
+      FIELD_TYPE_ENUM      = 247,
+      FIELD_TYPE_SET       = 248,
+      FIELD_TYPE_TINY_BLOB,
+      FIELD_TYPE_MEDIUM_BLOB,
+      FIELD_TYPE_LONG_BLOB,
+      FIELD_TYPE_BLOB:      Result := 0;
+      FIELD_TYPE_VAR_STRING = 253,
+      FIELD_TYPE_STRING:    = 254,
+      FIELD_TYPE_GEOMETRY:  = 255*)
+      else Result := 0;
+    end
+  else
+    Case FBindBuffer.GetBufferType(ColumnIndex) of
+      FIELD_TYPE_DECIMAL:   Result := 0;
+      FIELD_TYPE_TINY:      Result := PShortInt(FColumnArray[ColumnIndex-1].buffer)^;
+      FIELD_TYPE_SHORT:     Result := PSmallInt(FColumnArray[ColumnIndex-1].buffer)^;
+      FIELD_TYPE_LONG:      Result := PInteger(FColumnArray[ColumnIndex-1].buffer)^;
+      FIELD_TYPE_FLOAT:     Result := 0;
+      FIELD_TYPE_DOUBLE:    Result := 0;
+      FIELD_TYPE_NULL:      Result := 0;
+      FIELD_TYPE_TIMESTAMP: Result := 0;
+      FIELD_TYPE_LONGLONG:  Result := PInt64(FColumnArray[ColumnIndex-1].buffer)^;
+      FIELD_TYPE_INT24:     Result := PInteger(FColumnArray[ColumnIndex-1].buffer)^;
+      (*FIELD_TYPE_DATE      = 10,
+      FIELD_TYPE_TIME      = 11,
+      FIELD_TYPE_DATETIME  = 12, *)
+      FIELD_TYPE_YEAR:      Result := PSmallInt(FColumnArray[ColumnIndex-1].buffer)^;
+      (*FIELD_TYPE_NEWDATE   = 14,
+      FIELD_TYPE_VARCHAR   = 15, //<--ADDED by fduenas 20-06-2006
+      FIELD_TYPE_BIT: ;
+      FIELD_TYPE_NEWDECIMAL = 246, //<--ADDED by fduenas 20-06-2006
+      FIELD_TYPE_ENUM      = 247,
+      FIELD_TYPE_SET       = 248,
+      FIELD_TYPE_TINY_BLOB,
+      FIELD_TYPE_MEDIUM_BLOB,
+      FIELD_TYPE_LONG_BLOB,
+      FIELD_TYPE_BLOB:      Result := 0;
+      FIELD_TYPE_VAR_STRING = 253,
+      FIELD_TYPE_STRING:    = 254,
+      FIELD_TYPE_GEOMETRY:  = 255*)
+      else Result := 0;
+    end;
 end;
 
 function TZMySQLPreparedResultSet.bufferasextended(ColumnIndex: Integer): Extended;
 begin
-   Case FColumnArray[ColumnIndex-1].length of
-   4: Result := psingle(FColumnArray[ColumnIndex-1].buffer)^;
-   8: Result := pdouble(FColumnArray[ColumnIndex-1].buffer)^;
+   Case FBindBuffer.GetBufferType(ColumnIndex) of
+     FIELD_TYPE_FLOAT: Result := psingle(FColumnArray[ColumnIndex-1].buffer)^;
+     FIELD_TYPE_DOUBLE: Result := pdouble(FColumnArray[ColumnIndex-1].buffer)^;
    else
-    Result := 0;
+      Result := SQLStrToFloatDef(InternalGetString(ColumnIndex), 0);
    End
 end;
 
@@ -1554,6 +1550,72 @@ begin
   end;
 end;
 
+{**
+  Forms a where clause for UPDATE or DELETE DML statements.
+  @param Columns a collection of key columns.
+  @param OldRowAccessor an accessor object to old column values.
+}
+function TZMySQLCachedResolver.FormWhereClause(Columns: TObjectList;
+  OldRowAccessor: TZRowAccessor): string;
+var
+  I, N: Integer;
+  Current: TZResolverParameter;
+begin
+  Result := '';
+  N := Columns.Count - WhereColumns.Count;
+
+  for I := 0 to WhereColumns.Count - 1 do
+  begin
+    Current := TZResolverParameter(WhereColumns[I]);
+    if Result <> '' then
+      Result := Result + ' AND ';
+
+    Result := Result + IdentifierConvertor.Quote(Current.ColumnName);
+    if OldRowAccessor.IsNull(Current.ColumnIndex) then
+    begin
+      if not (Metadata.IsNullable(Current.ColumnIndex) = ntNullable) then
+        case OldRowAccessor.GetColumnType(Current.ColumnIndex) of
+          stDate:
+            if I > 0 then
+            begin
+              Current := TZResolverParameter(WhereColumns[I-1]);
+              Result := Result+ '=''0000-00-00'' OR '+Result + ' IS NULL';
+              Columns.Add(TZResolverParameter.Create(Current.ColumnIndex,
+              Current.ColumnName, Current.ColumnType, Current.NewValue, ''));
+            end;
+          stTime:
+            if I > 0 then
+            begin
+              Current := TZResolverParameter(WhereColumns[I-1]);
+              Result := Result+ '=''00:00:00'' OR '+Result + ' IS NULL';
+              Columns.Add(TZResolverParameter.Create(Current.ColumnIndex,
+              Current.ColumnName, Current.ColumnType, Current.NewValue, ''));
+            end;
+          stTimeStamp:
+            if I > 0 then
+            begin
+              Current := TZResolverParameter(WhereColumns[I-1]);
+              Result := Result+ '=''0000-00-00 00:00:00'' OR '+Result + ' IS NULL';
+              Columns.Add(TZResolverParameter.Create(Current.ColumnIndex,
+              Current.ColumnName, Current.ColumnType, Current.NewValue, ''));
+            end;
+          else
+            Result := Result + ' IS NULL';
+        end
+      else
+        Result := Result + ' IS NULL ';
+      Columns.Delete(N);
+    end
+    else
+    begin
+      Result := Result + '=?';
+      Inc(N);
+    end;
+  end;
+
+  if Result <> '' then
+    Result := ' WHERE ' + Result;
+end;
 {**
   Posts updates to database.
   @param Sender a cached result set object.

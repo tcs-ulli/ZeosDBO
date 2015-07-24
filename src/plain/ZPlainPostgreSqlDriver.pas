@@ -8,7 +8,7 @@
 {*********************************************************}
 
 {@********************************************************}
-{    Copyright (c) 1999-2006 Zeos Development Group       }
+{    Copyright (c) 1999-2012 Zeos Development Group       }
 {                                                         }
 { License Agreement:                                      }
 {                                                         }
@@ -40,12 +40,10 @@
 {                                                         }
 { The project web site is located on:                     }
 {   http://zeos.firmos.at  (FORUM)                        }
-{   http://zeosbugs.firmos.at (BUGTRACKER)                }
-{   svn://zeos.firmos.at/zeos/trunk (SVN Repository)      }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
 {                                                         }
 {   http://www.sourceforge.net/projects/zeoslib.          }
-{   http://www.zeoslib.sourceforge.net                    }
-{                                                         }
 {                                                         }
 {                                                         }
 {                                 Zeos Development Group. }
@@ -66,14 +64,13 @@ const
   LINUX_DLL_LOCATION   = 'libpq'+SharedSuffix;
   LINUX_DLL8_LOCATION  = 'libpq'+SharedSuffix+'.4';
   LINUX_DLL82_LOCATION = 'libpq'+SharedSuffix+'.5';
-  LINUX_DLL83_LOCATION = 'libpq.4'+SharedSuffix;
-  LINUX_DLL84_LOCATION = 'libpq.5'+SharedSuffix;
 
 { Type Lengths }
   NAMEDATALEN  = 32;
 
 { OIDNAMELEN should be set to NAMEDATALEN + sizeof(Oid) }
   OIDNAMELEN   = 36;
+  InvalidOid   = 0;
 
   INV_WRITE    = $00020000;
   INV_READ     = $00040000;
@@ -172,10 +169,11 @@ type
   PZPostgreSQLConnect = Pointer;
   PZPostgreSQLResult = Pointer;
   PZPostgreSQLCancel = Pointer;
+  POid = ^Oid;
   Oid = Integer;
 
 TZPgCharactersetType = (
-	csSQL_ASCII,	{ SQL/ASCII }
+	csSQL_ASCII = 0,	{ SQL/ASCII }
 	csEUC_JP,	{ EUC for Japanese }
 	csEUC_CN,	{ EUC for Chinese }
 	csEUC_KR,	{ EUC for Korean }
@@ -323,6 +321,12 @@ type
 
   PPQArgBlock = ^PQArgBlock;
 
+{Prepared statement types}
+  TPQparamTypes = {array of }POid;
+  TPQparamValues = array of PAnsichar;
+  TPQparamLengths = array of Integer;
+  TPQparamFormats = array of Integer;
+
 
 { ************** Plain API Function types definition ************* }
 { ===	in fe-connect.c === }
@@ -347,7 +351,7 @@ type
 //TBD  PGTransactionStatusType PQtransactionStatus(const PGconn *conn);
 //15022006 FirmOS: omitting const char *PQparameterStatus(const PGconn *conn, const char *paramName);
 //15022006 FirmOS: omitting  PQprotocolVersion
-//15022006 FirmOS: omitting  PQserverVersion
+  TPQserverVersion = function(Handle: PPGconn): Integer; cdecl;
   TPQerrorMessage  = function(Handle: PPGconn): PAnsiChar; cdecl;
   TPQsocket        = function(Handle: PPGconn): Integer; cdecl;
   TPQbackendPID    = function(Handle: PPGconn): Integer; cdecl;
@@ -358,16 +362,43 @@ type
 
   TPQclientEncoding = function(Handle: PPGconn): Integer; cdecl; //EgonHugeist
 { === in fe-exec.c === }
+//* Simple synchronous query */
   TPQexec          = function(Handle: PPGconn; Query: PAnsiChar): PPGresult; cdecl;
+  TPQexecParams    = function(Handle: PPGconn; command: PAnsichar;
+        nParams: Integer; paramTypes: TPQparamTypes; paramValues: TPQparamValues;
+        paramLengths: TPQparamLengths; paramFormats: TPQparamFormats;
+        resultFormat: Integer): PPGresult; cdecl;
+  TPQprepare        = function(Handle: PPGconn; stmtName: PAnsichar;
+        query: PAnsiChar; nParams: Integer; paramTypes: TPQparamTypes): PPGresult; cdecl;
+  TPQexecPrepared   = function(Handle: PPGconn; stmtName: PAnsichar;
+        nParams: Integer; paramValues: TPQparamValues; paramLengths: TPQparamLengths;
+        paramFormats: TPQparamFormats; resultFormat: Integer): PPGresult; cdecl;
+//* Interface for multiple-result or asynchronous queries */
+  TPQsendQuery      = function(Handle: PPGconn; query: PAnsiChar): Integer; cdecl;
+  TPQsendQueryParams= function(Handle: PPGconn; command: PAnsichar;
+        nParams: Integer; paramTypes: TPQparamTypes; paramValues: TPQparamValues;
+        paramLengths: TPQparamLengths; paramFormats: TPQparamFormats;
+        resultFormat: Integer): Integer; cdecl;
+  TPQsendPrepare    = function(Handle: PPGconn; stmtName: PAnsichar;
+        query: PAnsiChar; nParams: Integer; paramTypes: TPQparamTypes): Integer; cdecl;
+  TPQsendQueryPrepared = function(Handle: PPGconn; stmtName: PAnsichar;
+         nParams: Integer; paramValues: TPQparamValues;
+         paramLengths: TPQparamLengths; paramFormats: TPQparamFormats;
+         resultFormat: Integer): Integer; cdecl;
+  TPQgetResult     = function(Handle: PPGconn): PPGresult;  cdecl;
+//* Describe prepared statements and portals */
+  TPQdescribePrepared = function(Handle: PPGconn; const stmt: PAnsiChar): PPGresult; cdecl;
+  TPQdescribePortal = function(Handle: PPGconn; const portal: PAnsiChar): PPGresult; cdecl;
+  TPQsendDescribePrepared = function(Handle: PPGconn; const stmt: PAnsiChar): Integer; cdecl;
+  TPQsendDescribePortal = function(Handle: PPGconn; const portal: PAnsiChar): Integer; cdecl;
+
   TPQnotifies      = function(Handle: PPGconn): PPGnotify; cdecl;
   TPQfreeNotify    = procedure(Handle: PPGnotify);cdecl;
-  TPQsendQuery     = function(Handle: PPGconn; Query: PAnsiChar): Integer; cdecl;
-  TPQgetResult     = function(Handle: PPGconn): PPGresult; cdecl;
   TPQisBusy        = function(Handle: PPGconn): Integer; cdecl;
   TPQconsumeInput  = function(Handle: PPGconn): Integer; cdecl;
-  TPQgetCancel     = function(Handle: PPGconn): PGcancel; cdecl; 
-  TPQfreeCancel    = procedure(Canc: PGcancel); cdecl; 
-  TPQcancel        = function(Canc: PGcancel; Buffer: PChar; BufSize: Integer): Integer; 
+  TPQgetCancel     = function(Handle: PPGconn): PGcancel; cdecl;
+  TPQfreeCancel    = procedure(Canc: PGcancel); cdecl;
+  TPQcancel        = function(Canc: PGcancel; Buffer: PChar; BufSize: Integer): Integer;
   TPQgetline       = function(Handle: PPGconn; Str: PAnsiChar; length: Integer): Integer; cdecl;
   TPQputline       = function(Handle: PPGconn; Str: PAnsiChar): Integer; cdecl;
   TPQgetlineAsync  = function(Handle: PPGconn; Buffer: PAnsiChar; BufSize: Integer): Integer; cdecl;
@@ -382,6 +413,8 @@ type
   TPQbinaryTuples  = function(Result: PPGresult): Integer; cdecl;
   TPQfname         = function(Result: PPGresult; field_num: Integer): PAnsiChar; cdecl;
   TPQfnumber       = function(Result: PPGresult; field_name: PAnsiChar): Integer; cdecl;
+  TPQftable        = function(Result: PPGresult; field_num: Integer): Oid; cdecl;
+  TPQftablecol     = function(Result: PPGresult; field_num: Integer): Integer; cdecl;
   TPQftype         = function(Result: PPGresult; field_num: Integer): Oid; cdecl;
   TPQfsize         = function(Result: PPGresult; field_num: Integer): Integer; cdecl;
   TPQfmod          = function(Result: PPGresult; field_num: Integer): Integer; cdecl;
@@ -394,12 +427,21 @@ type
   TPQgetisnull     = function(Result: PPGresult; tup_num, field_num: Integer): Integer; cdecl;
   TPQclear         = procedure(Result: PPGresult); cdecl;
   TPQmakeEmptyPGresult  = function(Handle: PPGconn; status: TZPostgreSQLExecStatusType): PPGresult; cdecl;
+  //* Quoting strings before inclusion in queries. */
   // postgresql 8
-  TPQescapeByteaConn =function(Handle: PPGconn;const from:PAnsiChar;from_length:longword;to_lenght:PLongword):PAnsiChar;cdecl;
-  TPQescapeBytea     =function(const from:PAnsiChar;from_length:longword;to_lenght:PLongword):PAnsiChar;cdecl;
-  TPQunescapeBytea     =function(const from:PAnsiChar;to_lenght:PLongword):PAnsiChar;cdecl;
-  TPQFreemem       = procedure(ptr:Pointer);cdecl;
-{ === in fe-lobj.c === }
+  TPQescapeStringConn = function(Handle: PGconn; ToChar: PAnsiChar;
+    const FromChar: PAnsiChar; length: NativeUInt; error: PInteger): NativeUInt;cdecl; //7.3
+  TPQescapeLiteral    = function(Handle: PGconn; const str: PAnsiChar; len: NativeUInt): PAnsiChar;cdecl;
+  TPQescapeIdentifier = function(Handle: PGconn; const str: PAnsiChar; len: NativeUInt): PAnsiChar;cdecl; //7.3
+  TPQescapeByteaConn  = function(Handle: PPGconn;const from:PAnsiChar;from_length:longword;to_lenght:PLongword):PAnsiChar;cdecl;
+  TPQunescapeBytea    = function(const from:PAnsiChar;to_lenght:PLongword):PAnsiChar;cdecl;
+  TPQFreemem          = procedure(ptr:Pointer);cdecl;
+
+  //* These forms are deprecated! */
+  TPQescapeString     = function(ToChar: PAnsiChar; const FormChar: PAnsiChar; length: NativeUInt): NativeUInt;cdecl; //7.2
+  TPQescapeBytea      = function(const from:PAnsiChar;from_length:longword;to_lenght:PLongword):PAnsiChar;cdecl; //7.2
+
+  { === in fe-lobj.c === }
   Tlo_open         = function(Handle: PPGconn; lobjId: Oid; mode: Integer): Integer; cdecl;
   Tlo_close        = function(Handle: PPGconn; fd: Integer): Integer; cdecl;
   Tlo_read         = function(Handle: PPGconn; fd: Integer; buf: PAnsiChar; len: NativeUInt): Integer; cdecl;
@@ -428,6 +470,7 @@ TZPOSTGRESQL_API = record
   PQtty:           TPQtty;
   PQoptions:       TPQoptions;
   PQstatus:        TPQstatus;
+  PQserverVersion: TPQserverVersion;
   PQerrorMessage:  TPQerrorMessage;
   PQsocket:        TPQsocket;
   PQbackendPID:    TPQbackendPID;
@@ -437,15 +480,26 @@ TZPOSTGRESQL_API = record
   PQclientEncoding: TPQclientEncoding;
 { === in fe-exec.c === }
   PQexec:          TPQexec;
+  PQexecParams:    TPQexecParams;
+  PQprepare:       TPQprepare;
+  PQexecPrepared:  TPQexecPrepared;
+  PQsendQuery:     TPQsendQuery;
+  PQsendQueryParams: TPQsendQueryParams;
+  PQsendPrepare:   TPQsendPrepare;
+  PQsendQueryPrepared: TPQsendQueryPrepared;
+  PQgetResult:     TPQgetResult;
+  //* Describe prepared statements and portals */
+  PQdescribePrepared:     TPQdescribePrepared;
+  PQdescribePortal:       TPQdescribePortal;
+  PQsendDescribePrepared: TPQsendDescribePrepared;
+  PQsendDescribePortal:   TPQsendDescribePortal;
   PQnotifies:      TPQnotifies;
   PQfreeNotify:    TPQfreeNotify;
-  PQsendQuery:     TPQsendQuery;
-  PQgetResult:     TPQgetResult;
   PQisBusy:        TPQisBusy;
   PQconsumeInput:  TPQconsumeInput;
-  PQgetCancel:     TPQgetCancel; 
-  PQfreeCancel:    TPQfreeCancel; 
-  PQcancel:        TPQcancel; 
+  PQgetCancel:     TPQgetCancel;
+  PQfreeCancel:    TPQfreeCancel;
+  PQcancel:        TPQcancel;
   PQgetline:       TPQgetline;
   PQputline:       TPQputline;
   PQgetlineAsync:  TPQgetlineAsync;
@@ -460,6 +514,8 @@ TZPOSTGRESQL_API = record
   PQbinaryTuples:  TPQbinaryTuples;
   PQfname:         TPQfname;
   PQfnumber:       TPQfnumber;
+  PQftable:        TPQftable;
+  PQftablecol:     TPQftablecol;
   PQftype:         TPQftype;
   PQfsize:         TPQfsize;
   PQfmod:          TPQfmod;
@@ -472,10 +528,16 @@ TZPOSTGRESQL_API = record
   PQgetisnull:     TPQgetisnull;
   PQclear:         TPQclear;
   PQmakeEmptyPGresult:  TPQmakeEmptyPGresult;
-  PQescapeByteaConn:TPQescapeByteaConn; // postgresql 8
-  PQescapeBytea:TPQescapeBytea; // postgresql 8
-  PQunescapeBytea:TPQunescapeBytea; // postgresql 8
-  PQFreemem:TPQFreemem; // postgresql 8
+
+  PQescapeStringConn: TPQescapeStringConn; //since 7.3
+  PQescapeByteaConn:  TPQescapeByteaConn; // postgresql since 7.3
+  PQFreemem:          TPQFreemem; // since postgresql 7.4
+  PQescapeString:     TPQescapeString; // since postgresql 7.4
+  PQescapeBytea:      TPQescapeBytea; // since postgresql 7.4
+  PQunescapeBytea:    TPQunescapeBytea; // since postgresql 8.3
+  PQescapeLiteral:    TPQescapeLiteral; // since postgresql 9.0
+  PQescapeIdentifier: TPQescapeIdentifier; // since postgresql 9.0
+
 { === in fe-lobj.c === }
   lo_open:         Tlo_open;
   lo_close:        Tlo_close;
@@ -497,8 +559,15 @@ type
   IZPostgreSQLPlainDriver = interface (IZPlainDriver)
     ['{03CD6345-2D7A-4FE2-B03D-3C5656789FEB}']
 
-    function  EncodeBYTEA(const Value: AnsiString; Handle: PZPostgreSQLConnect): AnsiString;
-    function  DecodeBYTEA(const value: AnsiString): AnsiString;
+    function GetStandardConformingStrings: Boolean;
+
+    function EncodeBYTEA(const Value: RawByteString; Handle: PZPostgreSQLConnect;
+      Quoted: Boolean = True): RawByteString;
+    function DecodeBYTEA(const value: RawByteString; const Is_bytea_output_hex: Boolean;
+      Handle: PZPostgreSQLConnect): RawByteString;
+    function SupportsEncodeBYTEA: Boolean;
+    function SupportsDecodeBYTEA(const Handle: PZPostgreSQLConnect): Boolean;
+    function SupportsStringEscaping(const ClientDependend: Boolean): Boolean;
 
     function ConnectDatabase(ConnInfo: PAnsiChar): PZPostgreSQLConnect;
     function SetDatabaseLogin(Host, Port, Options, TTY, Db, User,Passwd: PAnsiChar): PZPostgreSQLConnect;
@@ -512,7 +581,7 @@ type
     function GetPassword(Handle: PZPostgreSQLConnect): PAnsiChar;
     function GetHost(Handle: PZPostgreSQLConnect): PAnsiChar;
     function GetPort(Handle: PZPostgreSQLConnect): PAnsiChar;
-    function GetTTY(Handle: PZPostgreSQLConnect): PAnsiChar; cdecl;
+    function GetTTY(Handle: PZPostgreSQLConnect): PAnsiChar;
     function GetOptions(Handle: PZPostgreSQLConnect): PAnsiChar;
     function GetStatus(Handle: PZPostgreSQLConnect):TZPostgreSQLConnectStatusType;
     function GetClientEncoding(Handle: PPGconn): Integer; //EgonHugeist
@@ -525,17 +594,40 @@ type
     procedure SetNoticeProcessor(Handle: PZPostgreSQLConnect;Proc: TZPostgreSQLNoticeProcessor; Arg: Pointer);
 
     function ExecuteQuery(Handle: PZPostgreSQLConnect;Query: PAnsiChar): PZPostgreSQLResult;
-
+    function ExecParams(Handle: PPGconn; command: PAnsichar;
+        nParams: Integer; paramTypes: TPQparamTypes; paramValues: TPQparamValues;
+        paramLengths: TPQparamLengths; paramFormats: TPQparamFormats;
+        resultFormat: Integer): PPGresult;
+    function Prepare(Handle: PPGconn; stmtName: PAnsichar;
+        query: PAnsiChar; nParams: Integer; paramTypes: TPQparamTypes): PPGresult;
+    function ExecPrepared(Handle: PPGconn; stmtName: PAnsichar;
+        nParams: Integer; paramValues: TPQparamValues; paramLengths: TPQparamLengths;
+        paramFormats: TPQparamFormats; resultFormat: Integer): PPGresult;
+    function SendQuery(Handle: PZPostgreSQLConnect; Query: PAnsiChar): Integer;
+    function SendQueryParams(Handle: PPGconn; command: PAnsichar;
+        nParams: Integer; paramTypes: TPQparamTypes; paramValues: TPQparamValues;
+        paramLengths: TPQparamLengths; paramFormats: TPQparamFormats;
+        resultFormat: Integer): Integer;
+    function SendPrepare(Handle: PPGconn; stmtName: PAnsichar;
+        query: PAnsiChar; nParams: Integer; paramTypes: TPQparamTypes): Integer;
+    function SendQueryPrepared(Handle: PPGconn; stmtName: PAnsichar;
+         nParams: Integer; paramValues: TPQparamValues;
+         paramLengths: TPQparamLengths; paramFormats: TPQparamFormats;
+         resultFormat: Integer): Integer;
+    function GetResult(Handle: PZPostgreSQLConnect): PZPostgreSQLResult;
+    //* Describe prepared statements and portals */
+    function DescribePrepared(Handle: PPGconn; const stmt: PAnsiChar): PPGresult;
+    function DescribePortal(Handle: PPGconn; const portal: PAnsiChar): PPGresult;
+    function SendDescribePrepared(Handle: PPGconn; const stmt: PAnsiChar): Integer;
+    function SendDescribePortal(Handle: PPGconn; const portal: PAnsiChar): Integer;
     function Notifies(Handle: PZPostgreSQLConnect): PZPostgreSQLNotify;
     procedure FreeNotify(Handle: PZPostgreSQLNotify);
 
-    function SendQuery(Handle: PZPostgreSQLConnect; Query: PAnsiChar): Integer;
-    function GetResult(Handle: PZPostgreSQLConnect): PZPostgreSQLResult;
     function IsBusy(Handle: PZPostgreSQLConnect): Integer;
     function ConsumeInput(Handle: PZPostgreSQLConnect): Integer;
-    function GetCancel(Handle: PZPostgreSQLConnect): PZPostgreSQLCancel; 
-    procedure FreeCancel( Canc: PZPostgreSQLCancel); 
-    function Cancel( Canc: PZPostgreSQLCancel; Buffer: PChar; Length: Integer): Integer; 
+    function GetCancel(Handle: PZPostgreSQLConnect): PZPostgreSQLCancel;
+    procedure FreeCancel( Canc: PZPostgreSQLCancel);
+    function Cancel( Canc: PZPostgreSQLCancel; Buffer: PChar; Length: Integer): Integer;
     function GetLine(Handle: PZPostgreSQLConnect; Str: PAnsiChar;
       Length: Integer): Integer;
     function PutLine(Handle: PZPostgreSQLConnect; Str: PAnsiChar): Integer;
@@ -560,6 +652,8 @@ type
     function GetBinaryTuples(Res: PZPostgreSQLResult): Integer;
     function GetFieldName(Res: PZPostgreSQLResult; FieldNum: Integer): PAnsiChar;
     function GetFieldNumber(Res: PZPostgreSQLResult; FieldName: PAnsiChar): Integer;
+    function GetFieldTableOID(Res: PZPostgreSQLResult; FieldNum: Integer) : Oid;
+    function GetFieldTableColIdx(Res: PZPostgreSQLResult; FieldNum: Integer) : Integer;
     function GetFieldType(Res: PZPostgreSQLResult; FieldNum: Integer): Oid;
     function GetFieldSize(Res: PZPostgreSQLResult;  FieldNum: Integer): Integer;
     function GetFieldMode(Res: PZPostgreSQLResult; FieldNum: Integer): Integer;
@@ -600,20 +694,28 @@ type
   end;
 
   {** Implements a base driver for PostgreSQL}
-  TZPostgreSQLBaseDriver = class(TZAbstractPlainDriver, IZPlainDriver, IZPostgreSQLPlainDriver)
+  TZPostgreSQLBaseDriver = class(TZAbstractPlainDriver, IZPostgreSQLPlainDriver)
   protected
-    POSTGRESQL_API : TZPOSTGRESQL_API;
+    POSTGRESQL_API: TZPOSTGRESQL_API;
+    function GetStandardConformingStrings: Boolean; virtual;
     function GetUnicodeCodePageName: String; override;
     procedure LoadCodePages; override;
     procedure LoadApi; override;
   public
     constructor Create;
 
-    function EncodeBYTEA(const Value: AnsiString; Handle: PZPostgreSQLConnect): AnsiString; virtual;
-    function DecodeBYTEA(const value: AnsiString): AnsiString; virtual;
+    function EncodeBYTEA(const Value: RawByteString; Handle: PZPostgreSQLConnect;
+      Quoted: Boolean = True): RawByteString;
+    function DecodeBYTEA(const value: RawByteString; const Is_bytea_output_hex: Boolean;
+      Handle: PZPostgreSQLConnect): RawByteString;
+
+    function SupportsEncodeBYTEA: Boolean;
+    function SupportsDecodeBYTEA(const Handle: PZPostgreSQLConnect): Boolean;
+    function SupportsStringEscaping(const ClientDependend: Boolean): Boolean;
 
     function ConnectDatabase(ConnInfo: PAnsiChar): PZPostgreSQLConnect;
-    function SetDatabaseLogin(Host, Port, Options, TTY, Db, User, Passwd: PAnsiChar): PZPostgreSQLConnect;
+    function SetDatabaseLogin(Host, Port, Options, TTY, Db, User,
+      Passwd: PAnsiChar): PZPostgreSQLConnect;
     function GetConnectDefaults: PZPostgreSQLConnectInfoOption;
 
     procedure Finish(Handle: PZPostgreSQLConnect);
@@ -624,7 +726,7 @@ type
     function GetPassword(Handle: PZPostgreSQLConnect): PAnsiChar;
     function GetHost(Handle: PZPostgreSQLConnect): PAnsiChar;
     function GetPort(Handle: PZPostgreSQLConnect): PAnsiChar;
-    function GetTTY(Handle: PZPostgreSQLConnect): PAnsiChar; cdecl;
+    function GetTTY(Handle: PZPostgreSQLConnect): PAnsiChar;
     function GetOptions(Handle: PZPostgreSQLConnect): PAnsiChar;
     function GetStatus(Handle: PZPostgreSQLConnect):
       TZPostgreSQLConnectStatusType;
@@ -640,17 +742,40 @@ type
 
     function ExecuteQuery(Handle: PZPostgreSQLConnect;
       Query: PAnsiChar): PZPostgreSQLResult;
+    function ExecParams(Handle: PPGconn; command: PAnsichar;
+        nParams: Integer; paramTypes: TPQparamTypes; paramValues: TPQparamValues;
+        paramLengths: TPQparamLengths; paramFormats: TPQparamFormats;
+        resultFormat: Integer): PPGresult;
+    function Prepare(Handle: PPGconn; stmtName: PAnsichar;
+        query: PAnsiChar; nParams: Integer; paramTypes: TPQparamTypes): PPGresult;
+    function ExecPrepared(Handle: PPGconn; stmtName: PAnsichar;
+        nParams: Integer; paramValues: TPQparamValues; paramLengths: TPQparamLengths;
+        paramFormats: TPQparamFormats; resultFormat: Integer): PPGresult;
+    function SendQuery(Handle: PZPostgreSQLConnect; Query: PAnsiChar): Integer;
+    function SendQueryParams(Handle: PPGconn; command: PAnsichar;
+        nParams: Integer; paramTypes: TPQparamTypes; paramValues: TPQparamValues;
+        paramLengths: TPQparamLengths; paramFormats: TPQparamFormats;
+        resultFormat: Integer): Integer;
+    function SendPrepare(Handle: PPGconn; stmtName: PAnsichar;
+        query: PAnsiChar; nParams: Integer; paramTypes: TPQparamTypes): Integer;
+    function SendQueryPrepared(Handle: PPGconn; stmtName: PAnsichar;
+         nParams: Integer; paramValues: TPQparamValues;
+         paramLengths: TPQparamLengths; paramFormats: TPQparamFormats;
+         resultFormat: Integer): Integer;
+    function GetResult(Handle: PZPostgreSQLConnect): PZPostgreSQLResult;
+    function DescribePrepared(Handle: PPGconn; const stmt: PAnsiChar): PPGresult;
+    function DescribePortal(Handle: PPGconn; const portal: PAnsiChar): PPGresult;
+    function SendDescribePrepared(Handle: PPGconn; const stmt: PAnsiChar): Integer;
+    function SendDescribePortal(Handle: PPGconn; const portal: PAnsiChar): Integer;
 
     function Notifies(Handle: PZPostgreSQLConnect): PZPostgreSQLNotify;
     procedure FreeNotify(Handle: PZPostgreSQLNotify);
 
-    function SendQuery(Handle: PZPostgreSQLConnect; Query: PAnsiChar): Integer;
-    function GetResult(Handle: PZPostgreSQLConnect): PZPostgreSQLResult;
     function IsBusy(Handle: PZPostgreSQLConnect): Integer;
     function ConsumeInput(Handle: PZPostgreSQLConnect): Integer;
-    function GetCancel(Handle: PZPostgreSQLConnect): PZPostgreSQLCancel; virtual;
-    procedure FreeCancel( Canc: PZPostgreSQLCancel); virtual;
-    function Cancel( Canc: PZPostgreSQLCancel; Buffer: PChar; Length: Integer): Integer; virtual;
+    function GetCancel(Handle: PZPostgreSQLConnect): PZPostgreSQLCancel;
+    procedure FreeCancel( Canc: PZPostgreSQLCancel);
+    function Cancel( Canc: PZPostgreSQLCancel; Buffer: PChar; Length: Integer): Integer;
     function GetLine(Handle: PZPostgreSQLConnect; Buffer: PAnsiChar;
       Length: Integer): Integer;
     function PutLine(Handle: PZPostgreSQLConnect; Buffer: PAnsiChar): Integer;
@@ -665,7 +790,7 @@ type
       args: PZPostgreSQLArgBlock; nargs: Integer): PZPostgreSQLResult;
     function GetResultStatus(Res: PZPostgreSQLResult): TZPostgreSQLExecStatusType;
     function GetResultErrorMessage(Res: PZPostgreSQLResult): PAnsiChar;
-    function GetResultErrorField(Res: PZPostgreSQLResult;FieldCode:TZPostgreSQLFieldCode):PAnsiChar; virtual;
+    function GetResultErrorField(Res: PZPostgreSQLResult;FieldCode:TZPostgreSQLFieldCode):PAnsiChar;
 
     function GetRowCount(Res: PZPostgreSQLResult): Integer;
     function GetFieldCount(Res: PZPostgreSQLResult): Integer;
@@ -675,6 +800,8 @@ type
       FieldNum: Integer): PAnsiChar;
     function GetFieldNumber(Res: PZPostgreSQLResult;
       FieldName: PAnsiChar): Integer;
+    function GetFieldTableOID(Res: PZPostgreSQLResult; FieldNum: Integer) : Oid;
+    function GetFieldTableColIdx(Res: PZPostgreSQLResult; FieldNum: Integer) : Integer;
     function GetFieldType(Res: PZPostgreSQLResult;
       FieldNum: Integer): Oid;
     function GetFieldSize(Res: PZPostgreSQLResult;
@@ -718,6 +845,8 @@ type
     function ExportLargeObject(Handle: PZPostgreSQLConnect; ObjId: Oid;
       FileName: PAnsiChar): Integer;
     function GetPlainFunc:PAPI;
+    function EscapeString(Handle: Pointer; const Value: RawByteString;
+      ConSettings: PZConSettings; WasEncoded: Boolean = False): RawByteString; override;
   end;
 
   {** Implements a driver for PostgreSQL 7.4 }
@@ -730,14 +859,6 @@ type
 
     function GetProtocol: string; override;
     function GetDescription: string; override;
-
-    function  EncodeBYTEA(const Value: AnsiString; Handle: PZPostgreSQLConnect): AnsiString; override;
-    function  DecodeBYTEA(const value: AnsiString): AnsiString; override;
-
-    function GetResultErrorField(Res: PZPostgreSQLResult;FieldCode:TZPostgreSQLFieldCode):PAnsiChar; override;
-    function GetCancel(Handle: PZPostgreSQLConnect): PZPostgreSQLCancel; override;
-    procedure FreeCancel( Canc: PZPostgreSQLCancel); override;
-    function Cancel( Canc: PZPostgreSQLCancel; Buffer: PChar; Length: Integer): Integer; override;
  end;
 
 
@@ -750,7 +871,6 @@ type
     function Clone: IZPlainDriver; override;
     function GetUnicodeCodePageName: String; override;
     procedure LoadCodePages; override;
-    procedure LoadApi; override;
   public
     constructor Create;
 
@@ -758,10 +878,24 @@ type
     function GetDescription: string; override;
   end;
 
+  { TZPostgreSQL8PlainDriver }
+
+  TZPostgreSQL9PlainDriver = class(TZPostgreSQL8PlainDriver)
+  protected
+    function Clone: IZPlainDriver; override;
+    function GetStandardConformingStrings: Boolean; override;
+    procedure LoadCodePages; override;
+  public
+    constructor Create;
+
+    function GetProtocol: string; override;
+    function GetDescription: string; override;
+  end;
 
 implementation
 
-uses SysUtils, ZPlainLoader;
+uses SysUtils, ZPlainLoader, Classes, ZEncoding
+  {$IFDEF WITH_UNITANSISTRINGS}, AnsiStrings{$ENDIF};
 
 { TZPostgreSQLBaseDriver }
 
@@ -772,36 +906,36 @@ end;
 
 procedure TZPostgreSQLBaseDriver.LoadCodePages;
 begin
-  { MultiChar }
-  AddCodePage('EUC_JP', Ord(csEUC_JP)); { EUC_JP 	Japanese EUC }
-  AddCodePage('EUC_CN', Ord(csEUC_CN)); {EUC_CN 	Chinese EUC}
-  AddCodePage('EUC_KR', Ord(csEUC_KR)); {Extended UNIX Code-KR 	Korean}
-  AddCodePage('JOHAB', Ord(csJOHAB)); {JOHAB 	Korean (Hangul)}
-  AddCodePage('EUC_TW', Ord(csEUC_TW)); {Extended UNIX Code-TW 	Traditional Chinese, Taiwanese}
-  AddCodePage('UNICODE', Ord(csUNICODE_PODBC), ceUTF8{$IFDEF WITH_CHAR_CONTROL}, zCP_UTF8{$ENDIF}); {UNICODE 	Unicode (UTF-8)}
-  AddCodePage('MULE_INTERNAL', Ord(csMULE_INTERNAL)); { Mule internal code 	Multilingual Emacs }
-  {SingleChar}
-  AddCodePage('SQL_ASCII', Ord(csSQL_ASCII), ceAnsi{$IFDEF WITH_CHAR_CONTROL}, zCP_ACP{$ENDIF}); {unspecified (see text) 	any}
-  AddCodePage('LATIN1', Ord(csLATIN1), ceAnsi{$IFDEF WITH_CHAR_CONTROL}, zCP_WIN1252{$ENDIF}); { ISO 8859-1, ECMA 94 	Western European }
-  AddCodePage('LATIN2', Ord(csLATIN2));  { 	ISO 8859-2, ECMA 94 	Central European }
-  AddCodePage('LATIN3', Ord(csLATIN3));  { ISO 8859-3, ECMA 94 	South European }
-  AddCodePage('LATIN4', Ord(csLATIN4));  { ISO 8859-4, ECMA 94 	North European }
-  AddCodePage('LATIN5', Ord(csLATIN5));  { ISO 8859-9, ECMA 128 	Turkish }
-  AddCodePage('LATIN6', Ord(csLATIN6));  { ISO 8859-10, ECMA 144 	Nordic }
-  AddCodePage('LATIN7', Ord(csLATIN7));  { ISO 8859-13 	Baltic }
-  AddCodePage('LATIN8', Ord(csLATIN8));  { ISO 8859-14 	Celtic }
-  AddCodePage('LATIN9', Ord(csLATIN9));  { ISO 8859-15 	LATIN1 with Euro and accents }
-  AddCodePage('LATIN10', Ord(csLATIN10));  { ISO 8859-16, ASRO SR 14111 	Romanian }
-  AddCodePage('ISO_8859_5', Ord(csISO_8859_5)); { ISO 8859-5, ECMA 113 	Latin/Cyrillic}
-  AddCodePage('ISO_8859_6', Ord(csISO_8859_6)); { ISO 8859-6, ECMA 114 	Latin/Arabic }
-  AddCodePage('ISO_8859_7', Ord(csISO_8859_7)); { ISO 8859-7, ECMA 118 	Latin/Greek }
-  AddCodePage('ISO_8859_8', Ord(csISO_8859_8));  { ISO 8859-8, ECMA 121 	Latin/Hebrew }
-  AddCodePage('KOI8', Ord(csKOI8), ceAnsi{$IFDEF WITH_CHAR_CONTROL}, zCP_KOI8R{$ENDIF});  { KOI8-R(U) 	Cyrillic }
-  AddCodePage('WIN', Ord(csWIN), ceAnsi{$IFDEF WITH_CHAR_CONTROL}, zCP_WIN1251{$ENDIF}); { Windows CP1251 }
-  AddCodePage('ALT', Ord(csALT), ceAnsi{$IFDEF WITH_CHAR_CONTROL}, zCP_DOS866{$ENDIF}); { Windows CP866 }
-  AddCodePage('WIN1256', Ord(csWIN1256), ceAnsi{$IFDEF WITH_CHAR_CONTROL}, cCP_WIN1256{$ENDIF});  { Windows CP1256 	Arabic }
-  AddCodePage('TCVN', Ord(csTCVN), ceAnsi{$IFDEF WITH_CHAR_CONTROL}, zCP_WIN1258{$ENDIF}); { TCVN-5712/Windows CP1258 (Vietnamese) }
-  AddCodePage('WIN874', Ord(csWIN874), ceAnsi{$IFDEF WITH_CHAR_CONTROL}, zCP_DOS874{$ENDIF}); { Windows CP874 (Thai) }
+  { MultiByte }
+  AddCodePage('EUC_JP', Ord(csEUC_JP), ceAnsi, zCP_EUC_JP, '', 3); { EUC_JP 	Japanese EUC }
+  AddCodePage('EUC_CN', Ord(csEUC_CN), ceAnsi, zCP_EUC_CN, '', 3); {EUC_CN 	Chinese EUC}
+  AddCodePage('EUC_KR', Ord(csEUC_KR), ceAnsi, zCP_euc_kr, '', 3); {Extended UNIX Code-KR 	Korean}
+  AddCodePage('JOHAB', Ord(csJOHAB), ceAnsi, ZCP_JOHAB, '', 3); {JOHAB 	Korean (Hangul)}
+  AddCodePage('EUC_TW', Ord(csEUC_TW), ceAnsi, $ffff, '', 3); {Extended UNIX Code-TW 	Traditional Chinese, Taiwanese}
+  AddCodePage('UNICODE', Ord(csUNICODE_PODBC), ceUTF8, zCP_UTF8, '', 4); {UNICODE 	Unicode (UTF-8)}
+  AddCodePage('MULE_INTERNAL', Ord(csMULE_INTERNAL), ceAnsi, $ffff, '', 4); { Mule internal code 	Multilingual Emacs }
+  {SingleByte}
+  AddCodePage('SQL_ASCII', Ord(csSQL_ASCII), ceAnsi, zCP_us_ascii); {unspecified (see text) 	any}
+  AddCodePage('LATIN1', Ord(csLATIN1), ceAnsi, zCP_WIN1252); { ISO 8859-1, ECMA 94 	Western European }
+  AddCodePage('LATIN2', Ord(csLATIN2), ceAnsi, zCP_L2_ISO_8859_2);  { 	ISO 8859-2, ECMA 94 	Central European }
+  AddCodePage('LATIN3', Ord(csLATIN3), ceAnsi, zCP_L3_ISO_8859_3);  { ISO 8859-3, ECMA 94 	South European }
+  AddCodePage('LATIN4', Ord(csLATIN4), ceAnsi, zCP_L4_ISO_8859_4);  { ISO 8859-4, ECMA 94 	North European }
+  AddCodePage('LATIN5', Ord(csLATIN5), ceAnsi, zCP_L5_ISO_8859_9);  { ISO 8859-9, ECMA 128 	Turkish }
+  AddCodePage('LATIN6', Ord(csLATIN6), ceAnsi, zCP_L6_ISO_8859_10);  { ISO 8859-10, ECMA 144 	Nordic }
+  AddCodePage('LATIN7', Ord(csLATIN7), ceAnsi, zCP_L7_ISO_8859_13);  { ISO 8859-13 	Baltic }
+  AddCodePage('LATIN8', Ord(csLATIN8), ceAnsi, zCP_L8_ISO_8859_14);  { ISO 8859-14 	Celtic }
+  AddCodePage('LATIN9', Ord(csLATIN9), ceAnsi, zCP_L9_ISO_8859_15);  { ISO 8859-15 	LATIN1 with Euro and accents }
+  AddCodePage('LATIN10', Ord(csLATIN10), ceAnsi, zCP_L10_ISO_8859_16);  { ISO 8859-16, ASRO SR 14111 	Romanian }
+  AddCodePage('ISO_8859_5', Ord(csISO_8859_5), ceAnsi, zCP_L5_ISO_8859_5); { ISO 8859-5, ECMA 113 	Latin/Cyrillic}
+  AddCodePage('ISO_8859_6', Ord(csISO_8859_6), ceAnsi, zCP_L6_ISO_8859_6); { ISO 8859-6, ECMA 114 	Latin/Arabic }
+  AddCodePage('ISO_8859_7', Ord(csISO_8859_7), ceAnsi, zCP_L7_ISO_8859_7); { ISO 8859-7, ECMA 118 	Latin/Greek }
+  AddCodePage('ISO_8859_8', Ord(csISO_8859_8), ceAnsi, zCP_L8_ISO_8859_8);  { ISO 8859-8, ECMA 121 	Latin/Hebrew }
+  AddCodePage('KOI8', Ord(csKOI8), ceAnsi, zCP_KOI8R);  { KOI8-R(U) 	Cyrillic }
+  AddCodePage('WIN', Ord(csWIN), ceAnsi, zCP_WIN1251); { Windows CP1251 }
+  AddCodePage('ALT', Ord(csALT), ceAnsi, zCP_DOS866); { Windows CP866 }
+  AddCodePage('WIN1256', Ord(csWIN1256), ceAnsi, cCP_WIN1256);  { Windows CP1256 	Arabic }
+  AddCodePage('TCVN', Ord(csTCVN), ceAnsi, zCP_WIN1258); { TCVN-5712/Windows CP1258 (Vietnamese) }
+  AddCodePage('WIN874', Ord(csWIN874), ceAnsi, zCP_DOS874); { Windows CP874 (Thai) }
 end;
 
 procedure TZPostgreSQLBaseDriver.LoadApi;
@@ -824,6 +958,7 @@ begin
     @POSTGRESQL_API.PQtty          := GetAddress('PQtty');
     @POSTGRESQL_API.PQoptions      := GetAddress('PQoptions');
     @POSTGRESQL_API.PQstatus       := GetAddress('PQstatus');
+    @POSTGRESQL_API.PQserverVersion:= GetAddress('PQserverVersion');
     @POSTGRESQL_API.PQerrorMessage := GetAddress('PQerrorMessage');
     @POSTGRESQL_API.PQsocket       := GetAddress('PQsocket');
     @POSTGRESQL_API.PQbackendPID   := GetAddress('PQbackendPID');
@@ -833,10 +968,17 @@ begin
     @POSTGRESQL_API.PQclientEncoding := GetAddress('PQclientEncoding');
   { === in fe-exec.c === }
     @POSTGRESQL_API.PQexec         := GetAddress('PQexec');
+    @POSTGRESQL_API.PQexecParams   := GetAddress('PQexecParams');
+    @POSTGRESQL_API.PQprepare      := GetAddress('PQprepare');
+    @POSTGRESQL_API.PQexecPrepared := GetAddress('PQexecPrepared');
+    @POSTGRESQL_API.PQsendQuery    := GetAddress('PQsendQuery');
+    @POSTGRESQL_API.PQsendQueryParams:= GetAddress('PQsendQueryParams');
+    @POSTGRESQL_API.PQsendPrepare  := GetAddress('PQsendPrepare');
+    @POSTGRESQL_API.PQsendQueryPrepared := GetAddress('PQsendQueryPrepared');
+    @POSTGRESQL_API.PQgetResult    := GetAddress('PQgetResult');
+
     @POSTGRESQL_API.PQnotifies     := GetAddress('PQnotifies');
     @POSTGRESQL_API.PQfreeNotify   := GetAddress('PQfreeNotify');
-    @POSTGRESQL_API.PQsendQuery    := GetAddress('PQsendQuery');
-    @POSTGRESQL_API.PQgetResult    := GetAddress('PQgetResult');
     @POSTGRESQL_API.PQisBusy       := GetAddress('PQisBusy');
     @POSTGRESQL_API.PQconsumeInput := GetAddress('PQconsumeInput');
     @POSTGRESQL_API.PQgetline      := GetAddress('PQgetline');
@@ -852,6 +994,8 @@ begin
     @POSTGRESQL_API.PQbinaryTuples := GetAddress('PQbinaryTuples');
     @POSTGRESQL_API.PQfname        := GetAddress('PQfname');
     @POSTGRESQL_API.PQfnumber      := GetAddress('PQfnumber');
+    @POSTGRESQL_API.PQftable       := GetAddress('PQftable');
+    @POSTGRESQL_API.PQftablecol    := GetAddress('PQftablecol');
     @POSTGRESQL_API.PQftype        := GetAddress('PQftype');
     @POSTGRESQL_API.PQfsize        := GetAddress('PQfsize');
     @POSTGRESQL_API.PQfmod         := GetAddress('PQfmod');
@@ -876,6 +1020,19 @@ begin
     @POSTGRESQL_API.lo_unlink      := GetAddress('lo_unlink');
     @POSTGRESQL_API.lo_import      := GetAddress('lo_import');
     @POSTGRESQL_API.lo_export      := GetAddress('lo_export');
+    @POSTGRESQL_API.PQescapeStringConn  := GetAddress('PQescapeStringConn'); //since 7.3
+    @POSTGRESQL_API.PQescapeByteaConn   := GetAddress('PQescapeByteaConn'); // postgresql since 7.3
+    @POSTGRESQL_API.PQFreemem           := GetAddress('PQfreemem'); // since postgresql 7.4
+    @POSTGRESQL_API.PQescapeString      := GetAddress('PQescapeString'); // since postgresql 7.4
+    @POSTGRESQL_API.PQescapeBytea       := GetAddress('PQescapeBytea'); // since postgresql 7.4
+    @POSTGRESQL_API.PQunescapeBytea     := GetAddress('PQunescapeBytea'); // since postgresql 8.3
+    @POSTGRESQL_API.PQescapeLiteral     := GetAddress('PQescapeLiteral'); // since postgresql 9.0
+    @POSTGRESQL_API.PQescapeIdentifier  := GetAddress('PQescapeIdentifier'); // since postgresql 9.0
+
+    @POSTGRESQL_API.PQresultErrorField  := GetAddress('PQresultErrorField');
+    @POSTGRESQL_API.PQgetCancel         := GetAddress('PQgetCancel');
+    @POSTGRESQL_API.PQfreeCancel        := GetAddress('PQfreeCancel');
+    @POSTGRESQL_API.PQcancel            := GetAddress('PQcancel');
   end;
 end;
 
@@ -888,9 +1045,9 @@ begin
       FLoader.AddLocation(WINDOWS_DLL_LOCATION);
     {$ELSE}
       FLoader.AddLocation(LINUX_DLL_LOCATION);
-      FLoader.AddLocation(ExtractFilePath(Paramstr(0))+'lib'+DirectorySeparator+LINUX_DLL_LOCATION);
     {$ENDIF}
   {$ENDIF}
+  LoadCodePages;
 end;
 
 procedure TZPostgreSQLBaseDriver.Clear(Res: PZPostgreSQLResult);
@@ -916,20 +1073,27 @@ begin
   Result := POSTGRESQL_API.PQconsumeInput(Handle);
 end;
 
-function TZPostgreSQLBaseDriver.GetCancel(Handle: PZPostgreSQLConnect): PZPostgreSQLCancel; 
-begin 
-  Result := POSTGRESQL_API.PQgetCancel(Handle); 
-end; 
+function TZPostgreSQLBaseDriver.GetCancel(Handle: PZPostgreSQLConnect): PZPostgreSQLCancel;
+begin
+  if Assigned(POSTGRESQL_API.PQgetCancel) then
+    Result := POSTGRESQL_API.PQgetCancel(Handle)
+  else
+    Result := nil;
+end;
 
-procedure TZPostgreSQLBaseDriver.FreeCancel(Canc: PZPostgreSQLCancel); 
-begin 
-  POSTGRESQL_API.PQfreeCancel( Canc); 
-end; 
+procedure TZPostgreSQLBaseDriver.FreeCancel(Canc: PZPostgreSQLCancel);
+begin
+  if Assigned(POSTGRESQL_API.PQfreeCancel) then
+    POSTGRESQL_API.PQfreeCancel( Canc);
+end;
 
-function TZPostgreSQLBaseDriver.Cancel(Canc: PZPostgreSQLCancel; Buffer: PChar; Length: Integer): Integer; 
-begin 
-  Result := POSTGRESQL_API.PQcancel( Canc, Buffer, Length); 
-end; 
+function TZPostgreSQLBaseDriver.Cancel(Canc: PZPostgreSQLCancel; Buffer: PChar; Length: Integer): Integer;
+begin
+  if Assigned(POSTGRESQL_API.PQcancel) then
+    Result := POSTGRESQL_API.PQcancel( Canc, Buffer, Length)
+  else
+    Result := 0;
+end;
 
 function TZPostgreSQLBaseDriver.CreateLargeObject(
   Handle: PZPostgreSQLConnect; Mode: Integer): Oid;
@@ -937,33 +1101,80 @@ begin
   Result := POSTGRESQL_API.lo_creat(Handle, Mode);
 end;
 
-function TZPostgreSQLBaseDriver.DecodeBYTEA(const value: AnsiString): AnsiString;
+function TZPostgreSQLBaseDriver.DecodeBYTEA(const value: RawByteString;
+  const Is_bytea_output_hex: Boolean; Handle: PZPostgreSQLConnect): RawByteString;
 var
-   decoded: PAnsiChar;
-   len: Longword;
+  decoded: PAnsiChar;
+  Ansi: AnsiString;
+  len: Longword;
 begin
-  decoded := POSTGRESQL_API.PQUnescapeBytea(PAnsiChar(value), @len);
-  SetLength(result, len);
-  if (len > 0) then
-     Move(decoded^, result[1], len);
-  POSTGRESQL_API.PQFreemem(decoded);
+  if ( Is_bytea_output_hex ) then
+  begin
+    Len := (Length(value)-{$IFDEF WITH_UNITANSISTRINGS}AnsiStrings.AnsiPos{$ELSE}Pos{$ENDIF}('x', value)) div 2; //GetLength of binary result
+    Ansi := AnsiString(Copy(value, {$IFDEF WITH_UNITANSISTRINGS}AnsiStrings.AnsiPos{$ELSE}Pos{$ENDIF}('x', value)+1, Length(value))); //remove the first 'x'sign-byte
+    SetLength(Result, Len); //Set length of binary-result
+    HexToBin(PAnsiChar(Ansi), PAnsichar(Result), Len); //convert hex to binary
+  end
+  else
+    if Assigned(POSTGRESQL_API.PQUnescapeBytea) then
+    begin
+      decoded := POSTGRESQL_API.PQUnescapeBytea(PAnsiChar(value), @len);
+      SetLength(result, len);
+      if (len > 0) then
+         Move(decoded^, result[1], len);
+      if Assigned(POSTGRESQL_API.PQFreemem) then
+        POSTGRESQL_API.PQFreemem(decoded);
+    end
+    else
+      Result := Value;
 end;
 
-function TZPostgreSQLBaseDriver.EncodeBYTEA(const Value: AnsiString;  Handle: PZPostgreSQLConnect): AnsiString;
+function TZPostgreSQLBaseDriver.SupportsEncodeBYTEA: Boolean;
+begin
+  Result := Assigned(POSTGRESQL_API.PQescapeByteaConn) or
+    Assigned(POSTGRESQL_API.PQescapeBytea);
+end;
+
+function TZPostgreSQLBaseDriver.SupportsDecodeBYTEA(const Handle: PZPostgreSQLConnect): Boolean;
+begin
+  Result := ( POSTGRESQL_API.PQserverVersion(Handle) div 10000 >= 9 ) or
+    Assigned(POSTGRESQL_API.PQUnescapeBytea);
+end;
+
+function TZPostgreSQLBaseDriver.SupportsStringEscaping(const ClientDependend: Boolean): Boolean;
+begin
+  if ClientDependend then
+    Result := Assigned(POSTGRESQL_API.PQescapeStringConn)
+  else
+    Result := Assigned(POSTGRESQL_API.PQescapeStringConn) or
+              Assigned(POSTGRESQL_API.PQescapeString);
+end;
+
+function TZPostgreSQLBaseDriver.EncodeBYTEA(const Value: RawByteString;
+  Handle: PZPostgreSQLConnect; Quoted: Boolean = True): RawByteString;
 var
   encoded: PAnsiChar;
   len: Longword;
   leng: cardinal;
 begin
- leng := Length(Value);
- if assigned(POSTGRESQL_API.PQescapeByteaConn) then
-   encoded := POSTGRESQL_API.PQescapeByteaConn(Handle, PAnsiChar(value), leng, @len)
- else
-   encoded := POSTGRESQL_API.PQescapeBytea(PAnsiChar(value),leng,@len);
- SetLength(result, len -1); //removes the #0 byte
- StrCopy(PAnsiChar(result), encoded);
- POSTGRESQL_API.PQFreemem(encoded);
- result := ''''+result+'''';
+  if assigned(POSTGRESQL_API.PQescapeByteaConn) or
+    Assigned(POSTGRESQL_API.PQescapeBytea) then
+  begin
+    leng := Length(Value);
+    if assigned(POSTGRESQL_API.PQescapeByteaConn) then
+      encoded := POSTGRESQL_API.PQescapeByteaConn(Handle, PAnsiChar(value), leng, @len)
+    else
+      encoded := POSTGRESQL_API.PQescapeBytea(PAnsiChar(value),leng,@len);
+    SetLength(result, len -1); //removes the #0 byte
+
+    {$IFDEF WITH_STRLCOPY_DEPRECATED}AnsiStrings.{$ENDIF}StrLCopy(PAnsiChar(result), encoded, len - 1);
+
+    POSTGRESQL_API.PQFreemem(encoded);
+    if Quoted then
+      result := ''''+result+'''';
+  end
+  else
+    Result := Value;
 end;
 
 function TZPostgreSQLBaseDriver.EndCopy( Handle: PZPostgreSQLConnect): Integer;
@@ -984,6 +1195,118 @@ function TZPostgreSQLBaseDriver.ExecuteQuery(
   Handle: PZPostgreSQLConnect; Query: PAnsiChar): PZPostgreSQLResult;
 begin
   Result := POSTGRESQL_API.PQexec(Handle, Query);
+end;
+
+function TZPostgreSQLBaseDriver.ExecParams(Handle: PPGconn; command: PAnsichar;
+    nParams: Integer; paramTypes: TPQparamTypes; paramValues: TPQparamValues;
+    paramLengths: TPQparamLengths; paramFormats: TPQparamFormats;
+    resultFormat: Integer): PPGresult;
+begin
+  if Assigned(POSTGRESQL_API.PQexecParams) then
+    Result := POSTGRESQL_API.PQexecParams(Handle, command, nParams, paramtypes,
+      paramValues, paramLengths, paramFormats, resultFormat)
+  else
+    Result := nil;
+end;
+
+function TZPostgreSQLBaseDriver.Prepare(Handle: PPGconn; stmtName: PAnsichar;
+    query: PAnsiChar; nParams: Integer; paramTypes: TPQparamTypes): PPGresult;
+begin
+  if Assigned(POSTGRESQL_API.PQprepare) then
+    Result := POSTGRESQL_API.PQprepare(Handle, stmtName, query, nParams, paramTypes)
+  else
+    Result := nil;
+end;
+
+function TZPostgreSQLBaseDriver.ExecPrepared(Handle: PPGconn; stmtName: PAnsichar;
+    nParams: Integer; paramValues: TPQparamValues; paramLengths: TPQparamLengths;
+    paramFormats: TPQparamFormats; resultFormat: Integer): PPGresult;
+begin
+  if Assigned(POSTGRESQL_API.PQexecPrepared) then
+    Result := POSTGRESQL_API.PQexecPrepared(Handle, stmtName, nParams,
+      paramValues, paramLengths, paramFormats, resultFormat)
+  else
+    Result := nil;
+end;
+
+function TZPostgreSQLBaseDriver.SendQuery(Handle: PZPostgreSQLConnect; Query: PAnsiChar): Integer;
+begin
+  Result := POSTGRESQL_API.PQsendQuery(Handle, Query);
+end;
+
+function TZPostgreSQLBaseDriver.SendQueryParams(Handle: PPGconn; command: PAnsichar;
+    nParams: Integer; paramTypes: TPQparamTypes; paramValues: TPQparamValues;
+    paramLengths: TPQparamLengths; paramFormats: TPQparamFormats;
+    resultFormat: Integer): Integer;
+begin
+  if Assigned(POSTGRESQL_API.PQsendQueryParams) then
+    Result := POSTGRESQL_API.PQsendQueryParams(Handle, command, nParams,
+      paramTypes, paramValues, paramLengths, paramFormats, resultFormat)
+  else
+    Result := -1;
+end;
+
+function TZPostgreSQLBaseDriver.SendPrepare(Handle: PPGconn; stmtName: PAnsichar;
+    query: PAnsiChar; nParams: Integer; paramTypes: TPQparamTypes): Integer;
+begin
+  if Assigned(POSTGRESQL_API.PQsendPrepare) then
+    Result := POSTGRESQL_API.PQsendPrepare(Handle, stmtName, query, nParams,
+      paramTypes)
+  else
+    Result := -1;
+end;
+
+function TZPostgreSQLBaseDriver.SendQueryPrepared(Handle: PPGconn; stmtName: PAnsichar;
+     nParams: Integer; paramValues: TPQparamValues;
+     paramLengths: TPQparamLengths; paramFormats: TPQparamFormats;
+     resultFormat: Integer): Integer;
+begin
+  if Assigned(POSTGRESQL_API.PQsendQueryPrepared) then
+    Result := POSTGRESQL_API.PQsendQueryPrepared(Handle, stmtName, nParams,
+      paramValues, paramLengths, paramFormats, resultFormat)
+  else
+    Result := -1;
+end;
+
+function TZPostgreSQLBaseDriver.GetResult(Handle: PZPostgreSQLConnect): PZPostgreSQLResult;
+begin
+  Result := POSTGRESQL_API.PQgetResult(Handle);
+end;
+
+function TZPostgreSQLBaseDriver.DescribePrepared(Handle: PPGconn;
+  const stmt: PAnsiChar): PPGresult;
+begin
+  if Assigned(POSTGRESQL_API.PQdescribePrepared) then
+    Result := POSTGRESQL_API.PQdescribePrepared(Handle, stmt)
+  else
+    Result := nil;
+end;
+
+function TZPostgreSQLBaseDriver.DescribePortal(Handle: PPGconn;
+  const portal: PAnsiChar): PPGresult;
+begin
+  if Assigned(POSTGRESQL_API.PQdescribePortal) then
+    Result := POSTGRESQL_API.PQdescribePortal(Handle, portal)
+  else
+    Result := nil;
+end;
+
+function TZPostgreSQLBaseDriver.SendDescribePrepared(Handle: PPGconn;
+  const stmt: PAnsiChar): Integer;
+begin
+  if Assigned(POSTGRESQL_API.PQsendDescribePrepared) then
+    Result := POSTGRESQL_API.PQsendDescribePrepared(Handle, stmt)
+  else
+    Result := -1;
+end;
+
+function TZPostgreSQLBaseDriver.SendDescribePortal(Handle: PPGconn;
+  const portal: PAnsiChar): Integer;
+begin
+  if Assigned(POSTGRESQL_API.PQsendDescribePortal) then
+    Result := POSTGRESQL_API.PQsendDescribePortal(Handle, portal)
+  else
+    Result := -1;
 end;
 
 function TZPostgreSQLBaseDriver.ExportLargeObject(
@@ -1068,6 +1391,16 @@ begin
   Result := POSTGRESQL_API.PQfnumber(Res, FieldName);
 end;
 
+function TZPostgreSQLBaseDriver.GetFieldTableOID(Res: PZPostgreSQLResult; FieldNum: Integer) : Oid;
+begin
+  Result := POSTGRESQL_API.PQftable(Res, FieldNum);
+end;
+
+function TZPostgreSQLBaseDriver.GetFieldTableColIdx(Res: PZPostgreSQLResult; FieldNum: Integer) : Integer;
+begin
+  Result := POSTGRESQL_API.PQftablecol(Res, FieldNum);
+end;
+
 function TZPostgreSQLBaseDriver.GetFieldSize(Res: PZPostgreSQLResult;
   FieldNum: Integer): Integer;
 begin
@@ -1140,15 +1473,12 @@ begin
   Result := POSTGRESQL_API.PQport(Handle);
 end;
 
-function TZPostgreSQLBaseDriver.GetResult(
-  Handle: PZPostgreSQLConnect): PZPostgreSQLResult;
-begin
-  Result := POSTGRESQL_API.PQgetResult(Handle);
-end;
-
 function TZPostgreSQLBaseDriver.GetResultErrorField(Res: PZPostgreSQLResult;  FieldCode: TZPostgreSQLFieldCode): PAnsiChar;
 begin
-  Result := POSTGRESQL_API.PQresultErrorField(Res,ord(FieldCode));
+  if Assigned(POSTGRESQL_API.PQresultErrorField) then
+    Result := POSTGRESQL_API.PQresultErrorField(Res, ord(FieldCode))
+  else
+    Result := '';
 end;
 
 
@@ -1174,6 +1504,11 @@ function TZPostgreSQLBaseDriver.GetSocket(
   Handle: PZPostgreSQLConnect): Integer;
 begin
   Result := POSTGRESQL_API.PQsocket(Handle);
+end;
+
+function TZPostgreSQLBaseDriver.GetStandardConformingStrings: Boolean;
+begin
+  Result := False;
 end;
 
 function TZPostgreSQLBaseDriver.GetStatus(
@@ -1273,12 +1608,6 @@ begin
   Result := POSTGRESQL_API.lo_lseek(Handle, Fd, Offset, Whence);
 end;
 
-function TZPostgreSQLBaseDriver.SendQuery(Handle: PZPostgreSQLConnect;
-  Query: PAnsiChar): Integer;
-begin
-  Result := POSTGRESQL_API.PQsendQuery(Handle, Query);
-end;
-
 function TZPostgreSQLBaseDriver.SetDatabaseLogin(Host, Port, Options,
   TTY, Db, User, Passwd: PAnsiChar): PZPostgreSQLConnect;
 begin
@@ -1323,10 +1652,50 @@ begin
   Result := POSTGRESQL_API.lo_write(Handle, Fd, Buffer, Length);
 end;
 
-function TZPostgreSQLBaseDriver.GetPlainFunc():PAPI; 
-begin 
-  result:= @POSTGRESQL_API; 
-end; 
+function TZPostgreSQLBaseDriver.GetPlainFunc():PAPI;
+begin
+  result:= @POSTGRESQL_API;
+end;
+
+function TZPostgreSQLBaseDriver.EscapeString(Handle: Pointer; const Value: RawByteString;
+  ConSettings: PZConSettings; WasEncoded: Boolean = False): RawByteString;
+var
+  ResLen: NativeUInt;
+  Temp: PAnsiChar;
+  SourceTemp: RawByteString;
+  IError: Integer;
+begin
+  if ( Assigned(POSTGRESQL_API.PQescapeStringConn) or
+       Assigned(POSTGRESQL_API.PQescapeString) ) and ( Value <> '' )then
+  begin
+    IError := 0;
+    {$IFDEF UNICODE}
+    SourceTemp := Value;
+    {$ELSE}
+    if WasEncoded then
+      SourceTemp := Value
+    else
+      SourceTemp := ZPlainString(Value, ConSettings); //check encoding too
+    {$ENDIF}
+    GetMem(Temp, Length(SourceTemp)*2);
+    if Assigned(POSTGRESQL_API.PQescapeStringConn) then
+      ResLen := POSTGRESQL_API.PQescapeStringConn(Handle, Temp,
+
+
+      PAnsiChar(SourceTemp), {$IFDEF WITH_STRLEN_DEPRECATED}AnsiStrings.{$ENDIF}StrLen(PAnsiChar(SourceTemp)), @IError)
+    else
+      ResLen := POSTGRESQL_API.PQescapeString(Temp, PAnsiChar(SourceTemp),
+       {$IFDEF WITH_STRLEN_DEPRECATED}AnsiStrings.{$ENDIF}StrLen(PAnsiChar(SourceTemp)));
+    if not (IError = 0) then
+      raise Exception.Create('Wrong escape behavior!');
+    SetLength(Result, ResLen);
+    Move(Temp^, PAnsiChar(Result)^, ResLen);
+    FreeMem(Temp);
+  end
+  else
+    Result := Value;
+  Result := #39+Result+#39;
+end;
 
 { TZPostgreSQL7PlainDriver }
 
@@ -1341,7 +1710,6 @@ begin
   {$IFNDEF UNIX}
     FLoader.AddLocation(WINDOWS_DLL7_LOCATION);
   {$ENDIF}
-  LoadCodePages;
 end;
 
 function TZPostgreSQL7PlainDriver.GetProtocol: string;
@@ -1352,36 +1720,6 @@ end;
 function TZPostgreSQL7PlainDriver.GetDescription: string;
 begin
   Result := 'Native Plain Driver for PostgreSQL 7.x';
-end;
-
-function TZPostgreSQL7PlainDriver.DecodeBYTEA(const value: AnsiString): AnsiString;
-begin
- result:=value;
-end;
-
-function TZPostgreSQL7PlainDriver.EncodeBYTEA(const Value: AnsiString;  Handle: PZPostgreSQLConnect): AnsiString;
-begin
- result:=value;
-end;
-
- // Following functions are NOT implemented for 7
-function TZPostgreSQL7PlainDriver.GetResultErrorField(Res: PZPostgreSQLResult;  FieldCode: TZPostgreSQLFieldCode): PAnsiChar;
-begin
- result:='';
-end;
-
-function TZPostgreSQL7PlainDriver.GetCancel(Handle: PZPostgreSQLConnect): PZPostgreSQLCancel;
-begin
- result := nil;
-end;
-
-procedure TZPostgreSQL7PlainDriver.FreeCancel(Canc: PZPostgreSQLCancel);
-begin
-end;
-
-function TZPostgreSQL7PlainDriver.Cancel(Canc: PZPostgreSQLCancel; Buffer: PChar; Length: Integer): Integer;
-begin
- result := 0;
 end;
 
 { TZPostgreSQL8PlainDriver }
@@ -1399,55 +1737,34 @@ procedure TZPostgreSQL8PlainDriver.LoadCodePages;
 begin
   inherited LoadCodePages;
   { Version 8.1 }
-  {MultiChar}
-  ResetCodePage(Ord(csUNICODE_PODBC), 'UTF8', Ord(csUTF8), ceUTF8{$IFDEF WITH_CHAR_CONTROL}, zCP_UTF8{$ENDIF}); { Unicode, 8-bit 	all }
-  AddCodePage('BIG5', Ord(csBIG5), ceAnsi{$IFDEF WITH_CHAR_CONTROL}, zCP_Big5{$ENDIF}); { Big Five 	Traditional Chinese }
-  AddCodePage('GB18030', Ord(csGB18030)); { National Standard 	Chinese }
-  AddCodePage('GBK', Ord(csGBK)); { Extended National Standard 	Simplified Chinese }
-  AddCodePage('SJIS', Ord(csSJIS), ceAnsi{$IFDEF WITH_CHAR_CONTROL}, zCP_SHIFTJS{$ENDIF}); { Shift JIS 	Japanese }
-  AddCodePage('UHC', Ord(csUHC)); { Unified Hangul Code 	Korean }
+  {MultiByte}
+  ResetCodePage(Ord(csUNICODE_PODBC), 'UTF8', Ord(csUTF8), ceUTF8, zCP_UTF8, '', 4); { Unicode, 8-bit 	all }
+  AddCodePage('BIG5', Ord(csBIG5), ceAnsi, zCP_Big5, '', 2); { Big Five 	Traditional Chinese }
+  AddCodePage('GB18030', Ord(csGB18030), ceAnsi, zCP_GB18030, '', 2); { National Standard 	Chinese }
+  AddCodePage('GBK', Ord(csGBK), ceAnsi, zCP_GB2312, '', 2); { Extended National Standard 	Simplified Chinese }
+  AddCodePage('SJIS', Ord(csSJIS), ceAnsi, zCP_SHIFTJS, '', 2); { Shift JIS 	Japanese }
+  AddCodePage('UHC', Ord(csUHC), ceAnsi, zCP_EUCKR, '', 2); { Unified Hangul Code 	Korean }
   {SingleByte}
-  ResetCodePage(Ord(csALT), 'WIN866', Ord(csWIN866)); { Windows CP866 	Cyrillic } //No longer in use
-  AddCodePage('WIN874', Ord(csWIN874), ceAnsi{$IFDEF WITH_CHAR_CONTROL}, zCP_DOS874{$ENDIF}); { Windows CP874 	Thai }
-  AddCodePage('WIN1250', Ord(csWIN1250), ceAnsi{$IFDEF WITH_CHAR_CONTROL}, zCP_WIN1250{$ENDIF}); { Windows CP1250 	Central European }
-  ResetCodePage(Ord(csWIN), 'WIN1251', Ord(csWIN1251), ceAnsi{$IFDEF WITH_CHAR_CONTROL}, zCP_WIN1251{$ENDIF}); { Windows CP1251 	Cyrillic } //No longer in use
-  AddCodePage('WIN1252', Ord(csWIN1252), ceAnsi{$IFDEF WITH_CHAR_CONTROL}, zCP_WIN1252{$ENDIF}); { Windows CP1252 	Western European }
-  ResetCodePage(Ord(csTCVN), 'WIN1258', Ord(csWIN1258)); { Windows CP1258 	Vietnamese } //No longer in use
+  ResetCodePage(Ord(csALT), 'WIN866', Ord(csWIN866), ceAnsi, zCP_DOS866); { Windows CP866 	Cyrillic } //No longer in use
+  AddCodePage('WIN874', Ord(csWIN874), ceAnsi, zCP_DOS874); { Windows CP874 	Thai }
+  AddCodePage('WIN1250', Ord(csWIN1250), ceAnsi, zCP_WIN1250); { Windows CP1250 	Central European }
+  ResetCodePage(Ord(csWIN), 'WIN1251', Ord(csWIN1251), ceAnsi, zCP_WIN1251); { Windows CP1251 	Cyrillic } //No longer in use
+  AddCodePage('WIN1252', Ord(csWIN1252), ceAnsi, zCP_WIN1252); { Windows CP1252 	Western European }
+  ResetCodePage(Ord(csTCVN), 'WIN1258', Ord(csWIN1258),ceAnsi, zCP_WIN1258); { Windows CP1258 	Vietnamese } //No longer in use
 
   { Version 8.3 }
-  {MultiChar}
-  AddCodePage('EUC_JIS_2004', Ord(csEUC_JIS_2004)); { Extended UNIX Code-JP, JIS X 0213 	Japanese }
-  AddCodePage('SHIFT_JIS_2004', Ord(csSHIFT_JIS_2004)); { Shift JIS, JIS X 0213 	Japanese }
+  {MultiByte}
+  AddCodePage('EUC_JIS_2004', Ord(csEUC_JIS_2004), ceAnsi, $ffff, '', 3); { Extended UNIX Code-JP, JIS X 0213 	Japanese }
+  AddCodePage('SHIFT_JIS_2004', Ord(csSHIFT_JIS_2004), ceAnsi, zCP_SHIFTJS, '', 3); { Shift JIS, JIS X 0213 	Japanese }
   {SingleChar}
-  AddCodePage('WIN1253', Ord(csWIN1253), ceAnsi{$IFDEF WITH_CHAR_CONTROL}, zCP_WIN1253{$ENDIF}); { Windows CP1253  Greek }
-  AddCodePage('WIN1254', Ord(csWIN1254), ceAnsi{$IFDEF WITH_CHAR_CONTROL}, zCP_WIN1254{$ENDIF}); { Windows CP1254 	Turkish }
-  AddCodePage('WIN1255', Ord(csWIN1255), ceAnsi{$IFDEF WITH_CHAR_CONTROL}, zCP_WIN1255{$ENDIF}); { Windows CP1255 	Hebrew }
-  AddCodePage('WIN1257', Ord(csWIN1257), ceAnsi{$IFDEF WITH_CHAR_CONTROL}, zCP_WIN1257{$ENDIF}); { Windows CP1257 	Baltic }
+  AddCodePage('WIN1253', Ord(csWIN1253), ceAnsi, zCP_WIN1253); { Windows CP1253  Greek }
+  AddCodePage('WIN1254', Ord(csWIN1254), ceAnsi, zCP_WIN1254); { Windows CP1254 	Turkish }
+  AddCodePage('WIN1255', Ord(csWIN1255), ceAnsi, zCP_WIN1255); { Windows CP1255 	Hebrew }
+  AddCodePage('WIN1257', Ord(csWIN1257), ceAnsi, zCP_WIN1257); { Windows CP1257 	Baltic }
 
   { Version 8.4 }
   {SingleChar}
-  //ResetCodePage(Ord(csKOI8), 'KOI8R', Ord(csKOI8R)); { KOI8-R 	Cyrillic (Russian) } //No longer in use
-  AddCodePage('KOI8R', Ord(csKOI8R), ceAnsi{$IFDEF WITH_CHAR_CONTROL}, zCP_KOI8R{$ENDIF}); { KOI8-R 	Cyrillic (Russian) }
-  AddCodePage('KOI8U', Ord(csKOI8U)); { 	KOI8-U 	Cyrillic (Ukrainian) }
-  { Version 8.4 }
-  //No more changes till latest version (9.1)
-end;
-
-procedure TZPostgreSQL8PlainDriver.LoadApi;
-begin
-  inherited LoadApi;
-
-  with Loader do
-  begin
-  @POSTGRESQL_API.PQfreemem           := GetAddress('PQfreemem');
-  @POSTGRESQL_API.PQescapeByteaConn   := GetAddress('PQescapeByteaConn');
-  @POSTGRESQL_API.PQescapeBytea       := GetAddress('PQescapeBytea');
-  @POSTGRESQL_API.PQunescapeBytea     := GetAddress('PQunescapeBytea');
-  @POSTGRESQL_API.PQresultErrorField  := GetAddress('PQresultErrorField');
-  @POSTGRESQL_API.PQgetCancel         := GetAddress('PQgetCancel');
-  @POSTGRESQL_API.PQfreeCancel        := GetAddress('PQfreeCancel'); 
-  @POSTGRESQL_API.PQcancel            := GetAddress('PQcancel'); 
-  end;
+  AddCodePage('KOI8U', Ord(csKOI8U), ceAnsi, zCP_KOI8U); { 	KOI8-U 	Cyrillic (Ukrainian) }
 end;
 
 constructor TZPostgreSQL8PlainDriver.Create;
@@ -1459,7 +1776,6 @@ begin
     FLoader.AddLocation(LINUX_DLL82_LOCATION);
     FLoader.AddLocation(LINUX_DLL8_LOCATION);
   {$ENDIF}
-  LoadCodePages;
 end;
 
 function TZPostgreSQL8PlainDriver.GetProtocol: string;
@@ -1472,4 +1788,45 @@ begin
   Result := 'Native Plain Driver for PostgreSQL 8.x';
 end;
 
+{ TZPostgreSQL9PlainDriver }
+function TZPostgreSQL9PlainDriver.Clone: IZPlainDriver;
+begin
+  Result := TZPostgreSQL9PlainDriver.Create;
+end;
+
+procedure TZPostgreSQL9PlainDriver.LoadCodePages;
+begin
+  inherited LoadCodePages;
+  ResetCodePage(Ord(csKOI8), 'KOI8R', Ord(csKOI8R)); { KOI8-R 	Cyrillic (Russian) } //No longer in use
+end;
+
+constructor TZPostgreSQL9PlainDriver.Create;
+begin
+  inherited Create;
+  Self.FLoader.ClearLocations;
+  {$IFNDEF STRICT_DLL_LOADING}
+    {$IFNDEF UNIX}
+      FLoader.AddLocation(WINDOWS_DLL_LOCATION);
+    {$ELSE}
+      FLoader.AddLocation(LINUX_DLL_LOCATION);
+    {$ENDIF}
+  {$ENDIF}
+end;
+
+function TZPostgreSQL9PlainDriver.GetProtocol: string;
+begin
+  Result := 'postgresql-9';
+end;
+
+function TZPostgreSQL9PlainDriver.GetDescription: string;
+begin
+  Result := 'Native Plain Driver for PostgreSQL 9.x';
+end;
+
+function TZPostgreSQL9PlainDriver.GetStandardConformingStrings: Boolean;
+begin
+  Result := True;
+end;
+
 end.
+

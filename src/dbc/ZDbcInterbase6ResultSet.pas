@@ -8,7 +8,7 @@
 {*********************************************************}
 
 {@********************************************************}
-{    Copyright (c) 1999-2006 Zeos Development Group       }
+{    Copyright (c) 1999-2012 Zeos Development Group       }
 {                                                         }
 { License Agreement:                                      }
 {                                                         }
@@ -40,12 +40,10 @@
 {                                                         }
 { The project web site is located on:                     }
 {   http://zeos.firmos.at  (FORUM)                        }
-{   http://zeosbugs.firmos.at (BUGTRACKER)                }
-{   svn://zeos.firmos.at/zeos/trunk (SVN Repository)      }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
 {                                                         }
 {   http://www.sourceforge.net/projects/zeoslib.          }
-{   http://www.zeoslib.sourceforge.net                    }
-{                                                         }
 {                                                         }
 {                                                         }
 {                                 Zeos Development Group. }
@@ -58,9 +56,11 @@ interface
 {$I ZDbc.inc}
 
 uses
-  Classes, Types, ZSysUtils, ZDbcIntfs, ZDbcResultSet, ZDbcInterbase6,
-  ZPlainFirebirdInterbaseConstants,
-  ZCompatibility, ZDbcResultSetMetadata, ZDbcInterbase6Utils, ZMessages;
+  {$IFDEF WITH_TOBJECTLIST_INLINE}System.Types, System.Contnrs{$ELSE}Types{$ENDIF},
+  Classes, {$IFDEF MSEgui}mclasses,{$ENDIF}
+  ZDbcIntfs, ZDbcResultSet, ZDbcInterbase6, ZPlainFirebirdInterbaseConstants,
+  ZPlainFirebirdDriver, ZCompatibility, ZDbcResultSetMetadata, ZMessages,
+  ZDbcInterbase6Utils;
 
 type
 
@@ -72,17 +72,15 @@ type
     FCursorName: AnsiString;
     FStmtHandle: TISC_STMT_HANDLE;
     FSqlData: IZResultSQLDA;
-    FParamsSqlData: IZParamsSQLDA;
     FIBConnection: IZInterbase6Connection;
   protected
     procedure Open; override;
     function GetFieldValue(ColumnIndex: Integer): Variant;
-    function InternalGetString(ColumnIndex: Integer): AnsiString; override;
+    function InternalGetString(ColumnIndex: Integer): RawByteString; override;
   public
     constructor Create(Statement: IZStatement; SQL: string;
       var StatementHandle: TISC_STMT_HANDLE; CursorName: AnsiString;
-      SqlData: IZResultSQLDA; ParamsSqlData: IZParamsSQLDA;
-      CachedBlob: boolean);
+      SqlData: IZResultSQLDA; CachedBlob: boolean);
     destructor Destroy; override;
 
     procedure Close; override;
@@ -90,8 +88,10 @@ type
     function GetCursorName: AnsiString; override;
 
     function IsNull(ColumnIndex: Integer): Boolean; override;
+    function GetString(ColumnIndex: Integer): String; override;
+    function GetUnicodeString(ColumnIndex: Integer): WideString; override;
     function GetBoolean(ColumnIndex: Integer): Boolean; override;
-    function GetByte(ColumnIndex: Integer): ShortInt; override;
+    function GetByte(ColumnIndex: Integer): Byte; override;
     function GetShort(ColumnIndex: Integer): SmallInt; override;
     function GetInt(ColumnIndex: Integer): Integer; override;
     function GetLong(ColumnIndex: Integer): Int64; override;
@@ -123,7 +123,7 @@ type
     function IsEmpty: Boolean; override;
     function Clone: IZBlob; override;
     function GetStream: TStream; override;
-    function GetString: ZAnsiString; override;
+    function GetString: RawByteString; override;
     function GetUnicodeString: WideString; override;
     function GetBytes: TByteDynArray; override;
   end;
@@ -134,7 +134,7 @@ uses
 {$IFNDEF FPC}
   Variants,
 {$ENDIF}
-  SysUtils;
+  SysUtils, ZDbcUtils, ZEncoding, ZDbcLogging;
 
 { TZInterbase6ResultSet }
 
@@ -157,11 +157,10 @@ begin
   begin
     { Free output allocated memory }
     FSqlData := nil;
-    FParamsSqlData := nil;
     { Free allocate sql statement }
     FreeStatement(FIBConnection.GetPlainDriver, FStmtHandle, DSQL_CLOSE); //AVZ
   end;
-inherited Close;
+  inherited Close;
 end;
 
 {**
@@ -175,10 +174,10 @@ end;
 }
 constructor TZInterbase6ResultSet.Create(Statement: IZStatement; SQL: string;
   var StatementHandle: TISC_STMT_HANDLE; CursorName: AnsiString;
-  SqlData: IZResultSQLDA; ParamsSqlData: IZParamsSQLDA; CachedBlob: boolean);
+  SqlData: IZResultSQLDA; CachedBlob: boolean);
 begin
   inherited Create(Statement, SQL, nil,
-    Statement.GetConnection.GetClientCodePageInformations);
+    Statement.GetConnection.GetConSettings);
   
   FFetchStat := 0;
   FSqlData := SqlData;
@@ -186,7 +185,6 @@ begin
   FCachedBlob := CachedBlob;
   FIBConnection := Statement.GetConnection as IZInterbase6Connection;
 
-  FParamsSqlData := ParamsSqlData;
   FStmtHandle := StatementHandle;
   ResultSetType := rtForwardOnly;
   ResultSetConcurrency := rcReadOnly;
@@ -244,11 +242,15 @@ end;
   @return a <code>Blob</code> object representing the SQL <code>BLOB</code> value in
     the specified column
 }
+{$IFDEF FPC}
+  {$HINTS OFF}
+{$ENDIF}
 function TZInterbase6ResultSet.GetBlob(ColumnIndex: Integer): IZBlob;
 var
   Size: Integer;
   Buffer: Pointer;
   BlobId: TISC_QUAD;
+  TempStream: TStream;
 begin
   Result := nil;
   CheckClosed;
@@ -257,7 +259,7 @@ begin
   LastWasNull := IsNull(ColumnIndex);
   if LastWasNull then
       Exit;
-
+  TempStream := nil;
   if FCachedBlob then
   begin
     try
@@ -265,8 +267,30 @@ begin
       with FIBConnection do
         ReadBlobBufer(GetPlainDriver, GetDBHandle, GetTrHandle,
           BlobId, Size, Buffer);
-      Result := TZAbstractBlob.CreateWithData(Buffer, Size);
+
+      if Size = 0 then
+      begin
+        TempStream := TMemoryStream.Create;
+        Result := TZAbstractBlob.CreateWithStream(TempStream, FIBConnection, GetMetaData.GetColumnType(ColumnIndex) = stUnicodeStream);
+      end
+      else
+      case GetMetaData.GetColumnType(ColumnIndex) of
+        stBinaryStream:
+          Result := TZAbstractBlob.CreateWithData(Buffer, Size, FIBConnection);
+        stAsciiStream:
+          begin
+            Result := TZAbstractBlob.CreateWithData(Buffer, Size, FIBConnection);
+            TempStream := TStringStream.Create(GetValidatedAnsiString(Result.GetString, Consettings, True));
+            Result.SetStream(TempStream);
+          end;
+        else
+          begin
+            TempStream := GetValidatedUnicodeStream(Buffer, Size, ConSettings, True);
+            Result := TZAbstractBlob.CreateWithStream(TempStream, FIBConnection, True);
+          end;
+      end;
     finally
+      if Assigned(TempStream) then FreeAndNil(TempStream);
       FreeMem(Buffer, Size);
     end;
   end
@@ -276,6 +300,9 @@ begin
     Result := TZInterbase6Blob.Create(FIBConnection, BlobId);
   end;
 end;
+{$IFDEF FPC}
+  {$HINTS ON}
+{$ENDIF}
 
 {**
   Gets the value of the designated column in the current row
@@ -305,7 +332,7 @@ end;
   @return the column value; if the value is SQL <code>NULL</code>, the
     value returned is <code>0</code>
 }
-function TZInterbase6ResultSet.GetByte(ColumnIndex: Integer): ShortInt;
+function TZInterbase6ResultSet.GetByte(ColumnIndex: Integer): Byte;
 begin
   CheckClosed;
 {$IFNDEF DISABLE_CHECKING}
@@ -458,7 +485,7 @@ end;
   @return the column value; if the value is SQL <code>NULL</code>, the
     value returned is <code>null</code>
 }
-function TZInterbase6ResultSet.InternalGetString(ColumnIndex: Integer): AnsiString;
+function TZInterbase6ResultSet.InternalGetString(ColumnIndex: Integer): RawByteString;
 begin
   CheckClosed;
 {$IFNDEF DISABLE_CHECKING}
@@ -519,6 +546,68 @@ function TZInterbase6ResultSet.IsNull(ColumnIndex: Integer): Boolean;
 begin
   CheckClosed;
   Result := FSqlData.IsNull(ColumnIndex - 1);
+end;
+
+{**
+  Gets the value of the designated column in the current row
+  of this <code>ResultSet</code> object as
+  a <code>String</code> in the Java programming language.
+
+  @param columnIndex the first column is 1, the second is 2, ...
+  @return the column value; if the value is SQL <code>NULL</code>, the
+    value returned is <code>null</code>
+}
+function TZInterbase6ResultSet.GetString(ColumnIndex: Integer): String;
+begin
+  CheckClosed;
+{$IFNDEF DISABLE_CHECKING}
+  CheckColumnConvertion(ColumnIndex, stString);
+{$ENDIF}
+  LastWasNull := IsNull(ColumnIndex);
+  if ( ConSettings.ClientCodePage.ID = CS_NONE ) then //CharacterSet 'NONE' doesn't convert anything! Data as is!
+    case FSqlData.GetIbSqlType(ColumnIndex -1) of
+      SQL_VARYING, SQL_TEXT:
+        if FSqlData.GetIbSqlSubType(ColumnIndex -1) = CS_NONE then
+          Result := ZDbcString(FSqlData.GetString(ColumnIndex - 1))
+        else
+          Result := ZDbcString(FSqlData.GetString(ColumnIndex - 1),
+            FIBConnection.GetPlainDriver.ValidateCharEncoding(FSqlData.GetIbSqlSubType(ColumnIndex -1)).CP);
+      else
+        Result := ZDbcString(FSqlData.GetString(ColumnIndex - 1));
+    end
+  else
+    Result := ZDbcString(FSqlData.GetString(ColumnIndex - 1));
+end;
+
+{**
+  Gets the value of the designated column in the current row
+  of this <code>ResultSet</code> object as
+  a <code>WideString</code> in the Delphi programming language.
+
+  @param columnIndex the first column is 1, the second is 2, ...
+  @return the column value; if the value is SQL <code>NULL</code>, the
+    value returned is <code>null</code>
+}
+function TZInterbase6ResultSet.GetUnicodeString(ColumnIndex: Integer): WideString;
+begin
+  CheckClosed;
+{$IFNDEF DISABLE_CHECKING}
+  CheckColumnConvertion(ColumnIndex, stString);
+{$ENDIF}
+  LastWasNull := IsNull(ColumnIndex);
+  if ( ConSettings.ClientCodePage.ID = CS_NONE ) then //CharacterSet 'NONE' doesn't convert anything! Data as is!
+    case FSqlData.GetIbSqlType(ColumnIndex -1) of
+      SQL_VARYING, SQL_TEXT:
+        if FSqlData.GetIbSqlSubType(ColumnIndex -1) = CS_NONE then
+          Result := ZDbcUnicodeString(FSqlData.GetString(ColumnIndex - 1))
+        else
+          Result := ZDbcUnicodeString(FSqlData.GetString(ColumnIndex - 1),
+            FIBConnection.GetPlainDriver.ValidateCharEncoding(FSqlData.GetIbSqlSubType(ColumnIndex -1)).CP);
+      else
+        Result := ZDbcUnicodeString(FSqlData.GetString(ColumnIndex - 1));
+    end
+  else
+    Result := ZDbcUnicodeString(FSqlData.GetString(ColumnIndex - 1));
 end;
 
 {**
@@ -589,10 +678,9 @@ begin
           @FStmtHandle, GetDialect, FSqlData.GetData);
       end
       else
-      begin     //AVZ - Cursor name has a value therefore the result set already exists
+      begin
         FFetchStat := 1;
         Result := True;
-        //FStmtHandle := nil;  //AVZ TEST
       end;
     end;
 
@@ -601,7 +689,10 @@ begin
       RowNo := RowNo + 1;
       LastRowNo := RowNo;
       Result := True;
-    end;
+    end
+    else
+      if not Result then
+        CheckInterbase6Error(FIBConnection.GetPlainDriver, StatusVector, lcOther);
   end;
 end;
 
@@ -613,6 +704,7 @@ var
   I: Integer;
   FieldSqlType: TZSQLType;
   ColumnInfo: TZColumnInfo;
+  ZCodePageInfo: PZCodePage;
 begin
   if FStmtHandle=0 then
     raise EZSQLException.Create(SCanNotRetrieveResultSetData);
@@ -623,19 +715,23 @@ begin
     ColumnInfo := TZColumnInfo.Create;
     with ColumnInfo, FSqlData  do
     begin
-      FieldSqlType := GetFieldSqlType(I);
       ColumnName := GetFieldSqlName(I);
       TableName := GetFieldRelationName(I);
       ColumnLabel := GetFieldAliasName(I);
+      FieldSqlType := GetFieldSqlType(I);
       ColumnType := FieldSqlType;
 
-      case FieldSqlType of
-        stString,
-        stUnicodeString: Precision := GetFieldLength(I);
-      end;
+        if FieldSqlType in [stString, stUnicodeString] then
+        begin
+          ZCodePageInfo := FIBConnection.GetPlainDriver.ValidateCharEncoding(GetIbSqlSubType(I)); //get column CodePage info
+          Precision := GetFieldSize(ColumnType, ConSettings, GetIbSqlLen(I),
+            ZCodePageInfo^.CharWidth, @ColumnDisplaySize, True);
+        end;
+        if FieldSQLType = stBytes then
+          Precision := GetIbSqlLen(I);
 
-      ReadOnly := (GetFieldRelationName(I) = '') or (GetFieldSqlName(I) = '')
-        or (GetFieldSqlName(I) = 'RDB$DB_KEY') or (FieldSqlType = ZDbcIntfs.stUnknown);
+        ReadOnly := (TableName = '') or (ColumnName = '') or
+          (ColumnName = 'RDB$DB_KEY') or (FieldSqlType = ZDbcIntfs.stUnknown);
 
       if IsNullable(I) then
         Nullable := ntNullable
@@ -643,9 +739,7 @@ begin
         Nullable := ntNoNulls;
 
       Scale := GetFieldScale(I);
-      AutoIncrement := False;
-      //Signed := False;
-      //CaseSensitive := True;
+        CaseSensitive := UpperCase(ColumnName) <> ColumnName; //non quoted fields are uppercased by default
     end;
     ColumnsInfo.Add(ColumnInfo);
   end;
@@ -689,7 +783,7 @@ begin
   Result := inherited GetStream;
 end;
 
-function TZInterbase6Blob.GetString: ZAnsiString;
+function TZInterbase6Blob.GetString: RawByteString;
 begin
   ReadBlob;
   Result := inherited GetString;
@@ -707,6 +801,9 @@ begin
   Result := inherited IsEmpty;
 end;
 
+{$IFDEF FPC}
+  {$HINTS OFF}
+{$ENDIF}
 procedure TZInterbase6Blob.ReadBlob;
 var
   Size: Integer;
@@ -721,5 +818,8 @@ begin
   BlobData := Buffer;
   FBlobRead := True;
 end;
+{$IFDEF FPC}
+  {$HINTS ON}
+{$ENDIF}
 
 end.

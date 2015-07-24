@@ -8,7 +8,7 @@
 {*********************************************************}
 
 {@********************************************************}
-{    Copyright (c) 1999-2006 Zeos Development Group       }
+{    Copyright (c) 1999-2012 Zeos Development Group       }
 {                                                         }
 { License Agreement:                                      }
 {                                                         }
@@ -40,12 +40,10 @@
 {                                                         }
 { The project web site is located on:                     }
 {   http://zeos.firmos.at  (FORUM)                        }
-{   http://zeosbugs.firmos.at (BUGTRACKER)                }
-{   svn://zeos.firmos.at/zeos/trunk (SVN Repository)      }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
 {                                                         }
 {   http://www.sourceforge.net/projects/zeoslib.          }
-{   http://www.zeoslib.sourceforge.net                    }
-{                                                         }
 {                                                         }
 {                                                         }
 {                                 Zeos Development Group. }
@@ -69,9 +67,6 @@ type
 //    function UncachedGetUDTs(const Catalog: string; const SchemaPattern: string;
 //      const TypeNamePattern: string; const Types: TIntegerDynArray): IZResultSet; override;
   public
-    constructor Create(const Metadata: TZAbstractDatabaseMetadata);
-    destructor Destroy; override;
-
     // database/driver/server info:
     function GetDatabaseProductName: string; override;
     function GetDatabaseProductVersion: string; override;
@@ -209,6 +204,7 @@ type
   {** Implements SQLite Database Metadata. }
   TZSQLiteDatabaseMetadata = class(TZAbstractDatabaseMetadata)
   protected
+    function DeComposeObjectString(const S: String): String; reintroduce;
     function CreateDatabaseInfo: IZDatabaseInfo; override; // technobot 2008-06-28
 
     function UncachedGetTables(const Catalog: string; const SchemaPattern: string;
@@ -254,23 +250,6 @@ uses
   ZDbcUtils;
 
 { TZSQLiteDatabaseInfo }
-
-{**
-  Constructs this object.
-  @param Metadata the interface of the correpsonding database metadata object
-}
-constructor TZSQLiteDatabaseInfo.Create(const Metadata: TZAbstractDatabaseMetadata);
-begin
-  inherited;
-end;
-
-{**
-  Destroys this object and cleanups the memory.
-}
-destructor TZSQLiteDatabaseInfo.Destroy;
-begin
-  inherited;
-end;
 
 //----------------------------------------------------------------------
 // First, a variety of minor information about the target database.
@@ -1152,6 +1131,22 @@ end;
 { TZSQLiteDatabaseMetadata }
 
 {**
+  Decomposes a object name, AnsiQuotedStr or NullText
+  @param S the object string
+  @return a non-quoted string
+}
+function TZSQLiteDatabaseMetadata.DecomposeObjectString(const S: String): String;
+begin
+  if S = '' then
+    Result := S
+  else
+    if IC.IsQuoted(S) then
+       Result := IC.ExtractQuote(S)
+    else
+      Result := s;
+end;
+
+{**
   Destroys this object and cleanups the memory.
 }
 destructor TZSQLiteDatabaseMetadata.Destroy;
@@ -1327,75 +1322,78 @@ var
   Temp: string;
   Precision, Decimals: Integer;
   Temp_scheme: string;
+  ResSet: IZResultSet;
+  TempTableNamePattern: String;
 begin
-    Result:=inherited UncachedGetColumns(Catalog, SchemaPattern, TableNamePattern, ColumnNamePattern);
+  Result:=inherited UncachedGetColumns(Catalog, SchemaPattern, TableNamePattern, ColumnNamePattern);
 
-    if SchemaPattern = '' then
-      Temp_scheme := '' // OR  'main.'
-    else
-      Temp_scheme := SchemaPattern +'.';
+  if SchemaPattern = '' then
+    Temp_scheme := '' // OR  'main.'
+  else
+    Temp_scheme := SchemaPattern +'.';
 
-    with GetConnection.CreateStatement.ExecuteQuery(
-      Format('PRAGMA %s table_info(''%s'')', [Temp_scheme, TableNamePattern])) do
+  TempTableNamePattern := NormalizePatternCase(TableNamePattern);
+  ResSet := GetConnection.CreateStatement.ExecuteQuery(
+    Format('PRAGMA %s table_info(''%s'')', [Temp_scheme, TempTableNamePattern]));
+  if ResSet <> nil then
+    with ResSet do
+  begin
+    while Next do
     begin
-      while Next do
+      Result.MoveToInsertRow;
+      if SchemaPattern <> '' then
+        Result.UpdateString(1, SchemaPattern)
+      else Result.UpdateNull(1);
+      Result.UpdateNull(2);
+      Result.UpdateString(3, TempTableNamePattern);
+      Result.UpdateString(4, GetString(2));
+      Result.UpdateInt(5, Ord(ConvertSQLiteTypeToSQLType(GetString(3),
+        Precision, Decimals, ConSettings.CPType)));
+
+      { Defines a table name. }
+      Temp := UpperCase(GetString(3));
+      if Pos('(', Temp) > 0 then
+        Temp := Copy(Temp, 1, Pos('(', Temp) - 1);
+      Result.UpdateString(6, Temp);
+
+      Result.UpdateInt(7, Precision);  //Precision will be converted higher up
+      Result.UpdateNull(8);
+      Result.UpdateInt(9, Decimals);
+      Result.UpdateInt(10, 0);
+
+      if GetInt(4) <> 0 then
       begin
-        Result.MoveToInsertRow;
-        if SchemaPattern <> '' then
-          Result.UpdateString(1, SchemaPattern)
-        else Result.UpdateNull(1);
-        Result.UpdateNull(2);
-        Result.UpdateString(3, TableNamePattern);
-        Result.UpdateString(4, GetString(2));
-        Result.UpdateInt(5, Ord(ConvertSQLiteTypeToSQLType(
-          GetString(3), Precision, Decimals,
-          GetConnection.GetClientCodePageInformations.Encoding,
-          GetConnection.UTF8StringAsWideField)));
-
-        { Defines a table name. }
-        Temp := UpperCase(GetString(3));
-        if Pos('(', Temp) > 0 then
-          Temp := Copy(Temp, 1, Pos('(', Temp) - 1);
-        Result.UpdateString(6, Temp);
-
-        Result.UpdateInt(7, Precision);
-        Result.UpdateNull(8);
-        Result.UpdateInt(9, Decimals);
-        Result.UpdateInt(10, 0);
-
-        if GetInt(4) <> 0 then
-        begin
-          Result.UpdateInt(11, Ord(ntNoNulls));
-          Result.UpdateString(18, 'NO');
-        end
-        else
-        begin
-          Result.UpdateInt(11, Ord(ntNullable));
-          Result.UpdateString(18, 'YES');
-        end;
-
-        Result.UpdateNull(12);
-        if Trim(GetString(5)) <> '' then
-          Result.UpdateString(13, GetString(5))
-//          Result.UpdateString(13, '''' + GetString(5) + '''')
-        else Result.UpdateNull(13);
-        Result.UpdateNull(14);
-        Result.UpdateNull(15);
-        Result.UpdateNull(16);
-        Result.UpdateInt(17, GetInt(1) + 1);
-
-        Result.UpdateBooleanByName('AUTO_INCREMENT',
-          (GetInt(6) = 1) and (Temp = 'INTEGER'));
-        Result.UpdateBooleanByName('CASE_SENSITIVE', False);
-        Result.UpdateBooleanByName('SEARCHABLE', True);
-        Result.UpdateBooleanByName('WRITABLE', True);
-        Result.UpdateBooleanByName('DEFINITELYWRITABLE', True);
-        Result.UpdateBooleanByName('READONLY', False);
-
-        Result.InsertRow;
+        Result.UpdateInt(11, Ord(ntNoNulls));
+        Result.UpdateString(18, 'NO');
+      end
+      else
+      begin
+        Result.UpdateInt(11, Ord(ntNullable));
+        Result.UpdateString(18, 'YES');
       end;
-      Close;
+
+      Result.UpdateNull(12);
+      if Trim(GetString(5)) <> '' then
+        Result.UpdateString(13, GetString(5))
+  //          Result.UpdateString(13, '''' + GetString(5) + '''')
+      else Result.UpdateNull(13);
+      Result.UpdateNull(14);
+      Result.UpdateNull(15);
+      Result.UpdateNull(16);
+      Result.UpdateInt(17, GetInt(1) + 1);
+
+      Result.UpdateBooleanByName('AUTO_INCREMENT',
+        (GetInt(6) = 1) and (Temp = 'INTEGER'));
+      Result.UpdateBooleanByName('CASE_SENSITIVE', False);
+      Result.UpdateBooleanByName('SEARCHABLE', True);
+      Result.UpdateBooleanByName('WRITABLE', True);
+      Result.UpdateBooleanByName('DEFINITELYWRITABLE', True);
+      Result.UpdateBooleanByName('READONLY', False);
+
+      Result.InsertRow;
     end;
+    Close;
+  end;
 end;
 
 {**
@@ -1516,9 +1514,9 @@ const
   TypeCodes: array[1..MaxTypeCount] of TZSQLType = (
     stBoolean, stByte, stShort, stInteger, stInteger, stLong,
     stFloat, stFloat, stDouble, stDouble, stDouble, stDouble,
-    stString, {$IFDEF DELPHI12_UP}stUnicodeString{$ELSE}stString{$ENDIF},
+    stString, {$IFDEF UNICODE}stUnicodeString{$ELSE}stString{$ENDIF},
     stBytes, stBytes, stDate, stTime, stTimestamp,
-    stTimestamp, stBinaryStream, {$IFDEF DELPHI12_UP}stUnicodeStream{$ELSE}stAsciiStream{$ENDIF});
+    stTimestamp, stBinaryStream, {$IFDEF UNICODE}stUnicodeStream{$ELSE}stAsciiStream{$ENDIF});
   TypePrecision: array[1..MaxTypeCount] of Integer = (
     -1, 2, 4, 9, 9, 16, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
     -1, -1, -1, -1, -1);
@@ -1620,7 +1618,7 @@ function TZSQLiteDatabaseMetadata.UncachedGetIndexInfo(const Catalog: string;
   const Schema: string; const Table: string; Unique: Boolean;
   Approximate: Boolean): IZResultSet;
 var
-  ResultSet: IZResultSet;
+  MainResultSet, ResultSet: IZResultSet;
   Temp_scheme: string;
 begin
     Result:=inherited UncachedGetIndexInfo(Catalog, Schema, Table, Unique, Approximate);
@@ -1630,16 +1628,17 @@ begin
     else
       Temp_scheme := Schema +'.';
 
-    with GetConnection.CreateStatement.ExecuteQuery(
-      Format('PRAGMA %s index_list(''%s'')', [Temp_scheme, Table])) do
+    MainResultSet := GetConnection.CreateStatement.ExecuteQuery(
+      Format('PRAGMA %s index_list(''%s'')', [Temp_scheme, Table]));
+    if MainResultSet<>nil then
     begin
-      while Next do
+      while MainResultSet.Next do
       begin
-        if (Pos(' autoindex ', String(GetString(2))) = 0)
-          and ((Unique = False) or (GetInt(3) = 0)) then
+        if (Pos(' autoindex ', String(MainResultSet.GetString(2))) = 0)
+          and ((Unique = False) or (MainResultSet.GetInt(3) = 0)) then
         begin
           ResultSet := GetConnection.CreateStatement.ExecuteQuery(
-            Format('PRAGMA %s index_info(''%s'')', [Temp_scheme,GetString(2)]));
+            Format('PRAGMA %s index_info(''%s'')', [Temp_scheme,MainResultSet.GetString(2)]));
           while ResultSet.Next do
           begin
             Result.MoveToInsertRow;
@@ -1649,9 +1648,9 @@ begin
             else Result.UpdateNull(1);
             Result.UpdateNull(2);
             Result.UpdateString(3, Table);
-            Result.UpdateBoolean(4, GetInt(3) = 0);
+            Result.UpdateBoolean(4, MainResultSet.GetInt(3) = 0);
             Result.UpdateNull(5);
-            Result.UpdateString(6, GetString(2));
+            Result.UpdateString(6, MainResultSet.GetString(2));
             Result.UpdateNull(7);
             Result.UpdateInt(8, ResultSet.GetInt(1) + 1);
             Result.UpdateString(9, ResultSet.GetString(3));
@@ -1665,7 +1664,7 @@ begin
           ResultSet.Close;
         end;
       end;
-      Close;
+      MainResultSet.Close;
     end;
 end;
 

@@ -8,7 +8,7 @@
 {*********************************************************}
 
 {@********************************************************}
-{    Copyright (c) 1999-2006 Zeos Development Group       }
+{    Copyright (c) 1999-2012 Zeos Development Group       }
 {                                                         }
 { License Agreement:                                      }
 {                                                         }
@@ -40,12 +40,10 @@
 {                                                         }
 { The project web site is located on:                     }
 {   http://zeos.firmos.at  (FORUM)                        }
-{   http://zeosbugs.firmos.at (BUGTRACKER)                }
-{   svn://zeos.firmos.at/zeos/trunk (SVN Repository)      }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
 {                                                         }
 {   http://www.sourceforge.net/projects/zeoslib.          }
-{   http://www.zeoslib.sourceforge.net                    }
-{                                                         }
 {                                                         }
 {                                                         }
 {                                 Zeos Development Group. }
@@ -58,9 +56,9 @@ interface
 {$I ZDbc.inc}
 
 uses
-  Types, Classes, SysUtils, ZClasses, ZCollections, ZSysUtils, ZCompatibility,
-  ZTokenizer, ZSelectSchema, ZGenericSqlAnalyser, ZDbcLogging, ZVariant,
-  ZPlainDriver, ZURL;
+  Types, Classes, {$IFDEF MSEgui}mclasses, mdb{$ELSE}DB{$ENDIF}, SysUtils,
+  ZClasses, ZCollections, ZCompatibility, ZTokenizer, ZSelectSchema,
+  ZGenericSqlAnalyser, ZDbcLogging, ZVariant, ZPlainDriver, ZURL;
 
 const
   { Constants from JDBC DatabaseMetadata }
@@ -94,9 +92,10 @@ type
 // Data types
 type
   {** Defines supported SQL types. }
-  TZSQLType = (stUnknown, stBoolean, stByte, stShort, stInteger, stLong, stFloat,
-    stDouble, stBigDecimal, stString, stUnicodeString, stBytes, stDate, stTime,
-    stTimestamp, stAsciiStream, stUnicodeStream, stBinaryStream);
+  TZSQLType = (stUnknown, stBoolean, stByte, stShort, stInteger, stLong,
+    stFloat, stDouble, stBigDecimal, stString, stUnicodeString, stBytes,
+    stDate, stTime, stTimestamp, stDataSet, stGUID,
+    stAsciiStream, stUnicodeStream, stBinaryStream);
 
   {** Defines a transaction isolation level. }
   TZTransactIsolationLevel = (tiNone, tiReadUncommitted, tiReadCommitted,
@@ -159,6 +158,7 @@ type
   IZBlob = interface;
   IZNotification = interface;
   IZSequence = interface;
+  IZDataSet = interface;
 
   {** Driver Manager interface. }
   IZDriverManager = interface(IZInterface)
@@ -201,7 +201,8 @@ type
 
     function GetSupportedProtocols: TStringDynArray;
     function GetSupportedClientCodePages(const Url: TZURL;
-      Const SupportedsOnly: Boolean): TStringDynArray;
+      Const {$IFNDEF UNICODE}AutoEncode,{$ENDIF} SupportedsOnly: Boolean;
+      CtrlsCPType: TZControlsCodePage = cCP_UTF16): TStringDynArray;
     function Connect(const Url: string; Info: TStrings): IZConnection; overload;
     function Connect(const Url: TZURL): IZConnection; overload;
     function GetClientVersion(const Url: string): Integer;
@@ -250,7 +251,7 @@ type
     //Ping Server Support (firmos) 27032006
 
     function PingServer: Integer;
-    function EscapeString(Value: AnsiString): AnsiString;
+    function EscapeString(Value: RawByteString): RawByteString;
 
     procedure Open;
     procedure Close;
@@ -277,20 +278,22 @@ type
 
     function UseMetadata: boolean;
     procedure SetUseMetadata(Value: Boolean);
-    function GetAnsiEscapeString(const Value: AnsiString;
-      const EscapeMarkSequence: String = '~<|'): String;
-    function GetEscapeString(const Value: String;
-      const EscapeMarkSequence: String = '~<|'): String; overload;
-    function GetEscapeString(const Value: PAnsiChar;
-      const EscapeMarkSequence: String = '~<|'): String; overload;
-    function GetClientCodePageInformations: PZCodePage; //EgonHugeist
-    function GetUTF8StringAsWideField: Boolean;
-    procedure SetUTF8StringAsWideField(const Value: Boolean);
-    function GetPreprepareSQL: Boolean;
-    procedure SetPreprepareSQL(const Value: Boolean);
-    property PreprepareSQL: Boolean read GetPreprepareSQL write SetPreprepareSQL;
+    //EgonHugeist
+    function GetBinaryEscapeString(const Value: RawByteString): String; overload;
+    function GetBinaryEscapeString(const Value: TByteDynArray): String; overload;
+    function GetEscapeString(const Value: ZWideString): ZWideString; overload;
+    function GetEscapeString(const Value: RawByteString): RawByteString; overload;
+    function GetClientCodePageInformations: PZCodePage;
+    function GetAutoEncodeStrings: Boolean;
+    procedure SetAutoEncodeStrings(const Value: Boolean);
+    property AutoEncodeStrings: Boolean read GetAutoEncodeStrings write SetAutoEncodeStrings;
     function GetEncoding: TZCharEncoding;
-    property UTF8StringAsWideField: Boolean read GetUTF8StringAsWideField write SetUTF8StringAsWideField;
+    function GetConSettings: PZConSettings;
+
+    {$IFDEF ZEOS_TEST_ONLY}
+    function GetTestMode : Byte;
+    procedure SetTestMode(Mode: Byte);
+    {$ENDIF}
   end;
 
   {** Database metadata interface. }
@@ -355,6 +358,7 @@ type
 		procedure ClearCache(const Key: string);overload;
 
     function AddEscapeCharToWildcards(const Pattern:string): string;
+    function NormalizePatternCase(Pattern:String): string;
   end;
 
   {**
@@ -415,6 +419,7 @@ type
     function SupportsCatalogsInTableDefinitions: Boolean;
     function SupportsCatalogsInIndexDefinitions: Boolean;
     function SupportsCatalogsInPrivilegeDefinitions: Boolean;
+    function SupportsOverloadPrefixInStoredProcedureName: Boolean;
     function SupportsPositionedDelete: Boolean;
     function SupportsPositionedUpdate: Boolean;
     function SupportsSelectForUpdate: Boolean;
@@ -439,6 +444,8 @@ type
     function SupportsResultSetConcurrency(_Type: TZResultSetType;
       Concurrency: TZResultSetConcurrency): Boolean;
     function SupportsBatchUpdates: Boolean;
+    function SupportsNonEscapedSearchStrings: Boolean;
+    function SupportsUpdateAutoIncrementFields: Boolean;
 
     // maxima:
     function GetMaxBinaryLiteralLength: Integer;
@@ -502,8 +509,12 @@ type
   IZStatement = interface(IZInterface)
     ['{22CEFA7E-6A6D-48EC-BB9B-EE66056E90F1}']
 
-    function ExecuteQuery(const SQL: string): IZResultSet;
-    function ExecuteUpdate(const SQL: string): Integer;
+    function ExecuteQuery(const SQL: ZWideString): IZResultSet; overload;
+    function ExecuteUpdate(const SQL: ZWideString): Integer; overload;
+    function Execute(const SQL: ZWideString): Boolean; overload;
+    function ExecuteQuery(const SQL: RawByteString): IZResultSet; overload;
+    function ExecuteUpdate(const SQL: RawByteString): Integer; overload;
+    function Execute(const SQL: RawByteString): Boolean; overload;
     procedure Close;
 
     function GetMaxFieldSize: Integer;
@@ -516,7 +527,6 @@ type
     procedure Cancel;
     procedure SetCursorName(const Value: AnsiString);
 
-    function Execute(const SQL: string): Boolean;
     function GetResultSet: IZResultSet;
     function GetUpdateCount: Integer;
     function GetMoreResults: Boolean;
@@ -547,7 +557,7 @@ type
     function GetWarnings: EZSQLWarning;
     procedure ClearWarnings;
 
-    function GetPrepreparedSQL(const SQL: String): ZAnsiString;
+    function GetEncodedSQL(const SQL: {$IF defined(FPC) and defined(WITH_RAWBYTESTRING)}RawByteString{$ELSE}String{$IFEND}): RawByteString;
   end;
 
   {** Prepared SQL statement interface. }
@@ -557,7 +567,7 @@ type
     function ExecuteQueryPrepared: IZResultSet;
     function ExecuteUpdatePrepared: Integer;
     function ExecutePrepared: Boolean;
-    
+
     function GetSQL : String;
 //    procedure Prepare;
 //    procedure Unprepare;
@@ -567,7 +577,7 @@ type
 
     procedure SetNull(ParameterIndex: Integer; SQLType: TZSQLType);
     procedure SetBoolean(ParameterIndex: Integer; Value: Boolean);
-    procedure SetByte(ParameterIndex: Integer; Value: ShortInt);
+    procedure SetByte(ParameterIndex: Integer; Value: Byte);
     procedure SetShort(ParameterIndex: Integer; Value: SmallInt);
     procedure SetInt(ParameterIndex: Integer; Value: Integer);
     procedure SetLong(ParameterIndex: Integer; Value: Int64);
@@ -576,13 +586,7 @@ type
     procedure SetBigDecimal(ParameterIndex: Integer; Value: Extended);
     procedure SetPChar(ParameterIndex: Integer; Value: PChar);
     procedure SetString(ParameterIndex: Integer; const Value: String);
-
-    {$IFDEF DELPHI12_UP}
-      procedure SetUnicodeString(ParameterIndex: Integer; const Value: String); //AVZ
-    {$ELSE}
-      procedure SetUnicodeString(ParameterIndex: Integer; const Value: WideString); //AVZ
-    {$ENDIF}
-
+    procedure SetUnicodeString(ParameterIndex: Integer; const Value: ZWideString); //AVZ
     procedure SetBytes(ParameterIndex: Integer; const Value: TByteDynArray);
     procedure SetDate(ParameterIndex: Integer; Value: TDateTime);
     procedure SetTime(ParameterIndex: Integer; Value: TDateTime);
@@ -603,6 +607,17 @@ type
   {** Callable SQL statement interface. }
   IZCallableStatement = interface(IZPreparedStatement)
     ['{E6FA6C18-C764-4C05-8FCB-0582BDD1EF40}']
+    function IsFunction: Boolean;
+    { Multiple ResultSet support API }
+    function HasMoreResultSets: Boolean;
+    function GetFirstResultSet: IZResultSet;
+    function GetPreviousResultSet: IZResultSet;
+    function GetNextResultSet: IZResultSet;
+    function GetLastResultSet: IZResultSet;
+    function BOR: Boolean;
+    function EOR: Boolean;
+    function GetResultSetByIndex(const Index: Integer): IZResultSet;
+    function GetResultSetCount: Integer;
 
     procedure RegisterOutParameter(ParameterIndex: Integer; SQLType: Integer);
     procedure RegisterParamType(ParameterIndex:integer;ParamType:Integer);
@@ -613,7 +628,7 @@ type
     function GetString(ParameterIndex: Integer): String;
     function GetUnicodeString(ParameterIndex: Integer): WideString;
     function GetBoolean(ParameterIndex: Integer): Boolean;
-    function GetByte(ParameterIndex: Integer): ShortInt;
+    function GetByte(ParameterIndex: Integer): Byte;
     function GetShort(ParameterIndex: Integer): SmallInt;
     function GetInt(ParameterIndex: Integer): Integer;
     function GetLong(ParameterIndex: Integer): Int64;
@@ -625,6 +640,12 @@ type
     function GetTime(ParameterIndex: Integer): TDateTime;
     function GetTimestamp(ParameterIndex: Integer): TDateTime;
     function GetValue(ParameterIndex: Integer): TZVariant;
+  end;
+
+  IZParamNamedCallableStatement = interface(IZCallableStatement)
+    ['{99882891-81B2-4F3E-A3D7-35B6DCAA7136}']
+    procedure RegisterParamTypeAndName(const ParameterIndex:integer;
+      const ParamTypeName, ParamName: String; Const ColumnSize, Precision: Integer);
   end;
 
   {** Rows returned by SQL query. }
@@ -642,12 +663,10 @@ type
     function IsNull(ColumnIndex: Integer): Boolean;
     function GetPChar(ColumnIndex: Integer): PChar;
     function GetString(ColumnIndex: Integer): String;
-    {$IFDEF DELPHI12_UP}
-    function GetAnsiString(ColumnIndex: Integer): AnsiString;
-    {$ENDIF}
+    function GetBinaryString(ColumnIndex: Integer): RawByteString;
     function GetUnicodeString(ColumnIndex: Integer): WideString;
     function GetBoolean(ColumnIndex: Integer): Boolean;
-    function GetByte(ColumnIndex: Integer): ShortInt;
+    function GetByte(ColumnIndex: Integer): Byte;
     function GetShort(ColumnIndex: Integer): SmallInt;
     function GetInt(ColumnIndex: Integer): Integer;
     function GetLong(ColumnIndex: Integer): Int64;
@@ -662,6 +681,7 @@ type
     function GetUnicodeStream(ColumnIndex: Integer): TStream;
     function GetBinaryStream(ColumnIndex: Integer): TStream;
     function GetBlob(ColumnIndex: Integer): IZBlob;
+    function GetDataSet(ColumnIndex: Integer): IZDataSet;
     function GetValue(ColumnIndex: Integer): TZVariant;
     function GetDefaultExpression(ColumnIndex: Integer): string;
 
@@ -672,12 +692,10 @@ type
     function IsNullByName(const ColumnName: string): Boolean;
     function GetPCharByName(const ColumnName: string): PChar;
     function GetStringByName(const ColumnName: string): String;
-    {$IFDEF DELPHI12_UP}
-    function GetAnsiStringByName(const ColumnName: string): AnsiString;
-    {$ENDIF}
+    function GetBinaryStringByName(const ColumnName: string): RawByteString;
     function GetUnicodeStringByName(const ColumnName: string): WideString;
     function GetBooleanByName(const ColumnName: string): Boolean;
-    function GetByteByName(const ColumnName: string): ShortInt;
+    function GetByteByName(const ColumnName: string): Byte;
     function GetShortByName(const ColumnName: string): SmallInt;
     function GetIntByName(const ColumnName: string): Integer;
     function GetLongByName(const ColumnName: string): Int64;
@@ -692,6 +710,7 @@ type
     function GetUnicodeStreamByName(const ColumnName: string): TStream;
     function GetBinaryStreamByName(const ColumnName: string): TStream;
     function GetBlobByName(const ColumnName: string): IZBlob;
+    function GetDataSetByName(const ColumnName: String): IZDataSet;
     function GetValueByName(const ColumnName: string): TZVariant;
 
     //=====================================================================
@@ -757,9 +776,7 @@ type
     procedure UpdateBigDecimal(ColumnIndex: Integer; Value: Extended);
     procedure UpdatePChar(ColumnIndex: Integer; Value: PChar);
     procedure UpdateString(ColumnIndex: Integer; const Value: String);
-    {$IFDEF DELPHI12_UP}
-    procedure UpdateAnsiString(ColumnIndex: Integer; const Value: AnsiString);
-    {$ENDIF}
+    procedure UpdateBinaryString(ColumnIndex: Integer; const Value: RawByteString);
     procedure UpdateUnicodeString(ColumnIndex: Integer; const Value: WideString);
     procedure UpdateBytes(ColumnIndex: Integer; const Value: TByteDynArray);
     procedure UpdateDate(ColumnIndex: Integer; Value: TDateTime);
@@ -768,6 +785,7 @@ type
     procedure UpdateAsciiStream(ColumnIndex: Integer; Value: TStream);
     procedure UpdateUnicodeStream(ColumnIndex: Integer; Value: TStream);
     procedure UpdateBinaryStream(ColumnIndex: Integer; Value: TStream);
+    procedure UpdateDataSet(ColumnIndex: Integer; Value: IZDataSet);
     procedure UpdateValue(ColumnIndex: Integer; const Value: TZVariant);
     procedure UpdateDefaultExpression(ColumnIndex: Integer; const Value: string);
 
@@ -786,9 +804,7 @@ type
     procedure UpdateBigDecimalByName(const ColumnName: string; Value: Extended);
     procedure UpdatePCharByName(const ColumnName: string; Value: PChar);
     procedure UpdateStringByName(const ColumnName: string; const Value: String);
-    {$IFDEF DELPHI12_UP}
-    procedure UpdateAnsiStringByName(const ColumnName: string; const Value: AnsiString);
-    {$ENDIF}
+    procedure UpdateBinaryStringByName(const ColumnName: string; const Value: RawByteString);
     procedure UpdateUnicodeStringByName(const ColumnName: string; const Value: WideString);
     procedure UpdateBytesByName(const ColumnName: string; const Value: TByteDynArray);
     procedure UpdateDateByName(const ColumnName: string; Value: TDateTime);
@@ -797,6 +813,7 @@ type
     procedure UpdateAsciiStreamByName(const ColumnName: string; Value: TStream);
     procedure UpdateUnicodeStreamByName(const ColumnName: string; Value: TStream);
     procedure UpdateBinaryStreamByName(const ColumnName: string; Value: TStream);
+    procedure UpdateDataSetByName(const ColumnName: string; Value: IZDataSet);
     procedure UpdateValueByName(const ColumnName: string; const Value: TZVariant);
 
     procedure InsertRow;
@@ -816,7 +833,14 @@ type
       const ColumnDirs: TBooleanDynArray): Integer;
 
     function GetStatement: IZStatement;
-    function GetClientCodePage: PZCodePage;
+    function GetConSettings: PZConsettings;
+  end;
+
+  {** TDataSet interface}
+  IZDataSet = interface(IZInterface)
+    ['{DBC24011-EF26-4FD8-AC8B-C3E01619494A}']
+    function GetDataSet: TDataSet;
+    function IsEmpty: Boolean;
   end;
 
   {** ResultSet metadata interface. }
@@ -855,16 +879,18 @@ type
     function IsEmpty: Boolean;
     function IsUpdated: Boolean;
     function Length: LongInt;
+    function WasDecoded: Boolean;
+    function Connection: IZConnection;
 
-    function GetString: ZAnsiString;
-    procedure SetString(const Value: ZAnsiString);
+    function GetString: RawByteString;
+    procedure SetString(const Value: RawByteString);
     function GetUnicodeString: WideString;
     procedure SetUnicodeString(const Value: WideString);
     function GetBytes: TByteDynArray;
     procedure SetBytes(const Value: TByteDynArray);
     function GetUnicodeStream: TStream;
     function GetStream: TStream;
-    procedure SetStream(Value: TStream);
+    procedure SetStream(Value: TStream; Encoded: Boolean = False);
     function GetBuffer: Pointer;
     procedure SetBuffer(Buffer: Pointer; Length: Integer);
 

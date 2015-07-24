@@ -8,7 +8,7 @@
 {*********************************************************}
 
 {@********************************************************}
-{    Copyright (c) 1999-2006 Zeos Development Group       }
+{    Copyright (c) 1999-2012 Zeos Development Group       }
 {                                                         }
 { License Agreement:                                      }
 {                                                         }
@@ -40,12 +40,10 @@
 {                                                         }
 { The project web site is located on:                     }
 {   http://zeos.firmos.at  (FORUM)                        }
-{   http://zeosbugs.firmos.at (BUGTRACKER)                }
-{   svn://zeos.firmos.at/zeos/trunk (SVN Repository)      }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
 {                                                         }
 {   http://www.sourceforge.net/projects/zeoslib.          }
-{   http://www.zeoslib.sourceforge.net                    }
-{                                                         }
 {                                                         }
 {                                                         }
 {                                 Zeos Development Group. }
@@ -57,7 +55,9 @@ interface
 
 {$I ZParseSql.inc}
 
-uses ZClasses, Contnrs, ZCompatibility;
+uses ZClasses, Contnrs, ZCompatibility
+  {$IFDEF WITH_SYSTEMCLASSES},System.Classes{$ENDIF}
+  {$IFDEF WITH_TOBJECTLIST_INLINE}, System.Types{$ENDIF};
 
 type
 
@@ -129,8 +129,8 @@ type
     function FindTableByShortName(const Table: string): TZTableRef;
     function FindFieldByShortName(const Field: string): TZFieldRef;
 
-    function LinkFieldByIndexAndShortName(
-      ColumnIndex: Integer; const Field: string): TZFieldRef;
+    function LinkFieldByIndexAndShortName(const ColumnIndex: Integer; const Field: string;
+      const Convertor: IZIdentifierConvertor): TZFieldRef;
 
     function GetFieldCount: Integer;
     function GetTableCount: Integer;
@@ -166,8 +166,8 @@ type
     function FindTableByShortName(const Table: string): TZTableRef;
     function FindFieldByShortName(const Field: string): TZFieldRef;
 
-    function LinkFieldByIndexAndShortName(
-      ColumnIndex: Integer; const Field: string): TZFieldRef;
+    function LinkFieldByIndexAndShortName(const ColumnIndex: Integer; const Field: string;
+      const Convertor: IZIdentifierConvertor): TZFieldRef;
 
     function GetFieldCount: Integer;
     function GetTableCount: Integer;
@@ -371,8 +371,8 @@ end;
   @param Field a table field name or alias.
   @return a found field reference object or <code>null</code> otherwise.
 }
-function TZSelectSchema.LinkFieldByIndexAndShortName(
-  ColumnIndex: Integer; const Field: string): TZFieldRef;
+function TZSelectSchema.LinkFieldByIndexAndShortName(const ColumnIndex: Integer;
+  const Field: string; const Convertor: IZIdentifierConvertor): TZFieldRef;
 var
   I: Integer;
   Current: TZFieldRef;
@@ -386,7 +386,8 @@ begin
   begin
     Current := TZFieldRef(FFields[ColumnIndex - 1]);
     if not Current.Linked
-      and ((Current.Alias = Field) or (Current.Field = Field)) then
+      //note http://sourceforge.net/p/zeoslib/tickets/101/
+      and ((Current.Alias = Field) or (Current.Field = Field) or (Current.Field = Convertor.Quote(Field))) then
     begin
       Result := Current;
       Result.Linked := True;
@@ -398,7 +399,7 @@ begin
   for I := 0 to FFields.Count - 1 do
   begin
     Current := TZFieldRef(FFields[I]);
-    if not Current.Linked and (Current.Alias = Field) then
+    if not Current.Linked and ((Current.Alias = Field) or (Current.Alias = Convertor.Quote(Field))) then
     begin
       Result := Current;
       Result.Linked := True;
@@ -440,6 +441,17 @@ end;
 procedure TZSelectSchema.ConvertIdentifiers(Convertor: IZIdentifierConvertor);
 var
   I: Integer;
+  function ExtractNeedlessQuote(Value : String) : String;
+  var
+    tempstring: String;
+  begin
+    tempstring := Convertor.ExtractQuote(Value);
+    if Convertor.IsCaseSensitive(tempstring) then
+      result := Value
+    else
+      result := tempstring;
+  end;
+
 begin
   if Convertor = nil then Exit;
 
@@ -447,11 +459,11 @@ begin
   begin
     with TZFieldRef(FFields[I]) do
     begin
-      Catalog := Convertor.ExtractQuote(Catalog);
-      Schema := Convertor.ExtractQuote(Schema);
-      Table := Convertor.ExtractQuote(Table);
-      Field := Convertor.ExtractQuote(Field);
-      Alias := Convertor.ExtractQuote(Alias);
+      Catalog := ExtractNeedlessQuote(Catalog);
+      Schema := ExtractNeedlessQuote(Schema);
+      Table := ExtractNeedlessQuote(Table);
+      Field := ExtractNeedlessQuote(Field);
+      Alias := ExtractNeedlessQuote(Alias);
     end;
   end;
 
@@ -459,10 +471,10 @@ begin
   begin
     with TZTableRef(FTables[I]) do
     begin
-      Catalog := Convertor.ExtractQuote(Catalog);
-      Schema := Convertor.ExtractQuote(Schema);
-      Table := Convertor.ExtractQuote(Table);
-      Alias := Convertor.ExtractQuote(Alias);
+      Catalog := ExtractNeedlessQuote(Catalog);
+      Schema := ExtractNeedlessQuote(Schema);
+      Table := ExtractNeedlessQuote(Table);
+      Alias := ExtractNeedlessQuote(Alias);
     end;
   end;
 end;

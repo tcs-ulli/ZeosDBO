@@ -8,7 +8,7 @@
 {*********************************************************}
 
 {@********************************************************}
-{    Copyright (c) 1999-2006 Zeos Development Group       }
+{    Copyright (c) 1999-2012 Zeos Development Group       }
 {                                                         }
 { License Agreement:                                      }
 {                                                         }
@@ -40,12 +40,10 @@
 {                                                         }
 { The project web site is located on:                     }
 {   http://zeos.firmos.at  (FORUM)                        }
-{   http://zeosbugs.firmos.at (BUGTRACKER)                }
-{   svn://zeos.firmos.at/zeos/trunk (SVN Repository)      }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
 {                                                         }
 {   http://www.sourceforge.net/projects/zeoslib.          }
-{   http://www.zeoslib.sourceforge.net                    }
-{                                                         }
 {                                                         }
 {                                                         }
 {                                 Zeos Development Group. }
@@ -60,7 +58,7 @@ interface
 {$IFDEF WITH_PROPERTY_EDITOR}
 
 uses
-  Types, Classes, ZClasses, ZCompatibility, ZDbcIntfs, ZGroupedConnection ,
+  Types, Classes, ZClasses, ZCompatibility, ZDbcIntfs,
   ZConnectionGroup, ZAbstractConnection, ZURL,
 {$IFDEF BDS4_UP}
   WideStrings,
@@ -172,6 +170,15 @@ type
     procedure SetValue(const Value: string); override;
   end;
 
+  {** Implements a property editor for ZGroupedConnection.LibLocation property. }
+  {** added 2013/02/20 }
+  TZConnectionGroupLibLocationPropertyEditor = class(TZStringProperty)
+  public
+    function  GetAttributes: TPropertyAttributes; override;
+    function  GetValue: string; override;
+    procedure Edit; override;
+    procedure SetValue(const Value: string); override;
+  end;
   /////////////////////////////////////////////////////////
 
 
@@ -218,8 +225,7 @@ implementation
 
 {$IFDEF WITH_PROPERTY_EDITOR}
 
-uses SysUtils, Forms, Dialogs, Controls, DB, TypInfo,
-  ZConnection, ZSelectSchema
+uses SysUtils, Forms, Dialogs, Controls, DB, TypInfo, ZSysUtils, ZSelectSchema
 {$IFDEF USE_METADATA}
   , ZSqlMetadata
 {$ENDIF}
@@ -230,9 +236,9 @@ uses SysUtils, Forms, Dialogs, Controls, DB, TypInfo,
   {$ENDIF}
   {$ENDIF}
 {$ENDIF}
-{$IFDEF SHOW_WARNING} 
-,ZMessages 
-{$ENDIF SHOW_WARNING} 
+{$IFDEF SHOW_WARNING}
+,ZMessages
+{$ENDIF SHOW_WARNING}
 ;
 
 {$IFDEF FPC}
@@ -355,7 +361,7 @@ var
 begin
   DataSource := GetObjectProp(GetZComponent, 'MasterSource') as TDataSource;
   if (DataSource <> nil) and (DataSource.DataSet <> nil) then
-    {$IFDEF BDS4_UP}
+    {$IFDEF WITH_WIDESTRINGS_GETFIELDNAMES}
     DataSource.DataSet.GetFieldNames(TWideStrings(List));
     {$ELSE}
     DataSource.DataSet.GetFieldNames(List);
@@ -410,10 +416,26 @@ begin
             TableName := ResultSet.GetStringByName('TABLE_NAME');
             TableName := IdentifierConvertor.Quote(TableName);
             Schema := ResultSet.GetStringByName('TABLE_SCHEM');
+            (*if Connection.DbcConnection.GetMetadata.GetDatabaseInfo.SupportsCatalogsInTableDefinitions then
+              if Catalog <> '' then
+                if Schema <> '' then
+                  TableName := IdentifierConvertor.Quote(Catalog) + IdentifierConvertor.Quote(Schema) + '.' + TableName
+                else
+                  TableName := {IdentifierConvertor.Quote(Catalog) + '.' + }TableName
+              else
+                if Schema <> '' then
+                  TableName := IdentifierConvertor.Quote(Schema) + '.' + TableName
+                else
+                  TableName := TableName
+            else
+              if Schema <> '' then
+                TableName := IdentifierConvertor.Quote(Schema) + '.' + TableName
+              else
+                TableName := TableName;*)
             if Schema <> '' then
               TableName := IdentifierConvertor.Quote(Schema) + '.' + TableName;
-            if Connection.Catalog <> '' then
-              TableName := IdentifierConvertor.Quote(Connection.Catalog) + '.' + TableName;
+            if Catalog <> '' then
+              TableName := IdentifierConvertor.Quote(Catalog) + '.' + TableName;
             List.Add(TableName);
           end;
       finally
@@ -433,14 +455,37 @@ procedure TZProcedureNamePropertyEditor.GetValueList(List: TStrings);
 var
   Connection: TZAbstractConnection;
   Metadata: IZDatabaseMetadata;
+  IdentifierConvertor: IZIdentifierConvertor;
   ResultSet: IZResultSet;
-{$IFDEF USE_METADATA}
   Catalog, Schema: string;
-{$ENDIF}
+  ProcedureName: string;
+
+  procedure ExtractOverload(OverloadSeparator: String);
+  var
+    I: Integer;
+    SL: TStrings;
+  begin
+    SL := TStringList.Create;
+    PutSplitString(SL, ProcedureName, OverloadSeparator);
+    if SL.Count > 1 then
+    begin
+      SL.Delete(SL.Count -1);
+      ProcedureName := '';
+      for i := 0 to SL.Count -1 do
+        if ProcedureName = '' then
+          ProcedureName := ProcedureName + SL[i]
+        else
+          ProcedureName :=  ProcedureName +OverloadSeparator+ SL[i]; //don't forget to give the delimiter back too
+    end;
+  end;
 begin
   Connection := GetObjectProp(GetZComponent, 'Connection') as TZAbstractConnection;
   if Assigned(Connection) and Connection.Connected then
   begin
+    Metadata := Connection.DbcConnection.GetMetadata;
+    IdentifierConvertor := Metadata.GetIdentifierConvertor;
+    Catalog := Connection.Catalog;
+    Schema := '';
 {$IFDEF USE_METADATA}
     if GetZComponent is TZSqlMetadata then
     begin
@@ -450,26 +495,46 @@ begin
       if not (IsEmpty(Catalog) and IsEmpty(Schema)) or
        (MessageDlg(SPropertyQuery + CRLF + SPropertyProcedures + CRLF +
         SPropertyExecute, mtWarning, [mbYes,mbNo], 0) = mrYes) then
+        begin
+        // continue
+        end
+      else
+        exit;
 {$ENDIF}
-      try
-        Metadata := Connection.DbcConnection.GetMetadata;
-        // Look for the Procedures of the defined Catalog and Schema
-        ResultSet := Metadata.GetProcedures(Catalog, Schema, '');
-        while ResultSet.Next do
-          List.Add(ResultSet.GetStringByName('PROCEDURE_NAME'));
-      finally
-        ResultSet.Close;
-      end;
-    end
-    else
+    end;
 {$ENDIF}
     begin
       try
         Metadata := Connection.DbcConnection.GetMetadata;
         // Look for the Procedures
-        ResultSet := Metadata.GetProcedures(Connection.Catalog, '', '');
+        ResultSet := Metadata.GetProcedures(Catalog, Schema, '');
         while ResultSet.Next do
-          List.Add(ResultSet.GetStringByName('PROCEDURE_NAME'));
+        begin
+          ProcedureName := ResultSet.GetStringByName('PROCEDURE_NAME');
+          if ( not Metadata.GetDatabaseInfo.SupportsOverloadPrefixInStoredProcedureName ) then
+            if not ( StartsWith(ProcedureName, MetaData.GetDatabaseInfo.GetIdentifierQuoteString) or
+                     EndsWith(ProcedureName, MetaData.GetDatabaseInfo.GetIdentifierQuoteString) or
+                     (Pos('.', ProcedureName) > 0) ) then
+              ProcedureName := IdentifierConvertor.Quote(ProcedureName);
+          Schema := ResultSet.GetStringByName('PROCEDURE_SCHEM');
+          if Metadata.GetDatabaseInfo.SupportsCatalogsInProcedureCalls then
+            if Catalog <> '' then
+              if Schema <> '' then
+                ProcedureName := IdentifierConvertor.Quote(Catalog) +'.'+ IdentifierConvertor.Quote(Schema) + '.' + ProcedureName
+              else
+                ProcedureName := ProcedureName
+            else
+              if Schema <> '' then
+                ProcedureName := IdentifierConvertor.Quote(Schema) + '.' + ProcedureName
+              else
+                ProcedureName := ProcedureName
+          else
+            if Schema <> '' then
+              ProcedureName := IdentifierConvertor.Quote(Schema) + '.' + ProcedureName
+            else
+              ProcedureName := ProcedureName;
+          List.Add(ProcedureName);
+        end;
       finally
         ResultSet.Close;
       end;
@@ -613,7 +678,8 @@ begin
     begin
       Url := TZURL.Create;
       Url.Protocol :=  Connection.Protocol;
-      SDyn := DriverManager.GetDriver(Url.URL).GetSupportedClientCodePages(Url, True);
+      SDyn := DriverManager.GetDriver(Url.URL).GetSupportedClientCodePages(Url,
+        {$IFNDEF UNICODE}Connection.AutoEncodeStrings, {$ENDIF}True, Connection.ControlsCodePage);
       Url.Free;
       for i := 0 to high(SDyn) do
         List.Append(SDyn[i]);
@@ -835,14 +901,23 @@ begin
       DbcConnection := DriverManager.GetConnectionWithParams(Url,
         (GetZComponent as TZAbstractConnection).Properties);
 
-      with DbcConnection.GetMetadata.GetCatalogs do
-      try
-        while Next do
-          List.Append(GetStringByName('TABLE_CAT'));
-      finally
-        Close;
-      end;
-
+      if Assigned(DbcConnection) then
+        if DbcConnection.GetMetadata.GetDatabaseInfo.SupportsCatalogsInDataManipulation then
+          with DbcConnection.GetMetadata.GetCatalogs do
+          try
+            while Next do
+              List.Append(GetStringByName('TABLE_CAT'));
+          finally
+            Close;
+          end
+        else if DbcConnection.GetMetadata.GetDatabaseInfo.SupportsSchemasInDataManipulation then
+          with DbcConnection.GetMetadata.GetSchemas do
+          try
+            while Next do
+              List.Append(GetStringByName('TABLE_SCHEM'));
+          finally
+            Close;
+          end;
     finally
       (GetZComponent as TZAbstractConnection).HideSqlHourGlass;
     end;
@@ -1055,11 +1130,10 @@ end;
 procedure TZConnectionGroupPropertyEditor.GetValueList(List: TStrings);
 var
   DbcConnection: IZConnection;
-  Url: string;
 begin
   if GetZComponent is TZConnectionGroup then
   try
-    URL := (GetZComponent as TZAbstractConnection).GetURL;
+    DbcConnection := (GetZComponent as TZAbstractConnection).DbcConnection;
     with DbcConnection.GetMetadata.GetCatalogs do
     try
       while Next do
@@ -1110,7 +1184,60 @@ begin
     inherited;
 end;
 
+{** added 2013/02/20 }
+{ TZConnectionGroupLibLocationPropertyEditor }
 
+{**
+  Gets a type of property attributes.
+  @return a type of property attributes.
+}
+function TZConnectionGroupLibLocationPropertyEditor.GetAttributes: TPropertyAttributes;
+begin
+  if GetZComponent is TZConnectionGroup then
+    Result := [paDialog];
+end;
+
+{**
+  Gets a selected string value.
+  @return a selected string value.
+}
+function TZConnectionGroupLibLocationPropertyEditor.GetValue: string;
+begin
+  Result := GetStrValue;
+end;
+
+{**
+  Sets a new selected string value.
+  @param Value a new selected string value.
+}
+procedure TZConnectionGroupLibLocationPropertyEditor.SetValue(const Value: string);
+begin
+  SetStrValue(Value);
+  //if GetZComponent is TZAbstractConnection then
+  //  (GetZComponent as TZAbstractConnection).Connected := False;
+end;
+
+{**
+  Brings up the proper LibLocation property editor dialog.
+}
+procedure TZConnectionGroupLibLocationPropertyEditor.Edit;
+var
+  OD: TOpenDialog;
+begin
+  if GetZComponent is TZConnectionGroup then
+  begin
+    OD := TOpenDialog.Create(nil);
+    try
+      OD.InitialDir := ExtractFilePath((GetZComponent as TZConnectionGroup).LibraryLocation);
+      if OD.Execute then
+        (GetZComponent as TZConnectionGroup).LibraryLocation := OD.FileName;
+    finally
+      OD.Free;
+    end;
+  end
+  else
+    inherited;
+end;
 
 {$ENDIF}
 

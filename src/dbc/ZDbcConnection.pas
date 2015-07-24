@@ -8,7 +8,7 @@
 {*********************************************************}
 
 {@********************************************************}
-{    Copyright (c) 1999-2006 Zeos Development Group       }
+{    Copyright (c) 1999-2012 Zeos Development Group       }
 {                                                         }
 { License Agreement:                                      }
 {                                                         }
@@ -40,12 +40,10 @@
 {                                                         }
 { The project web site is located on:                     }
 {   http://zeos.firmos.at  (FORUM)                        }
-{   http://zeosbugs.firmos.at (BUGTRACKER)                }
-{   svn://zeos.firmos.at/zeos/trunk (SVN Repository)      }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
 {                                                         }
 {   http://www.sourceforge.net/projects/zeoslib.          }
-{   http://www.zeoslib.sourceforge.net                    }
-{                                                         }
 {                                                         }
 {                                                         }
 {                                 Zeos Development Group. }
@@ -63,9 +61,12 @@ uses
     Comobj,
   {$ENDIF}
 {$ENDIF}
-  Types, Classes, SysUtils, ZClasses, ZDbcIntfs, ZTokenizer, ZCompatibility,
-  ZGenericSqlToken, ZGenericSqlAnalyser, ZPlainDriver, ZURL, ZCollections,
-  ZVariant;
+{$IFDEF WITH_LCONVENCODING}
+  LConvEncoding,
+{$ENDIF}
+  Types, Classes, {$IFDEF MSEgui}mclasses,{$ENDIF} SysUtils,
+  ZClasses, ZDbcIntfs, ZTokenizer, ZCompatibility, ZGenericSqlToken,
+  ZGenericSqlAnalyser, ZPlainDriver, ZURL, ZCollections, ZVariant;
 
 type
 
@@ -90,7 +91,8 @@ type
 
     function GetSupportedProtocols: TStringDynArray;
     function GetSupportedClientCodePages(const Url: TZURL;
-      Const SupportedsOnly: Boolean): TStringDynArray;
+      Const {$IFNDEF UNICODE}AutoEncode, {$ENDIF} SupportedsOnly: Boolean;
+      CtrlsCPType: TZControlsCodePage = cCP_UTF16): TStringDynArray;
     function Connect(const Url: string; Info: TStrings = nil): IZConnection; overload; deprecated;
     function Connect(const Url: TZURL): IZConnection; overload; virtual;
     function AcceptsURL(const Url: string): Boolean; virtual;
@@ -113,8 +115,6 @@ type
   private
     FDriver: IZDriver;
     FIZPlainDriver: IZPlainDriver;
-    FPreprepareSQL: Boolean;
-    FUTF8StringAsWideField: Boolean;
     FAutoCommit: Boolean;
     FReadOnly: Boolean;
     FTransactIsolationLevel: TZTransactIsolationLevel;
@@ -133,16 +133,21 @@ type
     procedure SetPassword(const Value: String);
     function GetInfo: TStrings;
   protected
+    FDisposeCodePage: Boolean;
+    FUndefinedVarcharAsStringLength: Integer; //used for PostgreSQL and SQLite
     FClientCodePage: String;
     FMetadata: TContainedObject;
-    procedure InternalCreate; virtual; //abstract; //Mark, if we are ready this one should be abstract!
+    {$IFDEF ZEOS_TEST_ONLY}
+    FTestMode: Byte;
+    {$ENDIF}
+    procedure InternalCreate; virtual; abstract;
     function GetEncoding: TZCharEncoding;
+    function GetConSettings: PZConSettings;
     procedure CheckCharEncoding(const CharSet: String; const DoArrange: Boolean = False);
     function GetClientCodePageInformations: PZCodePage; //EgonHugeist
-    function GetUTF8StringAsWideField: Boolean;
-    procedure SetUTF8StringAsWideField(const Value: Boolean);
-    function GetPreprepareSQL: Boolean; //EgonHugeist
-    procedure SetPreprepareSQL(const Value: Boolean);
+    function GetAutoEncodeStrings: Boolean; //EgonHugeist
+    procedure SetAutoEncodeStrings(const Value: Boolean);
+    procedure OnPropertiesChange(Sender: TObject); virtual;
     procedure RaiseUnsupportedException;
 
     function CreateRegularStatement(Info: TStrings): IZStatement;
@@ -203,7 +208,7 @@ type
 
     //Ping Support initially for MySQL 27032006 (firmos)
     function PingServer: Integer; virtual;
-    function EscapeString(Value: AnsiString): AnsiString; virtual;
+    function EscapeString(Value: RawByteString): RawByteString; virtual;
 
     procedure Open; virtual;
     procedure Close; virtual;
@@ -229,15 +234,16 @@ type
 
     function GetWarnings: EZSQLWarning; virtual;
     procedure ClearWarnings; virtual;
-    function GetAnsiEscapeString(const Value: AnsiString;
-      const EscapeMarkSequence: String = '~<|'): String; virtual;
-    function GetEscapeString(const Value: String;
-      const EscapeMarkSequence: String = '~<|'): String; overload; virtual;
-    function GetEscapeString(const Value: PAnsiChar;
-      const EscapeMarkSequence: String = '~<|'): String; overload; virtual;
-
+    function GetBinaryEscapeString(const Value: RawByteString): String; overload; virtual;
+    function GetBinaryEscapeString(const Value: TByteDynArray): String; overload; virtual;
+    function GetEscapeString(const Value: ZWideString): ZWideString; overload; virtual;
+    function GetEscapeString(const Value: RawByteString): RawByteString; overload; virtual;
     function UseMetadata: boolean;
     procedure SetUseMetadata(Value: Boolean);
+    {$IFDEF ZEOS_TEST_ONLY}
+    function GetTestMode : Byte;
+    procedure SetTestMode(Mode: Byte);
+    {$ENDIF}
 end;
 
   {** Implements Abstract Database notification. }
@@ -289,7 +295,8 @@ end;
 
 implementation
 
-uses ZMessages, ZSysUtils, ZDbcMetadata;
+uses ZMessages, ZSysUtils, ZDbcMetadata, ZDbcUtils, ZEncoding
+  {$IFDEF WITH_UNITANSISTRINGS},AnsiStrings{$ENDIF};
 
 { TZAbstractDriver }
 
@@ -306,6 +313,8 @@ end;
 }
 destructor TZAbstractDriver.Destroy;
 begin
+  FTokenizer := nil;
+  FAnalyser := nil;
   FCachedPlainDrivers.Clear;
   FCachedPlainDrivers := nil;
   inherited Destroy;
@@ -322,13 +331,15 @@ end;
   For example: ASCII, UTF8...
 }
 function TZAbstractDriver.GetSupportedClientCodePages(const Url: TZURL;
-  Const SupportedsOnly: Boolean): TStringDynArray;
+  Const {$IFNDEF UNICODE}AutoEncode,{$ENDIF} SupportedsOnly: Boolean;
+  CtrlsCPType: TZControlsCodePage = cCP_UTF16): TStringDynArray;
 var
   Plain: IZPlainDriver;
 begin
   Plain := GetPlainDriverFromCache(Url.Protocol, '');
   if Assigned(Plain) then
-  Result := Plain.GetSupportedClientCodePages(not SupportedsOnly);
+  Result := Plain.GetSupportedClientCodePages({$IFNDEF UNICODE}AutoEncode,{$ENDIF}
+    not SupportedsOnly, CtrlsCPType);
 end;
 
 {**
@@ -366,12 +377,12 @@ begin
     TempUrl.Free;
   end;
 end;
-{$WARNINGS ON}
 
 function TZAbstractDriver.Connect(const Url: TZURL): IZConnection;
 begin
   Result := nil;
 end;
+{$WARNINGS ON}
 
 {**
   Returns true if the driver thinks that it can open a connection
@@ -390,7 +401,7 @@ begin
   Protocols := GetSupportedProtocols;
   for I := Low(Protocols) to High(Protocols) do
   begin
-    Result := StartsWith(Url, Format('zdbc:%s:', [Protocols[I]]));
+    Result := StartsWith(LowerCase(Url), Format('zdbc:%s:', [LowerCase(Protocols[I])]));
     if Result then
       Break;
   end;
@@ -446,7 +457,7 @@ function TZAbstractDriver.GetPlainDriver(const Url: TZURL;
   const InitDriver: Boolean): IZPlainDriver;
 begin
   Result := GetPlainDriverFromCache(Url.Protocol, Url.LibLocation);
-  if InitDriver then
+  if Assigned(Result) and InitDriver then
     Result.Initialize(Url.LibLocation);
 end;
 
@@ -587,13 +598,14 @@ begin
   Result := FURL.Properties;
 end;
 
-procedure TZAbstractConnection.InternalCreate;
-begin
-end;
-
 function TZAbstractConnection.GetEncoding: TZCharEncoding;
 begin
-  Result := Self.ClientCodePage^.Encoding;
+  Result := ConSettings.ClientCodePage^.Encoding;
+end;
+
+function TZAbstractConnection.GetConSettings: PZConSettings;
+begin
+  Result := ConSettings;
 end;
 
 {**
@@ -610,9 +622,13 @@ end;
 procedure TZAbstractConnection.CheckCharEncoding(const CharSet: String;
   const DoArrange: Boolean = False);
 begin
-  ClientCodePage := Self.GetIZPlainDriver.ValidateCharEncoding(CharSet, DoArrange);
-  FPreprepareSQL := FPreprepareSQL and (ClientCodePage^.Encoding in [ceUTF8, ceUTF16{$IFNDEF MSWINDOWS}, ceUTF32{$ENDIF}]);
-  FClientCodePage := ClientCodePage^.Name; //resets the developer choosen ClientCodePage
+  ConSettings.ClientCodePage := GetIZPlainDriver.ValidateCharEncoding(CharSet, DoArrange);
+  FClientCodePage := ConSettings.ClientCodePage^.Name; //resets the developer choosen ClientCodePage
+  {$IFDEF WITH_LCONVENCODING}
+  SetConvertFunctions(ConSettings.CTRL_CP, ConSettings.ClientCodePage.CP,
+    ConSettings.PlainConvertFunc, ConSettings.DbcConvertFunc);
+  {$ENDIF}
+  ZEncoding.SetConvertFunctions(ConSettings);
 end;
 
 
@@ -623,14 +639,20 @@ end;
     So we do not need to do the SQLString + UTF8Encode(Edit1.Test) for example.
   @result True if coPreprepareSQL was choosen in the TZAbstractConnection
 }
-function TZAbstractConnection.GetPreprepareSQL: Boolean;
+function TZAbstractConnection.GetAutoEncodeStrings: Boolean;
 begin
-  Result := FPreprepareSQL;
+  {$IFDEF UNICODE}
+  Result := True;
+  {$ELSE}
+  Result := ConSettings.AutoEncode;
+  {$ENDIF}
 end;
 
-procedure TZAbstractConnection.SetPreprepareSQL(const Value: Boolean);
+procedure TZAbstractConnection.SetAutoEncodeStrings(const Value: Boolean);
 begin
-  FPreprepareSQL := Value;
+  {$IFNDEF UNICODE}
+  ConSettings.AutoEncode := Value;
+  {$ENDIF}
 end;
 
 {**
@@ -673,32 +695,28 @@ begin
   if not assigned(ZUrl) then
     raise Exception.Create('ZUrl is not assigned!')
   else
-    FURL := TZURL.Create(ZURL);
+    FURL := TZURL.Create();
   FDriver := DriverManager.GetDriver(ZURL.URL);
   FIZPlainDriver := FDriver.GetPlainDriver(ZUrl);
-  Info.NameValueSeparator := '=';
+
+  FURL.OnPropertiesChange := OnPropertiesChange;
+  FURL.URL := ZUrl.URL;
+
   FClientCodePage := Info.Values['codepage'];
-  FPreprepareSQL := Info.Values['PreprepareSQL'] = 'ON'; //compatibitity Option for existing Applications
-  {Pick out the values from Info}
-  Info.Values['PreprepareSQL'] := '';
-  Info.Values['codepage'] := '';
   {CheckCharEncoding}
+  ConSettings := New(PZConSettings);
+
+  SetConSettingsFromInfo(Info);
   CheckCharEncoding(FClientCodePage, True);
-  {$IFDEF LAZARUSUTF8HACK}
-  FUTF8StringAsWideField := False;
-  {$ELSE}
-    {$IFDEF DELPHI12_UP}
-    FUTF8StringAsWideField := True;
-    {$ELSE}
-    FUTF8StringAsWideField := False;
-    {$ENDIF}
-  {$ENDIF}
 
   FAutoCommit := True;
   FReadOnly := True;
   FTransactIsolationLevel := tiNone;
   FUseMetadata := True;
   InternalCreate;
+  {$IFDEF ZEOS_TEST_ONLY}
+  FTestMode := 0;
+  {$ENDIF}
 end;
 
 {**
@@ -712,6 +730,8 @@ begin
   FURL.Free;
   FIZPlainDriver := nil;
   FDriver := nil;
+  if Assigned(ConSettings) then
+    Dispose(ConSettings);
   inherited Destroy;
 end;
 
@@ -746,7 +766,7 @@ end;
 }
 function TZAbstractConnection.CreateStatement: IZStatement;
 begin
-  Result := CreateRegularStatement(nil);
+  Result := CreateStatementWithParams(nil);
 end;
 
 {**
@@ -765,8 +785,17 @@ end;
 }
 function TZAbstractConnection.CreateStatementWithParams(Info: TStrings):
   IZStatement;
+var UsedInfo: TStrings;
 begin
-  Result := CreateRegularStatement(Info);
+  UsedInfo := Info;
+  If StrToBoolEx(GetInfo.Values['preferprepared']) then
+  begin
+    If UsedInfo = nil then
+        UsedInfo := TSTringList.Create;
+      UsedInfo.Append('preferprepared=TRUE');
+  end;
+  Result := CreateRegularStatement(UsedInfo);
+  if UsedInfo <> Info then UsedInfo.Free;
 end;
 
 {**
@@ -826,8 +855,17 @@ end;
 }
 function TZAbstractConnection.PrepareStatementWithParams(const SQL: string;
   Info: TStrings): IZPreparedStatement;
+var UsedInfo: TStrings;
 begin
-  Result := CreatePreparedStatement(SQL, Info);
+  UsedInfo := Info;
+  If StrToBoolEx(GetInfo.Values['preferprepared']) then
+  begin
+    If UsedInfo = nil then
+      UsedInfo := TSTringList.Create;
+    UsedInfo.Append('preferprepared=TRUE');
+  end;
+  Result := CreatePreparedStatement(SQL, UsedInfo);
+  if UsedInfo <> Info then UsedInfo.Free;
 end;
 
 procedure TZAbstractConnection.PrepareTransaction(const transactionid: string);
@@ -896,8 +934,17 @@ end;
 }
 function TZAbstractConnection.PrepareCallWithParams(const SQL: string;
   Info: TStrings): IZCallableStatement;
+var UsedInfo: TStrings;
 begin
-  Result := CreateCallableStatement(SQL, Info);
+  UsedInfo := Info;
+  If StrToBoolEx(GetInfo.Values['preferprepared']) then
+  begin
+    If UsedInfo = nil then
+      UsedInfo := TSTringList.Create;
+    UsedInfo.Append('preferprepared=TRUE');
+  end;
+  Result := CreateCallableStatement(SQL, UsedInfo);
+  if UsedInfo <> Info then UsedInfo.Free;
 end;
 
 {**
@@ -1037,7 +1084,7 @@ end;
   @param value string that should be escaped
   @return Escaped string
 }
-function TZAbstractConnection.EscapeString(Value : AnsiString) : AnsiString;
+function TZAbstractConnection.EscapeString(Value : RawByteString) : RawByteString;
 begin
   Result := AnsiString(EncodeCString(String(Value)));
 end;
@@ -1054,6 +1101,12 @@ end;
 
 procedure TZAbstractConnection.Close;
 begin
+  if FDisposeCodePage then
+  begin
+    Dispose(ConSettings^.ClientCodePage);
+    ConSettings^.ClientCodePage := nil;
+    FDisposeCodePage := False;
+  end;
   FClosed := True;
 end;
 
@@ -1241,6 +1294,18 @@ begin
   FUseMetadata := Value;
 end;
 
+{$IFDEF ZEOS_TEST_ONLY}
+function TZAbstractConnection.GetTestMode: Byte;
+begin
+  Result := FTestMode;
+end;
+
+procedure TZAbstractConnection.SetTestMode(Mode: Byte);
+begin
+  FTestMode := Mode;
+end;
+{$ENDIF}
+
 {**
   EgonHugeist:
   Returns the BinaryString in a Tokenizer-detectable kind
@@ -1249,33 +1314,61 @@ end;
   @param EscapeMarkSequence represents a Tokenizer detectable EscapeSequence (Len >= 3)
   @result the detectable Binary String
 }
-function TZAbstractConnection.GetAnsiEscapeString(const Value: AnsiString;
-  const EscapeMarkSequence: String = '~<|'): String;
+function TZAbstractConnection.GetBinaryEscapeString(const Value: RawByteString): String;
 begin
-  if Self.FPreprepareSQL then //Set detect-sequence only if Prepreparing should be done else it's not server-understandable.
-    Result := Self.GetDriver.GetTokenizer.AnsiGetEscapeString(Value, EscapeMarkSequence)
+  if GetAutoEncodeStrings then //Set detect-sequence only if Prepreparing should be done else it's not server-understandable.
+    Result := Self.GetDriver.GetTokenizer.AnsiGetEscapeString(GetSQLHexString(PAnsiChar(Value), Length(Value)))
   else
-    Result := String(Value);
+    Result := GetSQLHexString(PAnsiChar(Value), Length(Value));
 end;
 
-function TZAbstractConnection.GetEscapeString(const Value: String;
-  const EscapeMarkSequence: String = '~<|'): String;
+function TZAbstractConnection.GetBinaryEscapeString(const Value: TByteDynArray): String;
 begin
-  if Self.FPreprepareSQL then //Set detect-sequence only if Prepreparing should be done else it's not server-understandable.
-    Result := Self.GetDriver.GetTokenizer.GetEscapeString(Value)
+  if GetAutoEncodeStrings then //Set detect-sequence only if Prepreparing should be done else it's not server-understandable.
+    Result := Self.GetDriver.GetTokenizer.AnsiGetEscapeString(GetSQLHexString(PAnsiChar(Value), Length(Value)))
   else
-    Result := Value;
+    Result := GetSQLHexString(PAnsiChar(Value), Length(Value));
 end;
 
-function TZAbstractConnection.GetEscapeString(const Value: PAnsiChar;
-  const EscapeMarkSequence: String = '~<|'): String;
-var
-  Ansi: AnsiString;
+function TZAbstractConnection.GetEscapeString(const Value: ZWideString): ZWideString;
 begin
-  Ansi := StrPas(Value);
-  Result := GetEscapeString(String(Ansi));
+  if GetAutoEncodeStrings then
+    if StartsWith(Value, '''') and EndsWith(Value, '''') then
+      Result := GetDriver.GetTokenizer.GetEscapeString(Value)
+    else
+      {$IFDEF UNICODE}
+      Result := AnsiQuotedStr(Value, #39)
+      {$ELSE}
+      Result := ZDbcUnicodeString(GetDriver.GetTokenizer.GetEscapeString(AnsiQuotedStr(ZPlainString(Value), #39)))
+      {$ENDIF}
+  else
+    if StartsWith(Value, '''') and EndsWith(Value, '''') then
+      Result := Value
+    else
+      {$IFDEF UNICODE}
+      Result := AnsiQuotedStr(Value, #39);
+      {$ELSE}
+      Result := ZDbcUnicodeString(AnsiQuotedStr(ZPlainString(Value), #39));
+      {$ENDIF}
 end;
 
+function TZAbstractConnection.GetEscapeString(const Value: RawByteString): RawByteString;
+begin
+  if GetAutoEncodeStrings then
+    if StartsWith(Value, '''') and EndsWith(Value, '''') then
+      Result := {$IFNDEF UNICODE}GetDriver.GetTokenizer.GetEscapeString{$ENDIF}(Value)
+    else
+      {$IFDEF WITH_UNITANSISTRINGS}
+      AnsiStrings.AnsiQuotedStr(Value, #39)
+      {$ELSE}
+      Result := GetDriver.GetTokenizer.GetEscapeString(AnsiQuotedStr(ZDbcString(Value), #39))
+      {$ENDIF}
+  else
+    if StartsWith(Value, '''') and EndsWith(Value, '''') then
+      Result := Value
+    else
+      Result := {$IFDEF WITH_UNITANSISTRINGS}AnsiStrings.{$ENDIF}AnsiQuotedStr(Value, #39);
+end;
 
 {**
   Result 100% Compiler-Compatible
@@ -1287,33 +1380,12 @@ end;
 }
 function TZAbstractConnection.GetClientCodePageInformations: PZCodePage; //EgonHugeist
 begin
-  Result := ClientCodePage
+  Result := ConSettings.ClientCodePage
 end;
 
-function TZAbstractConnection.GetUTF8StringAsWideField: Boolean;
+procedure TZAbstractConnection.OnPropertiesChange(Sender: TObject);
 begin
-  {$IF defined(LAZARUSUTF8HACK) or (not defined(WITH_FTWIDESTRING))}
-  Result := False;
-  {$ELSE}
-    {$IFDEF DELPHI12_UP}
-    Result := True;
-    {$ELSE}
-    Result := FUTF8StringAsWideField;
-    {$ENDIF}
-  {$IFEND}
-end;
-
-procedure TZAbstractConnection.SetUTF8StringAsWideField(const Value: Boolean);
-begin
-  {$IF defined(LAZARUSUTF8HACK) or (not defined(WITH_FTWIDESTRING))}
-  FUTF8StringAsWideField := False;
-  {$ELSE}
-    {$IFDEF DELPHI12_UP}
-    FUTF8StringAsWideField := True;
-    {$ELSE}
-    FUTF8StringAsWideField := Value;
-    {$ENDIF}
-  {$IFEND}
+  // do nothing in base class
 end;
 
 { TZAbstractNotification }

@@ -8,7 +8,7 @@
 {*********************************************************}
 
 {@********************************************************}
-{    Copyright (c) 1999-2006 Zeos Development Group       }
+{    Copyright (c) 1999-2012 Zeos Development Group       }
 {                                                         }
 { License Agreement:                                      }
 {                                                         }
@@ -40,12 +40,10 @@
 {                                                         }
 { The project web site is located on:                     }
 {   http://zeos.firmos.at  (FORUM)                        }
-{   http://zeosbugs.firmos.at (BUGTRACKER)                }
-{   svn://zeos.firmos.at/zeos/trunk (SVN Repository)      }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
 {                                                         }
 {   http://www.sourceforge.net/projects/zeoslib.          }
-{   http://www.zeoslib.sourceforge.net                    }
-{                                                         }
 {                                                         }
 {                                                         }
 {                                 Zeos Development Group. }
@@ -58,13 +56,15 @@ interface
 {$I ZDbc.inc}
 
 uses
-  Types, ZCompatibility, Classes, SysUtils, Contnrs, ZDbcIntfs, ZDbcConnection,
-  ZPlainOracleDriver, ZDbcLogging, ZTokenizer, ZDbcGenericResolver, ZURL,
-  ZGenericSqlAnalyser;
+  Types, Classes, {$IFDEF MSEgui}mclasses,{$ENDIF} SysUtils, Contnrs,
+  ZCompatibility, ZDbcIntfs, ZDbcConnection, ZPlainOracleDriver, ZDbcLogging,
+  ZTokenizer, ZDbcGenericResolver, ZURL, ZGenericSqlAnalyser,
+  ZPlainOracleConstants;
 
 type
 
   {** Implements Oracle Database Driver. }
+  {$WARNINGS OFF}
   TZOracleDriver = class(TZAbstractDriver)
   public
     constructor Create; override;
@@ -75,6 +75,7 @@ type
     function GetTokenizer: IZTokenizer; override;
     function GetStatementAnalyser: IZStatementAnalyser; override;
   end;
+  {$WARNINGS ON}
 
   {** Represents a Oracle specific connection interface. }
   IZOracleConnection = interface (IZConnection)
@@ -87,6 +88,7 @@ type
     function GetServerHandle: POCIServer;
     function GetSessionHandle: POCISession;
     function GetTransactionHandle: POCITrans;
+    function GetDescribeHandle: POCIDescribe;
   end;
 
   {** Implements Oracle Database Connection. }
@@ -99,6 +101,7 @@ type
     FServerHandle: POCIServer;
     FSessionHandle: POCISession;
     FTransHandle: POCITrans;
+    FDescibeHandle: POCIDescribe;
   protected
     procedure InternalCreate; override;
     procedure StartTransactionSupport;
@@ -116,6 +119,8 @@ type
     procedure Commit; override;
     procedure Rollback; override;
 
+    function PingServer: Integer; override;
+
     procedure Open; override;
     procedure Close; override;
 
@@ -132,6 +137,11 @@ type
     function GetServerHandle: POCIServer;
     function GetSessionHandle: POCISession;
     function GetTransactionHandle: POCITrans;
+    function GetDescribeHandle: POCIDescribe;
+    function GetClientVersion: Integer; override;
+    function GetHostVersion: Integer; override;
+    function GetBinaryEscapeString(const Value: TByteDynArray): String; overload; override;
+    function GetBinaryEscapeString(const Value: RawByteString): String; overload; override;
   end;
 
   TZOracleSequence = class(TZAbstractSequence)
@@ -155,7 +165,7 @@ var
 implementation
 
 uses
-  ZMessages, ZGenericSqlToken, ZDbcOracleStatement,
+  ZMessages, ZGenericSqlToken, ZDbcOracleStatement, ZSysUtils, ZDbcUtils,
   ZDbcOracleUtils, ZDbcOracleMetadata, ZOracleToken, ZOracleAnalyser;
 
 { TZOracleDriver }
@@ -193,10 +203,12 @@ end;
   @return a <code>Connection</code> object that represents a
     connection to the URL
 }
+{$WARNINGS OFF}
 function TZOracleDriver.Connect(const Url: TZURL): IZConnection;
 begin
   Result := TZOracleConnection.Create(Url);
 end;
+{$WARNINGS ON}
 
 {**
   Gets the driver's major version number. Initially this should be 1.
@@ -238,7 +250,6 @@ begin
   Result := Analyser;
 end;
 
-
 { TZOracleConnection }
 
 {**
@@ -271,6 +282,9 @@ end;
 }
 destructor TZOracleConnection.Destroy;
 begin
+  if not IsClosed then
+     Close;
+
   if FHandle <> nil then
   begin
     GetPlainDriver.HandleFree(FHandle, OCI_HTYPE_ENV);
@@ -291,6 +305,8 @@ var
 
   procedure CleanupOnFail;
   begin
+    GetPlainDriver.HandleFree(FDescibeHandle, OCI_HTYPE_DESCRIBE);
+    FDescibeHandle := nil;
     GetPlainDriver.HandleFree(FContextHandle, OCI_HTYPE_SVCCTX);
     FContextHandle := nil;
     GetPlainDriver.HandleFree(FErrorHandle, OCI_HTYPE_ERROR);
@@ -310,12 +326,12 @@ begin
      Port := 1521;
 
   { Sets a client codepage. }
-  OCI_CLIENT_CHARSET_ID := ClientCodePage^.ID;
+  OCI_CLIENT_CHARSET_ID := ConSettings.ClientCodePage^.ID;
   { Connect to Oracle database. }
   if ( FHandle = nil ) then
     try
       FErrorHandle := nil;
-      Status := GetPlainDriver.EnvNlsCreate(FHandle, OCI_DEFAULT, nil, nil, nil, nil, 0, nil,
+      Status := GetPlainDriver.EnvNlsCreate(FHandle, OCI_OBJECT, nil, nil, nil, nil, 0, nil,
         OCI_CLIENT_CHARSET_ID, OCI_CLIENT_CHARSET_ID);
       CheckOracleError(GetPlainDriver, FErrorHandle, Status, lcOther, 'EnvNlsCreate failed.');
     except
@@ -327,6 +343,8 @@ begin
   GetPlainDriver.HandleAlloc(FHandle, FServerHandle, OCI_HTYPE_SERVER, 0, nil);
   FContextHandle := nil;
   GetPlainDriver.HandleAlloc(FHandle, FContextHandle, OCI_HTYPE_SVCCTX, 0, nil);
+  FDescibeHandle := nil;
+  GetPlainDriver.HandleAlloc(FHandle, FDescibeHandle, OCI_HTYPE_DESCRIBE, 0, nil);
 
   Status := GetPlainDriver.ServerAttach(FServerHandle, FErrorHandle,
       PAnsiChar(ansistring(Database)), Length(AnsiString(Database)), 0);
@@ -339,6 +357,7 @@ begin
 
   if OCI_CLIENT_CHARSET_ID = 0 then
   begin
+    OCI_CLIENT_NCHARSET_ID := High(ub2);
     GetPlainDriver.AttrGet(FHandle, OCI_HTYPE_ENV, @OCI_CLIENT_CHARSET_ID,
       nil, OCI_ATTR_ENV_CHARSET_ID, FErrorHandle); //Get Server default CodePage
     CheckCharEncoding(GetPlainDriver.ValidateCharEncoding(OCI_CLIENT_CHARSET_ID)^.Name);
@@ -349,7 +368,7 @@ begin
       Exit;
     end;
   end;
-  if GetPlainDriver.GetEnvCharsetByteWidth(FHandle, FErrorHandle, ClientCodePage^.CharWidth) <> OCI_SUCCESS then
+  if GetPlainDriver.GetEnvCharsetByteWidth(FHandle, FErrorHandle, ConSettings.ClientCodePage^.CharWidth) <> OCI_SUCCESS then
     CheckOracleError(GetPlainDriver, FErrorHandle, Status, lcConnect, LogMessage);
 
   GetPlainDriver.AttrSet(FContextHandle, OCI_HTYPE_SVCCTX, FServerHandle, 0,
@@ -369,7 +388,6 @@ begin
   end;
   GetPlainDriver.AttrSet(FContextHandle, OCI_HTYPE_SVCCTX, FSessionHandle, 0,
     OCI_ATTR_SESSION, FErrorHandle);
-
   DriverManager.LogMessage(lcConnect, PlainDriver.GetProtocol, LogMessage);
 
   StartTransactionSupport;
@@ -532,6 +550,18 @@ begin
 end;
 
 {**
+  Ping Current Connection's server, if client was disconnected,
+  the connection is resumed.
+  @return 0 if succesfull or error code if any error occurs
+}
+function TZOracleConnection.PingServer: Integer;
+begin
+  Result := GetPlainDriver.Ping(FContextHandle, FErrorHandle);
+  CheckOracleError(GetPlainDriver, FErrorHandle, Result, lcExecute, 'Ping Server');
+  Result := 0; //only possible if CheckOracleError dosn't raise an exception
+end;
+
+{**
   Releases a Connection's database and JDBC resources
   immediately instead of waiting for
   them to be automatically released.
@@ -570,6 +600,8 @@ begin
       LogMessage);
 
     { Frees all handlers }
+    GetPlainDriver.HandleFree(FDescibeHandle, OCI_HTYPE_DESCRIBE);
+    FDescibeHandle := nil;
     GetPlainDriver.HandleFree(FSessionHandle, OCI_HTYPE_SESSION);
     FSessionHandle := nil;
     GetPlainDriver.HandleFree(FContextHandle, OCI_HTYPE_SVCCTX);
@@ -702,6 +734,62 @@ end;
 function TZOracleConnection.GetTransactionHandle: POCITrans;
 begin
   Result := FTransHandle;
+end;
+
+{**
+  Gets a reference to Oracle describe handle.
+  @return a reference to Oracle describe handle.
+}
+function TZOracleConnection.GetDescribeHandle: POCIDescribe;
+begin
+  Result := FDescibeHandle;
+end;
+
+function TZOracleConnection.GetClientVersion: Integer;
+var
+  major_version, minor_version, update_num,
+      patch_num, port_update_num: sword;
+begin
+  GetPlainDriver.ClientVersion(@major_version, @minor_version, @update_num,
+      @patch_num, @port_update_num);
+  Result := EncodeSQLVersioning(major_version,minor_version,update_num);
+end;
+
+function TZOracleConnection.GetHostVersion: Integer;
+var
+  buf:text;
+  version:ub4;
+begin
+  result:=0;
+  getmem(buf,1024);
+  if GetPlainDriver.ServerRelease(FServerHandle,FErrorHandle,buf,1024,OCI_HTYPE_SERVER,@version)=OCI_SUCCESS then
+    Result := EncodeSQLVersioning((version shr 24) and $ff,(version shr 20) and $f,(version shr 12) and $ff);
+  freemem(buf);
+end;
+
+function TZOracleConnection.GetBinaryEscapeString(const Value: TByteDynArray): String;
+var
+  tmp: RawByteString;
+  L: Integer;
+begin
+  L := Length(Value);
+  SetLength(tmp, L*2);
+  BinToHex(PAnsiChar(Value), PAnsiChar(tmp), L);
+  Result := #39+String(tmp)+#39;
+  if GetAutoEncodeStrings then
+    Result := GetDriver.GetTokenizer.GetEscapeString(Result)
+end;
+
+function TZOracleConnection.GetBinaryEscapeString(const Value: RawByteString): String;
+var
+  tmp: RawByteString;
+  L: Integer;
+begin
+  L := Length(Value);
+  SetLength(tmp, L*2);
+  BinToHex(PAnsiChar(Value), PAnsiChar(tmp), L);
+  if GetAutoEncodeStrings then
+    Result := GetDriver.GetTokenizer.GetEscapeString(Result)
 end;
 
 { TZOracleSequence }

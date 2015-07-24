@@ -8,7 +8,7 @@
 {*********************************************************}
 
 {@********************************************************}
-{    Copyright (c) 1999-2006 Zeos Development Group       }
+{    Copyright (c) 1999-2012 Zeos Development Group       }
 {                                                         }
 { License Agreement:                                      }
 {                                                         }
@@ -40,12 +40,10 @@
 {                                                         }
 { The project web site is located on:                     }
 {   http://zeos.firmos.at  (FORUM)                        }
-{   http://zeosbugs.firmos.at (BUGTRACKER)                }
-{   svn://zeos.firmos.at/zeos/trunk (SVN Repository)      }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
 {                                                         }
 {   http://www.sourceforge.net/projects/zeoslib.          }
-{   http://www.zeoslib.sourceforge.net                    }
-{                                                         }
 {                                                         }
 {                                                         }
 {                                 Zeos Development Group. }
@@ -58,7 +56,7 @@ interface
 {$I ZCore.inc}
 
 uses
-  SysUtils, ZClasses, ZFunctions, ZExpression, ZVariant;
+  SysUtils, ZFunctions, ZExpression, ZVariant;
 
 {** Date & time functions}
 
@@ -740,6 +738,12 @@ end;
 
 function TZMilliSecondOfTheYearFunction.Execute(Stack: TZExecutionStack;
   VariantManager: IZVariantManager): TZVariant;
+  {$IFDEF WITH_MILLISECONDOFTHEYEAR_BUG}
+  function MilliSecondOfTheYear(const AValue: TDateTime): Int64;
+  begin
+    Result := MilliSecondOf(AValue) + Int64(SecondOfTheYear(AValue)) * MSecsPerSec;
+  end;
+  {$ENDIF}
 begin
   CheckParamsCount(Stack, 1);
   VariantManager.SetAsInteger(Result, MilliSecondOfTheYear(

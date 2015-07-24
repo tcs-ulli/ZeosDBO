@@ -8,7 +8,7 @@
 {*********************************************************}
 
 {@********************************************************}
-{    Copyright (c) 1999-2006 Zeos Development Group       }
+{    Copyright (c) 1999-2012 Zeos Development Group       }
 {                                                         }
 { License Agreement:                                      }
 {                                                         }
@@ -40,12 +40,10 @@
 {                                                         }
 { The project web site is located on:                     }
 {   http://zeos.firmos.at  (FORUM)                        }
-{   http://zeosbugs.firmos.at (BUGTRACKER)                }
-{   svn://zeos.firmos.at/zeos/trunk (SVN Repository)      }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
 {                                                         }
 {   http://www.sourceforge.net/projects/zeoslib.          }
-{   http://www.zeoslib.sourceforge.net                    }
-{                                                         }
 {                                                         }
 {                                                         }
 {                                 Zeos Development Group. }
@@ -58,8 +56,8 @@ interface
 {$I ZDbc.inc}
 
 uses
-  Types, Classes, SysUtils, Contnrs, ZClasses, ZSysUtils, ZDbcIntfs, ZDbcResultSet,
-  ZDbcCache, ZCompatibility;
+  Types, Classes, {$IFDEF MSEgui}mclasses,{$ENDIF} SysUtils, Contnrs,
+  ZClasses, ZDbcIntfs, ZDbcResultSet, ZDbcCache, ZCompatibility;
 
 type
   // Forward declarations.
@@ -101,6 +99,8 @@ type
 
     procedure PostUpdates;
     procedure CancelUpdates;
+    procedure PostUpdatesCached;
+    procedure DisposeCachedUpdates;
     procedure RevertRecord;
     procedure MoveToInitialRow;
     procedure RefreshRow; // FOS+ 071106
@@ -158,9 +158,9 @@ type
     {END PATCH [1214009] CalcDefaults in TZUpdateSQL and Added Methods to GET the DB NativeResolver}
   public
     constructor CreateWithStatement(SQL: string; Statement: IZStatement;
-      ClientCodePage: PZCodePage);
+      ConSettings: PZConSettings);
     constructor CreateWithColumns(ColumnsInfo: TObjectList; SQL: string;
-      ClientCodePage: PZCodePage);
+      ConSettings: PZConSettings);
     destructor Destroy; override;
 
     procedure Close; override;
@@ -174,7 +174,7 @@ type
     function GetString(ColumnIndex: Integer): String; override;
     function GetUnicodeString(ColumnIndex: Integer): Widestring; override;
     function GetBoolean(ColumnIndex: Integer): Boolean; override;
-    function GetByte(ColumnIndex: Integer): ShortInt; override;
+    function GetByte(ColumnIndex: Integer): Byte; override;
     function GetShort(ColumnIndex: Integer): SmallInt; override;
     function GetInt(ColumnIndex: Integer): Integer; override;
     function GetLong(ColumnIndex: Integer): Int64; override;
@@ -253,6 +253,8 @@ type
     procedure CancelUpdates; virtual;
     procedure RevertRecord; virtual;
     procedure MoveToInitialRow; virtual;
+    procedure PostUpdatesCached; virtual;
+    procedure DisposeCachedUpdates; virtual;
   end;
 
   {**
@@ -270,7 +272,7 @@ type
     property ResultSet: IZResultSet read FResultSet write FResultSet;
   public
     constructor Create(ResultSet: IZResultSet; SQL: string;
-      Resolver: IZCachedResolver; ClientCodePage: PZCodePage);
+      Resolver: IZCachedResolver; ConSettings: PZConSettings);
     destructor Destroy; override;
 
     procedure Close; override;
@@ -285,8 +287,7 @@ type
 
 implementation
 
-uses ZMessages, ZDbcResultSetMetadata, ZDbcGenericResolver, ZDbcUtils
-  {$IFDEF WITH_WIDESTRUTILS}, WideStrUtils{$ENDIF};
+uses ZMessages, ZDbcResultSetMetadata, ZDbcGenericResolver, ZDbcUtils, ZEncoding;
 
 { TZAbstractCachedResultSet }
 
@@ -296,9 +297,9 @@ uses ZMessages, ZDbcResultSetMetadata, ZDbcGenericResolver, ZDbcUtils
   @param SQL an SQL query.
 }
 constructor TZAbstractCachedResultSet.CreateWithStatement(SQL: string;
-  Statement: IZStatement; ClientCodePage: PZCodePage);
+  Statement: IZStatement; ConSettings: PZConSettings);
 begin
-  inherited Create(Statement, SQL, nil, ClientCodePage);
+  inherited Create(Statement, SQL, nil, ConSettings);
   FCachedUpdates := False;
 end;
 
@@ -308,9 +309,9 @@ end;
   @param ColumnsInfo a columns info for cached rows.
 }
 constructor TZAbstractCachedResultSet.CreateWithColumns(
-  ColumnsInfo: TObjectList; SQL: string; ClientCodePage: PZCodePage);
+  ColumnsInfo: TObjectList; SQL: string; ConSettings: PZConSettings);
 begin
-  inherited Create(nil, SQL, nil, ClientCodePage);
+  inherited Create(nil, SQL, nil, ConSettings);
 
   CopyColumnsInfo(ColumnsInfo, Self.ColumnsInfo);
   FCachedUpdates := False;
@@ -566,6 +567,59 @@ begin
 end;
 
 {**
+  Posts all saved updates to the server but keeps them cached.
+}
+procedure TZAbstractCachedResultSet.PostUpdatesCached;
+var
+  i: Integer;
+begin
+  CheckClosed;
+  if FInitialRowsList.Count > 0 then
+  begin
+    i := 0;
+    while i < FInitialRowsList.Count do
+    begin
+      OldRowAccessor.RowBuffer := PZRowBuffer(FInitialRowsList[i]);
+      NewRowAccessor.RowBuffer := PZRowBuffer(FCurrentRowsList[i]);
+      Inc(i);
+
+      { Updates default field values. }
+      if NewRowAccessor.RowBuffer.UpdateType = utInserted then
+        CalculateRowDefaults(NewRowAccessor);
+
+      { Posts row updates. }
+      PostRowUpdates(OldRowAccessor, NewRowAccessor);
+    end;
+  end;
+end;
+
+{**
+  Frees the updates and marks records as unmodified. Complements
+  PostUpdatesCached.
+}
+procedure TZAbstractCachedResultSet.DisposeCachedUpdates;
+begin
+  while FInitialRowsList.Count > 0 do
+  begin
+    OldRowAccessor.RowBuffer := PZRowBuffer(FInitialRowsList[0]);
+    NewRowAccessor.RowBuffer := PZRowBuffer(FCurrentRowsList[0]);
+
+    if NewRowAccessor.RowBuffer.UpdateType <> utDeleted then
+    begin
+      NewRowAccessor.RowBuffer.UpdateType := utUnmodified;
+      if (FSelectedRow <> nil)
+        and (FSelectedRow.Index = NewRowAccessor.RowBuffer.Index) then
+          FSelectedRow.UpdateType := utUnmodified;
+    end;
+
+    { Remove cached rows. }
+    OldRowAccessor.Dispose;
+    FInitialRowsList.Delete(0);
+    FCurrentRowsList.Delete(0);
+  end;
+end;
+
+{**
   Cancels updates for all rows.
 }
 procedure TZAbstractCachedResultSet.CancelUpdates;
@@ -641,9 +695,9 @@ begin
   FInitialRowsList := TList.Create;
   FCurrentRowsList := TList.Create;
 
-  FRowAccessor := TZRowAccessor.Create(ColumnsInfo);
-  FOldRowAccessor := TZRowAccessor.Create(ColumnsInfo);
-  FNewRowAccessor := TZRowAccessor.Create(ColumnsInfo);
+  FRowAccessor := TZRowAccessor.Create(ColumnsInfo, ConSettings);
+  FOldRowAccessor := TZRowAccessor.Create(ColumnsInfo, ConSettings);
+  FNewRowAccessor := TZRowAccessor.Create(ColumnsInfo, ConSettings);
 
   FRowAccessor.AllocBuffer(FUpdatedRow);
   FRowAccessor.AllocBuffer(FInsertedRow);
@@ -796,7 +850,7 @@ end;
   @return the column value; if the value is SQL <code>NULL</code>, the
     value returned is <code>0</code>
 }
-function TZAbstractCachedResultSet.GetByte(ColumnIndex: Integer): ShortInt;
+function TZAbstractCachedResultSet.GetByte(ColumnIndex: Integer): Byte;
 begin
 {$IFNDEF DISABLE_CHECKING}
   CheckAvailable;
@@ -1388,7 +1442,7 @@ end;
 procedure TZAbstractCachedResultSet.UpdateUnicodeStream(
   ColumnIndex: Integer; Value: TStream);
 var
-    TempStream: TStream;
+  TempStream: TStream;
 begin
 {$IFNDEF DISABLE_CHECKING}
   CheckUpdatable;
@@ -1399,9 +1453,14 @@ begin
     it is possible that a PAnsiChar OR a PWideChar was written into
     the Stream!!!  And these chars could be trunced with changing the
     Stream.Size.}
-  TempStream:=ZDbcUtils.GetValidatedUnicodeStream(Value);
-  FRowAccessor.SetUnicodeStream(ColumnIndex, TempStream);
-  TempStream.Free;
+  if Assigned(Value) then
+  begin
+    TempStream := GetValidatedUnicodeStream(TMemoryStream(Value).Memory, Value.Size, ConSettings, False);
+    FRowAccessor.SetUnicodeStream(ColumnIndex, TempStream);
+    TempStream.Free;
+  end
+  else
+    FRowAccessor.SetUnicodeStream(ColumnIndex, nil);
 end;
 
 {**
@@ -1759,9 +1818,9 @@ end;
   @param Resolver a cached updates resolver object.
 }
 constructor TZCachedResultSet.Create(ResultSet: IZResultSet; SQL: string;
-  Resolver: IZCachedResolver; ClientCodePage: PZCodePage);
+  Resolver: IZCachedResolver; ConSettings: PZConSettings);
 begin
-  inherited Create(ResultSet.GetStatement, SQL, nil,ClientCodePage);
+  inherited Create(ResultSet.GetStatement, SQL, nil, ConSettings);
   FResultSet := ResultSet;
   FResolver := Resolver;
   {BEGIN PATCH [1214009] CalcDefaults in TZUpdateSQL and Added Methods to GET the DB NativeResolver}
@@ -1809,17 +1868,16 @@ begin
         stFloat: RowAccessor.SetFloat(I, ResultSet.GetFloat(I));
         stDouble: RowAccessor.SetDouble(I, ResultSet.GetDouble(I));
         stBigDecimal: RowAccessor.SetBigDecimal(I, ResultSet.GetBigDecimal(I));
-        //stString: RowAccessor.SetPChar(I, ResultSet.GetPChar(I));
-        // gto: do we need PChar here? (Unicode problems)
         stString: RowAccessor.SetString(I, ResultSet.GetString(I));
         stUnicodeString: RowAccessor.SetUnicodeString(I,
                   ResultSet.GetUnicodeString(I));
-        stBytes: RowAccessor.SetBytes(I, ResultSet.GetBytes(I));
+        stBytes,stGUID: RowAccessor.SetBytes(I, ResultSet.GetBytes(I));
         stDate: RowAccessor.SetDate(I, ResultSet.GetDate(I));
         stTime: RowAccessor.SetTime(I, ResultSet.GetTime(I));
         stTimestamp: RowAccessor.SetTimestamp(I, ResultSet.GetTimestamp(I));
         stAsciiStream, stBinaryStream, stUnicodeStream:
           RowAccessor.SetBlob(I, ResultSet.GetBlob(I));
+        stDataSet: RowAccessor.SetDataSet(i, ResultSet.GetDataSet(I));
 
       end;
       if ResultSet.WasNull then

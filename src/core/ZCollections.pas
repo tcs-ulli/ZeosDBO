@@ -8,7 +8,7 @@
 {*********************************************************}
 
 {@********************************************************}
-{    Copyright (c) 1999-2006 Zeos Development Group       }
+{    Copyright (c) 1999-2012 Zeos Development Group       }
 {                                                         }
 { License Agreement:                                      }
 {                                                         }
@@ -40,12 +40,10 @@
 {                                                         }
 { The project web site is located on:                     }
 {   http://zeos.firmos.at  (FORUM)                        }
-{   http://zeosbugs.firmos.at (BUGTRACKER)                }
-{   svn://zeos.firmos.at/zeos/trunk (SVN Repository)      }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
 {                                                         }
 {   http://www.sourceforge.net/projects/zeoslib.          }
-{   http://www.zeoslib.sourceforge.net                    }
-{                                                         }
 {                                                         }
 {                                                         }
 {                                 Zeos Development Group. }
@@ -74,7 +72,7 @@ type
   end;
 
   {** Interface list types. }
-  TZInterfaceList = array[0..MaxListSize - 1] of IZInterface;
+  TZInterfaceList = array[0..{$IFDEF WITH_MAXLISTSIZE_DEPRECATED}Maxint div 16{$ELSE}MaxListSize{$ENDIF} - 1] of IZInterface;
   PZInterfaceList = ^TZInterfaceList;
 
   {** Implenments a collection of interfaces. }
@@ -210,6 +208,10 @@ implementation
 
 uses SysUtils, ZMessages;
 
+{$IFDEF FPC}
+  {$HINTS OFF}
+{$ENDIF}
+
 { TZIterator }
 
 {**
@@ -311,7 +313,7 @@ end;
 procedure TZCollection.SetCapacity(NewCapacity: Integer);
 begin
 {$IFOPT R+}
-  if (NewCapacity < FCount) or (NewCapacity > MaxListSize) then
+  if (NewCapacity < FCount) or (NewCapacity > {$IFDEF WITH_MAXLISTSIZE_DEPRECATED}Maxint div 16{$ELSE}MaxListSize{$ENDIF}) then
     Error(SListCapacityError, NewCapacity);
 {$ENDIF}
   if NewCapacity <> FCapacity then
@@ -333,7 +335,7 @@ var
   I: Integer;
 begin
 {$IFOPT R+}
-  if (NewCount < 0) or (NewCount > MaxListSize) then
+  if (NewCount < 0) or (NewCount > {$IFDEF WITH_MAXLISTSIZE_DEPRECATED}Maxint div 16{$ELSE}MaxListSize{$ENDIF}) then
     Error(SListCountError, NewCount);
 {$ENDIF}
   if NewCount > FCapacity then
@@ -449,6 +451,8 @@ begin
   begin
     System.Move(FList^[Index + 1], FList^[Index],
       (FCount - Index) * SizeOf(IZInterface));
+    {now nil pointer or on replacing the entry we'll get a bad interlockdecrement}
+    Pointer(FList^[FCount]) := nil; //see http://sourceforge.net/p/zeoslib/tickets/100/
   end;
 end;
 
@@ -544,7 +548,6 @@ begin
   { Find ordinary objects }
   else
   begin
-//    Unknown := Item as IZInterface;
     Unknown := Item;
     for I := 0 to FCount - 1 do
     begin
@@ -575,8 +578,9 @@ begin
   begin
     System.Move(FList^[Index], FList^[Index + 1],
       (FCount - Index) * SizeOf(IZInterface));
+    {now nil pointer or on replacing the entry we'll get a bad interlockdecrement}
+    Pointer(Flist^[Index]) := nil; //see http://sourceforge.net/p/zeoslib/tickets/100/
   end;
-//  FList^[Index] := Item as IZInterface; //MEMORY HOG
   FList^[Index] := Item;
   Inc(FCount);
 end;
@@ -601,7 +605,6 @@ begin
   if (Index < 0) or (Index >= FCount) then
     Error(SListIndexError, Index);
 {$ENDIF}
-//  FList^[Index] := Item as IZInterface; //MEMORY HOG
   FList^[Index] := Item;
 end;
 

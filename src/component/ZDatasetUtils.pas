@@ -8,7 +8,7 @@
 {*********************************************************}
 
 {@********************************************************}
-{    Copyright (c) 1999-2006 Zeos Development Group       }
+{    Copyright (c) 1999-2012 Zeos Development Group       }
 {                                                         }
 { License Agreement:                                      }
 {                                                         }
@@ -40,12 +40,10 @@
 {                                                         }
 { The project web site is located on:                     }
 {   http://zeos.firmos.at  (FORUM)                        }
-{   http://zeosbugs.firmos.at (BUGTRACKER)                }
-{   svn://zeos.firmos.at/zeos/trunk (SVN Repository)      }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
 {                                                         }
 {   http://www.sourceforge.net/projects/zeoslib.          }
-{   http://www.zeoslib.sourceforge.net                    }
-{                                                         }
 {                                                         }
 {                                                         }
 {                                 Zeos Development Group. }
@@ -58,9 +56,9 @@ interface
 {$I ZComponent.inc}
 
 uses
-  Types, Classes, SysUtils, Db, ZDbcIntfs, ZDbcCache,
-  Contnrs, ZCompatibility, ZExpression, ZVariant, ZTokenizer
-  {$IFDEF DELPHI12_UP}, AnsiStrings{$ENDIF};
+  Types, Classes, SysUtils, {$IFDEF MSEgui}mclasses, mdb{$ELSE}Db{$ENDIF},
+  Contnrs, {$IFDEF WITH_UNITANSISTRINGS}AnsiStrings, {$ENDIF}
+  ZDbcIntfs, ZDbcCache, ZCompatibility, ZExpression, ZVariant, ZTokenizer;
 
 {**
   Converts DBC Field Type to TDataset Field Type.
@@ -266,7 +264,15 @@ function DefineFieldIndices(const FieldsLookupTable: TIntegerDynArray;
   and objectname.
 }
 procedure SplitQualifiedObjectName(QualifiedName: string;
-  var Catalog, Schema, ObjectName: string);
+  var Catalog, Schema, ObjectName: string); overload;
+
+{**
+  Splits up a qualified object name into pieces. Catalog, schema
+  and objectname.
+}
+procedure SplitQualifiedObjectName(QualifiedName: string;
+  const SupportsCatalogs, SupportsSchemas: Boolean;
+  var Catalog, Schema, ObjectName: string); overload;
 
 {**
   Assigns a Statement value from a TParam
@@ -277,8 +283,6 @@ procedure SplitQualifiedObjectName(QualifiedName: string;
 procedure SetStatementParam(Index: Integer;
   Statement: IZPreparedStatement; Param: TParam);
 
-function WideStringStream(const AString: WideString): TStream;
-
 {** Common variables. }
 var
   CommonTokenizer: IZTokenizer;
@@ -286,8 +290,10 @@ var
 implementation
 
 uses
-  ZMessages, ZGenericSqlToken,
-  ZDbcResultSetMetadata, ZAbstractRODataset;
+  ZMessages, ZGenericSqlToken, ZDbcResultSetMetadata, ZAbstractRODataset,
+  ZDbcUtils
+  {$IFNDEF WITHOUT_VARBYTESASSTRING}, ZSysUtils{$ENDIF}
+  {$IFDEF WITH_INLINE_ANSISTRLCOMP}, Windows{$ENDIF};
 
 {**
   Converts DBC Field Type to TDataset Field Type.
@@ -309,8 +315,12 @@ begin
       Result := ftFloat;
     stString:
       Result := ftString;
-    stBytes:
+    stBytes{$IFNDEF WITH_FTGUID}, stGUID{$ENDIF}:
       Result := ftBytes;
+    {$IFDEF WITH_FTGUID}
+    stGUID:
+      Result := ftGUID;
+    {$ENDIF}
     stDate:
       Result := ftDate;
     stTime:
@@ -325,6 +335,10 @@ begin
       Result := ftWideString;
     stUnicodeStream:
       Result := {$IFNDEF WITH_WIDEMEMO}ftWideString{$ELSE}ftWideMemo{$ENDIF};
+    {$IFDEF WITH_FTDATASETSUPPORT}
+    stDataSet:
+      Result := ftDataSet;
+    {$ENDIF}
     else
       Result := ftUnknown;
   end;
@@ -366,9 +380,17 @@ begin
       Result := stBinaryStream;
     ftWideString:
       Result := stUnicodeString;
+    {$IFDEF WITH_FTGUID}
+    ftGuid:
+      Result := stGUID;
+    {$ENDIF}
     {$IFDEF WITH_WIDEMEMO}
     ftWideMemo:
       Result := stUnicodeStream;
+    {$ENDIF}
+    {$IFDEF WITH_FTDATASETSUPPORT}
+    ftDataSet:
+      Result := stDataSet;
     {$ENDIF}
     else
       Result := stUnknown;
@@ -456,7 +478,7 @@ begin
         RowAccessor.SetString(FieldIndex, ResultSet.GetString(ColumnIndex));
       ftWidestring:
         RowAccessor.SetUnicodeString(FieldIndex, ResultSet.GetUnicodeString(ColumnIndex));
-      ftBytes:
+      ftBytes{$IFDEF WITH_FTGUID}, ftGuid{$ENDIF}:
         RowAccessor.SetBytes(FieldIndex, ResultSet.GetBytes(ColumnIndex));
       ftDate:
         RowAccessor.SetDate(FieldIndex, ResultSet.GetDate(ColumnIndex));
@@ -466,6 +488,10 @@ begin
         RowAccessor.SetTimestamp(FieldIndex, ResultSet.GetTimestamp(ColumnIndex));
       ftMemo, ftBlob {$IFDEF WITH_WIDEMEMO}, ftWideMemo{$ENDIF}:
         RowAccessor.SetBlob(FieldIndex, ResultSet.GetBlob(ColumnIndex));
+      {$IFDEF WITH_FTDATASETSUPPORT}
+      ftDataSet:
+        RowAccessor.SetDataSet(FieldIndex, ResultSet.GetDataSet(ColumnIndex));
+      {$ENDIF}
     end;
 
     if ResultSet.WasNull then
@@ -526,7 +552,7 @@ begin
       ftWidestring:
         ResultSet.UpdateUnicodeString(ColumnIndex,
           RowAccessor.GetUnicodeString(FieldIndex, WasNull));
-      ftBytes:
+      ftBytes{$IFDEF WITH_FTGUID}, ftGuid{$ENDIF}:
         ResultSet.UpdateBytes(ColumnIndex, RowAccessor.GetBytes(FieldIndex, WasNull));
       ftDate:
         ResultSet.UpdateDate(ColumnIndex, RowAccessor.GetDate(FieldIndex, WasNull));
@@ -564,6 +590,10 @@ begin
             Stream.Free;
           end;
         end;
+      {$IFDEF WITH_FTDATASETSUPPORT}
+      ftDataSet:
+        ResultSet.UpdateDataSet(ColumnIndex, RowAccessor.GetDataSet(FieldIndex, WasNull));
+      {$ENDIF}
     end;
 
     if WasNull then
@@ -679,36 +709,41 @@ begin
   for I := 0 to High(FieldRefs) do
   begin
     ColumnIndex := TField(FieldRefs[I]).FieldNo;
-    case TField(FieldRefs[I]).DataType of
-      ftString:
-        DefVarManager.SetAsString(ResultValues[I],
-          ResultSet.GetString(ColumnIndex));
-      ftBoolean:
-        DefVarManager.SetAsBoolean(ResultValues[I],
-          ResultSet.GetBoolean(ColumnIndex));
-      ftSmallInt, ftInteger, ftAutoInc:
-        DefVarManager.SetAsInteger(ResultValues[I],
-          ResultSet.GetInt(ColumnIndex));
-      ftFloat:
-        DefVarManager.SetAsFloat(ResultValues[I],
-          ResultSet.GetDouble(ColumnIndex));
-      ftLargeInt:
-        DefVarManager.SetAsInteger(ResultValues[I],
-          ResultSet.GetLong(ColumnIndex));
-      ftCurrency:
-        DefVarManager.SetAsFloat(ResultValues[I],
-          ResultSet.GetBigDecimal(ColumnIndex));
-      ftDate, ftTime, ftDateTime:
-        DefVarManager.SetAsDateTime(ResultValues[I],
-          ResultSet.GetTimestamp(ColumnIndex));
-      ftWidestring:
-        DefVarManager.SetAsUnicodeString(ResultValues[I],
-          ResultSet.GetUnicodeString(ColumnIndex));
-      else
-        DefVarManager.SetAsString(ResultValues[I],
-          ResultSet.GetString(ColumnIndex));
-    end;
-    if ResultSet.WasNull then
+    if ColumnIndex >= 0 then
+    begin
+      case TField(FieldRefs[I]).DataType of
+        ftString:
+          DefVarManager.SetAsString(ResultValues[I],
+            ResultSet.GetString(ColumnIndex));
+        ftBoolean:
+          DefVarManager.SetAsBoolean(ResultValues[I],
+            ResultSet.GetBoolean(ColumnIndex));
+        ftSmallInt, ftInteger, ftAutoInc:
+          DefVarManager.SetAsInteger(ResultValues[I],
+            ResultSet.GetInt(ColumnIndex));
+        ftFloat:
+          DefVarManager.SetAsFloat(ResultValues[I],
+            ResultSet.GetDouble(ColumnIndex));
+        ftLargeInt:
+          DefVarManager.SetAsInteger(ResultValues[I],
+            ResultSet.GetLong(ColumnIndex));
+        ftCurrency:
+          DefVarManager.SetAsFloat(ResultValues[I],
+            ResultSet.GetBigDecimal(ColumnIndex));
+        ftDate, ftTime, ftDateTime:
+          DefVarManager.SetAsDateTime(ResultValues[I],
+            ResultSet.GetTimestamp(ColumnIndex));
+        ftWidestring:
+          DefVarManager.SetAsUnicodeString(ResultValues[I],
+            ResultSet.GetUnicodeString(ColumnIndex));
+        else
+          DefVarManager.SetAsString(ResultValues[I],
+            ResultSet.GetString(ColumnIndex));
+      end;
+      if ResultSet.WasNull then
+        ResultValues[I] := NullVariant;
+    end
+    else
       ResultValues[I] := NullVariant;
   end;
 end;
@@ -773,6 +808,9 @@ end;
   @param ResultSet an initial result set object.
   @param Variables a list of variables.
 }
+{$IFDEF FPC}
+  {$HINTS OFF} //Temp seems not to be init...
+{$ENDIF}
 procedure CopyDataFieldsToVars(const Fields: TObjectDynArray;
   ResultSet: IZResultSet; Variables: IZVariablesList);
 var
@@ -819,6 +857,9 @@ begin
     end;
   end;
 end;
+{$IFDEF FPC}
+  {$HINTS OFF}
+{$ENDIF}
 
 {**
   Compares row field values with the given ones.
@@ -844,19 +885,19 @@ begin
           if CaseInsensitive then
           begin
             WValue1 := WideUpperCase(SoftVarManager.GetAsUnicodeString(KeyValues[I]));
-            WValue1 := WideUpperCase(SoftVarManager.GetAsUnicodeString(RowValues[I]));
+            WValue2 := WideUpperCase(SoftVarManager.GetAsUnicodeString(RowValues[I]));
             if PartialKey then
             begin
-              {$IFDEF DELPHI12_UP}
+              {$IFDEF UNICODE}
               Result := SysUtils.AnsiStrLComp(PWideChar(WValue2), PWideChar(WValue1), Length(WValue1)) = 0;
               {$ELSE}
-              Value1 := UTF8ToAnsi(UTF8Encode(WValue1));
-              Value2 := UTF8ToAnsi(UTF8Encode(WValue2));
+              Value1 := AnsiString(WValue1);
+              Value2 := AnsiString(WValue2);
               Result := AnsiStrLComp(PAnsiChar(Value2), PAnsiChar(Value1), Length(Value1)) = 0;
               {$ENDIF}
             end
             else
-              Result := Value1 = Value2
+              Result := WValue1 = WValue2
           end
           else
           begin
@@ -864,11 +905,11 @@ begin
             WValue1 := SoftVarManager.GetAsUnicodeString(RowValues[I]);
             if PartialKey then
             begin
-              {$IFDEF DELPHI12_UP}
+              {$IFDEF UNICODE}
               Result := SysUtils.AnsiStrLComp(PWideChar(WValue2), PWideChar(WValue1), Length(WValue1)) = 0;
               {$ELSE}
-              Value1 := UTF8ToAnsi(UTF8Encode(WValue1));
-              Value2 := UTF8ToAnsi(UTF8Encode(WValue2));
+              Value1 := AnsiString(WValue1);
+              Value2 := AnsiString(WValue2);
               Result := AnsiStrLComp(PAnsiChar(Value2), PAnsiChar(Value1), Length(Value1)) = 0;
               {$ENDIF}
             end
@@ -883,7 +924,8 @@ begin
           Value1 := AnsiString(AnsiUpperCase(SoftVarManager.GetAsString(KeyValues[I])));
           Value2 := AnsiString(AnsiUpperCase(SoftVarManager.GetAsString(RowValues[I])));
           if PartialKey then
-            Result := AnsiStrLComp(PAnsiChar(Value2), PAnsiChar(Value1), Length(Value1)) = 0
+
+            Result := {$IFDEF WITH_ANSISTRLCOMP_DEPRECATED}AnsiStrings.{$ENDIF}AnsiStrLComp(PAnsiChar(Value2), PAnsiChar(Value1), Length(Value1)) = 0
           else
             Result := Value1 = Value2
         end
@@ -892,7 +934,7 @@ begin
           Value1 := AnsiString(SoftVarManager.GetAsString(KeyValues[I]));
           Value2 := AnsiString(SoftVarManager.GetAsString(RowValues[I]));
           if PartialKey then
-            Result := AnsiStrLComp(PAnsiChar(Value2), PAnsiChar(Value1), Length(Value1)) = 0
+            Result := {$IFDEF WITH_ANSISTRLCOMP_DEPRECATED}AnsiStrings.{$ENDIF}AnsiStrLComp(PAnsiChar(Value2), PAnsiChar(Value1), Length(Value1)) = 0
           else
             Result := SoftVarManager.Compare(KeyValues[I], RowValues[I]) = 0;
         end;
@@ -1071,7 +1113,7 @@ begin
 
         if CaseInsensitive then
           WValue2 := WideUpperCase(WValue2);
-        {$IFDEF DELPHI12_UP}
+        {$IFDEF UNICODE}
         Result := SysUtils.AnsiStrLComp(PWideChar(WValue2), PWideChar(WValue1), Length(WValue1)) = 0;
         {$ELSE}
           AValue1 := UTF8ToAnsi(UTF8Encode(WValue1));
@@ -1082,14 +1124,15 @@ begin
       else
       begin
         AValue1 := AnsiString(KeyValues[I].VString);
-        if ResultSet.GetClientCodePage^.Encoding = ceAnsi then
+        if (ResultSet.GetConSettings.ClientCodePage^.Encoding = ceAnsi)
+          or (ResultSet.GetConSettings.AutoEncode and ( ResultSet.GetConSettings.CTRL_CP <> 65001 )) then
           AValue2 := AnsiString(ResultSet.GetString(ColumnIndex))
         else
-          AValue2 := AnsiString({$IFNDEF DELPHI12_UP}UTF8ToAnsi{$ENDIF}(ResultSet.GetString(ColumnIndex)));
+          AValue2 := AnsiString({$IFNDEF UNICODE}UTF8ToAnsi{$ENDIF}(ResultSet.GetString(ColumnIndex)));
 
         if CaseInsensitive then
-          AValue2 := {$IFDEF DELPHI12_UP}AnsiStrings.{$ENDIF}AnsiUpperCase(AValue2);
-        Result := AnsiStrLComp(PAnsiChar(AValue2), PAnsiChar(AValue1), Length(AValue1)) = 0;
+          AValue2 := {$IFDEF WITH_UNITANSISTRINGS}AnsiStrings.{$ENDIF}AnsiUpperCase(AValue2);
+        Result := {$IFDEF WITH_ANSISTRLCOMP_DEPRECATED}AnsiStrings.{$ENDIF}AnsiStrLComp(PAnsiChar(AValue2), PAnsiChar(AValue1), Length(AValue1)) = 0;
       end;
 
     end
@@ -1240,7 +1283,7 @@ begin
       {$IF not defined(cpui386) and defined(FPC)}
       TimeStamp := MSecsToTimeStamp(System.Trunc(Int(TDateTime(Buffer^))));
       {$ELSE}
-      TimeStamp := MSecsToTimeStamp(TDateTime(Buffer^));
+        TimeStamp := MSecsToTimeStamp(TDateTime(Buffer^));
       {$IFEND}
     except
       TimeStamp.Time := 0;
@@ -1535,6 +1578,114 @@ begin
 end;
 
 {**
+  Splits up a qualified object name into pieces. Catalog, schema
+  and objectname.
+}
+procedure SplitQualifiedObjectName(QualifiedName: string;
+  const SupportsCatalogs, SupportsSchemas: Boolean;
+  var Catalog, Schema, ObjectName: string);
+var
+  SL: TStringList;
+  I: Integer;
+begin
+  if SupportsCatalogs and SupportsSchemas then
+    SplitQualifiedObjectName(QualifiedName, Catalog, Schema, ObjectName)
+  else
+  begin
+    SL := TStringList.Create;
+    try
+      Catalog := '';
+      Schema := '';
+      ObjectName := QualifiedName;
+      ExtractStrings(['.'], [' '], PChar(QualifiedName), SL);
+      case SL.Count of
+        0, 1: ;
+        2:
+          begin
+            if SupportsCatalogs then
+            begin
+              Catalog := SL.Strings[0];
+              if SupportsSchemas then
+                Schema := SL.Strings[1]
+              else
+                ObjectName := SL.Strings[1];
+            end
+            else
+              if SupportsSchemas then
+              begin
+                Schema := SL.Strings[0];
+                ObjectName := SL.Strings[1];
+              end
+              else
+                ObjectName := SL.Strings[0]+'.'+SL.Strings[1];
+          end;
+        3:
+          if SupportsCatalogs then
+          begin
+            Catalog := SL.Strings[0];
+            if SupportsSchemas then
+            begin
+              Schema := SL.Strings[1];
+              ObjectName := SL.Strings[2]
+            end
+            else
+              ObjectName := SL.Strings[1]+'.'+SL.Strings[2];
+          end
+          else
+            if SupportsSchemas then
+            begin
+              Schema := SL.Strings[0];
+              ObjectName := SL.Strings[1]+'.'+SL.Strings[2];
+            end
+            else
+              ObjectName := SL.Strings[0]+'.'+SL.Strings[1]+'.'+SL.Strings[2];
+        else
+          if SupportsCatalogs then
+          begin
+            Catalog := SL.Strings[0];
+            if SupportsSchemas then
+            begin
+              Schema := SL.Strings[1];
+              for i := 2 to SL.Count-1 do
+                if i = 2 then
+                  ObjectName := SL.Strings[i]
+                else
+                  ObjectName := ObjectName+'.'+SL.Strings[i];
+            end
+            else
+            begin
+              ObjectName := '';
+              for i := 2 to SL.Count-1 do
+                if I = 2 then
+                  ObjectName := SL.Strings[i]
+                else
+                  ObjectName := ObjectName+'.'+SL.Strings[i];
+            end;
+          end
+          else
+            if SupportsSchemas then
+            begin
+              Schema := SL.Strings[0];
+              for i := 1 to SL.Count-1 do
+                if i = 1 then
+                  ObjectName := SL.Strings[i]
+                else
+                  ObjectName := ObjectName+'.'+SL.Strings[i];
+            end
+            else
+              for i := 0 to SL.Count-1 do
+                if I = 0 then
+                  ObjectName := SL.Strings[i]
+                else
+                  ObjectName := ObjectName+'.'+SL.Strings[i];
+        end;
+    finally
+      SL.Free;
+    end;
+  end;
+end;
+
+{**
   Assigns a Statement value from a TParam
   @param Index the index of Statement.SetXxxx(ColumnIndex, xxx);
   @param Statement the PrepredStatement where the values have been assigned
@@ -1544,6 +1695,9 @@ procedure SetStatementParam(Index: Integer;
   Statement: IZPreparedStatement; Param: TParam);
 var
   Stream: TStream;
+  TempBytes: TByteDynArray;
+  {$IFDEF WITH_ASBYTES}Bts: TBytes;{$ENDIF}
+  {$IFDEF WITHOUT_VARBYTESASSTRING}V: Variant;{$ENDIF}
 begin
   if Param.IsNull then
     Statement.SetNull(Index, ConvertDatasetToDbcType(Param.DataType))
@@ -1572,8 +1726,22 @@ begin
       ftWideString:
         Statement.SetUnicodeString(Index, Param.AsWideString);
       {$ENDIF}
-      ftBytes:
-        Statement.SetString(Index, Param.AsString);
+      ftBytes, ftVarBytes{$IFDEF WITH_FTGUID}, ftGuid{$ENDIF}:
+        begin
+          {$IFDEF WITH_ASBYTES}
+          Bts := Param.AsBytes;
+          SetLength(TempBytes, High(Bts)+1);
+          System.Move(PAnsichar(Bts)^, PAnsichar(TempBytes)^, High(Bts)+1);
+          {$ELSE}
+            {$IFDEF WITHOUT_VARBYTESASSTRING}
+            V := Param.Value;
+            TempBytes := V;
+            {$ELSE}
+            TempBytes := StrToBytes(Param.AsString);
+            {$ENDIF}
+          {$ENDIF}
+          Statement.SetBytes(Index, TempBytes);
+        end;
       ftDate:
         Statement.SetDate(Index, Param.AsDate);
       ftTime:
@@ -1586,7 +1754,7 @@ begin
             on Changing to stUnicodeString/Delphi12Up a String is from
             Type wide/unicode so we have to give him back as
             Stream!}
-            {$IFDEF DELPHI12_UP}
+            {$IFDEF UNICODE}
             Stream := Param.AsStream;
             {$ELSE}
             Stream := TStringStream.Create(Param.AsMemo);
@@ -1618,16 +1786,9 @@ begin
           end;
         end;
       else
-        raise EZDatabaseError.Create(SUnKnownParamDataType);
+        raise EZDatabaseError.Create(SUnKnownParamDataType + IntToStr(Ord(Param.DataType)));
     end;
   end;
-end;
-
-function WideStringStream(const AString: WideString): TStream;
-begin
-  Result := TMemoryStream.Create;
-  Result.Write(PWideChar(AString)^, Length(AString)*2);
-  Result.Position := 0;
 end;
 
 initialization

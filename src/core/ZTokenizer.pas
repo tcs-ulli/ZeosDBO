@@ -8,7 +8,7 @@
 {*********************************************************}
 
 {@********************************************************}
-{    Copyright (c) 1999-2006 Zeos Development Group       }
+{    Copyright (c) 1999-2012 Zeos Development Group       }
 {                                                         }
 { License Agreement:                                      }
 {                                                         }
@@ -40,12 +40,10 @@
 {                                                         }
 { The project web site is located on:                     }
 {   http://zeos.firmos.at  (FORUM)                        }
-{   http://zeosbugs.firmos.at (BUGTRACKER)                }
-{   svn://zeos.firmos.at/zeos/trunk (SVN Repository)      }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
 {                                                         }
 {   http://www.sourceforge.net/projects/zeoslib.          }
-{   http://www.zeoslib.sourceforge.net                    }
-{                                                         }
 {                                                         }
 {                                                         }
 {                                 Zeos Development Group. }
@@ -58,7 +56,8 @@ interface
 {$I ZCore.inc}
 
 uses
-   Classes, SysUtils, ZClasses, ZCompatibility;
+   Classes, {$IFDEF MSEgui}mclasses,{$ENDIF} SysUtils,
+   ZClasses, ZCompatibility;
 
 type
 
@@ -67,14 +66,14 @@ type
     such as "number", "symbol" or "word".
   }
   TZTokenType = (ttUnknown, ttEOF, ttFloat, ttInteger, ttHexDecimal,
-    ttNumber, ttSymbol, ttQuoted, ttQuotedIdentifier, ttWord, ttKeyword, ttWhitespace,
-    ttComment, ttSpecial, ttTime, ttDate, ttDateTime, ttEscape, ttEscapedQuoted);
+    ttNumber, ttSymbol, ttQuoted, ttQuotedIdentifier, ttWord, ttKeyword,
+    ttWhitespace, ttComment, ttSpecial, ttTime, ttDate, ttDateTime, ttEscape);
 
   {**
     Defines options for tokenizing strings.
   }
   TZTokenOption = (toSkipUnknown, toSkipWhitespaces, toSkipComments,
-    toSkipEOF, toUnifyWhitespaces, toUnifyNumbers, toDecodeStrings, toAcceptEscape);
+    toSkipEOF, toUnifyWhitespaces, toUnifyNumbers, toDecodeStrings);
   TZTokenOptions = set of TZTokenOption;
 
   {**
@@ -85,7 +84,7 @@ type
     token is a receptacle, and relies on a tokenizer to decide
     precisely how to divide a string into tokens.
   }
-  TZToken = packed record
+  TZToken = {$ifndef FPC_REQUIRES_PROPER_ALIGNMENT}packed{$endif} record
     Value: string;
     TokenType: TZTokenType;
   end;
@@ -144,14 +143,10 @@ type
       TZWordState which represents either Quoted-String-Data or
       Catalog/Table/Alias/Field name-spaces.
 
-    This State is only neccessary for <code>Delphi12_UP</code> ( 2009 and later)
+    This State is only neccessary for <code>Delphi2009+</code> ( 2009 and later)
     and results of it's mixing nByte-Chars and binary-Data 1Byte-Chars.
   }
   TZEscapeState = class (TZTokenizerState)
-  protected
-    FEscapeMarks: String;
-  public
-    procedure SetMarks(const Value: String);
     function NextToken(Stream: TStream; FirstChar: Char;
       Tokenizer: TZTokenizer): TZToken; override;
   end;
@@ -200,8 +195,8 @@ type
   }
   TZCppCommentState = class (TZCommentState)
   protected
-    function GetMultiLineComment(Stream: TStream): string;
-    function GetSingleLineComment(Stream: TStream): string;
+    function GetMultiLineComment(Stream: TStream): string; virtual;
+    function GetSingleLineComment(Stream: TStream): string; virtual;
   public
     function NextToken(Stream: TStream; FirstChar: Char;
       Tokenizer: TZTokenizer): TZToken; override;
@@ -346,7 +341,7 @@ type
   }
   TZWhitespaceState = class (TZTokenizerState)
   private
-    FWhitespaceChars: array[0..255] of Boolean;
+    FWhitespaceChars: array[0..ord(high(char))] of Boolean;
   public
     constructor Create;
 
@@ -380,11 +375,7 @@ type
   }
   TZWordState = class (TZTokenizerState)
   private
-  {$IFDEF DELPHI12_UP}
     FWordChars: array[0..ord(high(char))] of Boolean;
-  {$ELSE}
-    FWordChars: array[0..255] of Boolean;
-  {$ENDIF}
   public
     constructor Create;
 
@@ -456,23 +447,18 @@ type
     function GetWhitespaceState: TZWhitespaceState;
     function GetWordState: TZWordState;
     function GetCharacterState(StartChar: Char): TZTokenizerState;
-    procedure SetEscapeMarkSequence(const Value: String);
-    function AnsiGetEscapeString(const Ansi: AnsiString;
-      const EscapeMarkSequence: String = '~<|'): String;
-    function GetEscapeString(const Str: String;
-      const EscapeMarkSequence: String = '~<|'): String;
-    function TokenizeEscapeBufferToList(const SQL: String;
-      const EscapeMarkSequence: String = '~<|'): TZTokenDynArray;
+    function AnsiGetEscapeString(const Ansi: RawByteString): String;
+    {$IF defined(FPC) and defined(WITH_RAWBYTESTRING)}
+    function GetEscapeString(const EscapeString: RawByteString): RawByteString;
+    {$ELSE}
+    function GetEscapeString(const EscapeString: String): String;
+    {$IFEND}
   end;
 
   {** Implements a default tokenizer object. }
   TZTokenizer = class (TZAbstractObject, IZTokenizer)
   private
-    {$IFDEF DELPHI12_UP}
     FCharacterStates: array[0..ord(high(char))] of TZTokenizerState;
-    {$ELSE}
-    FCharacterStates: array[0..255] of TZTokenizerState;
-    {$ENDIF}
     FCommentState: TZCommentState;
     FNumberState: TZNumberState;
     FQuoteState: TZQuoteState;
@@ -480,9 +466,6 @@ type
     FWhitespaceState: TZWhitespaceState;
     FWordState: TZWordState;
     FEscapeState: TZEscapeState; //EgonHugeist
-    FMarkSequence: String;
-    function GetEscapeMarkSequence: String;
-    procedure SetEscapeMarkSequence(const Value: String);
   protected
     function CheckEscapeState(const ActualState: TZTokenizerState;
       Stream: TStream; const FirstChar: Char): TZTokenizerState; virtual;
@@ -490,12 +473,12 @@ type
     constructor Create;
     destructor Destroy; override;
 
-    function AnsiGetEscapeString(const EscapeString: AnsiString;
-      const EscapeMarkSequence: String = '~<|'): String; virtual;
-    function GetEscapeString(const EscapeString: String;
-      const EscapeMarkSequence: String = '~<|'): String; virtual;
-    function TokenizeEscapeBufferToList(const SQL: String;
-      const EscapeMarkSequence: String = '~<|'): TZTokenDynArray; virtual;
+    function AnsiGetEscapeString(const EscapeString: RawByteString): String; virtual;
+    {$IF defined(FPC) and defined(WITH_RAWBYTESTRING)}
+    function GetEscapeString(const EscapeString: RawByteString): RawByteString;
+    {$ELSE}
+    function GetEscapeString(const EscapeString: String): String;
+    {$IFEND}
     function TokenizeBufferToList(const Buffer: string; Options: TZTokenOptions):
       TStrings;
     function TokenizeStreamToList(Stream: TStream; Options: TZTokenOptions):
@@ -518,7 +501,6 @@ type
     function GetWordState: TZWordState;
 
     property EscapeState: TZEscapeState read FEscapeState write FEscapeState;
-    property EscapeMarkSequence: String read GetEscapeMarkSequence write SetEscapeMarkSequence;
     property CommentState: TZCommentState read FCommentState write FCommentState;
     property NumberState: TZNumberState read FNumberState write FNumberState;
     property QuoteState: TZQuoteState read FQuoteState write FQuoteState;
@@ -528,22 +510,20 @@ type
     property WordState: TZWordState read FWordState write FWordState;
   end;
 
+const
+  EscapeMarkSequence = String('~<|');
+
+
 implementation
 
 uses
-  Math;
+  Math, StrUtils;
+
+{$IFDEF FPC}
+  {$HINTS OFF}
+{$ENDIF}
 
 { TZEscapeState } //EgonHugeist
-
-{**
-  Sets the Escape Mark-Sequence-String wich is used to detect EscapeFields
-
-  @return a quoted string token from a reader
-}
-procedure TZEscapeState.SetMarks(const Value: String);
-begin
-  FEscapeMarks := Value;
-end;
 
 {**
   Return a quoted Escape-data-string of token from a reader. This method
@@ -620,15 +600,6 @@ var
           Result := Result+TempChar;
     until ( not CharInSet(TempChar, ['0'..'9'])) or ( not B );
   end;
-
-  function GetReverted: String;
-  var
-    I: Integer;
-  begin
-    for I := Length(Self.FEscapeMarks) downto 1 do
-      Result := Result + Copy(FEscapeMarks, i, 1);
-  end;
-
 begin
   Result.TokenType := ttUnknown;
   Result.Value := '';
@@ -637,7 +608,7 @@ begin
   TempStr := '';
   TempChar := FirstChar; //FirstChar: ~
 
-  if not CheckMarkChars(FEscapeMarks) then Exit;
+  if not CheckMarkChars(EscapeMarkSequence) then Exit;
 
   //All inMark-Chars where test.
   //Now Check for Numeric Chars until MarkOut was found or #0 was Resulted
@@ -649,7 +620,7 @@ begin
   end;
 
   //Now Check the TempChar for it's hits on cBinDetectCharsOut
-  if not CheckMarkChars(GetReverted) then Exit;
+  if not CheckMarkChars(ReverseString(EscapeMarkSequence)) then Exit;
 
   //OutMarks where Found too. So let's read the BinarayData to the TempStr
   //Including the Quotes
@@ -664,7 +635,7 @@ begin
   Result.Value := Copy(TempStr, 1, Length(TempStr)-1);
 
   //Now Check for in Chars again..
-  if not CheckMarkChars(FEscapeMarks) then Exit;
+  if not CheckMarkChars(EscapeMarkSequence) then Exit;
   //MarkIn-Chars where found now compare the read-length
   TempStr := LenString; //Save to before compare
   LenString := ReadLengthString;
@@ -675,7 +646,7 @@ begin
   end;
 
   //Now Check the TempChar for it's hits on Escape-Detect-CharsOut again..
-  if not CheckMarkChars(GetReverted) then Exit;
+  if not CheckMarkChars(ReverseString(EscapeMarkSequence)) then Exit;
   //MarkOut-Chars where found again now we are ready here
 
   //everything was fine! Now we are sure Escape data was here
@@ -997,6 +968,7 @@ begin
     else
          Break;
   end;
+  SetLength(FChildren, 0);
   FParent := nil;
   inherited Destroy;
 end;
@@ -1241,7 +1213,7 @@ end;
 }
 constructor TZWhitespaceState.Create;
 begin
-  SetWhitespaceChars(' ', Chr(255), False);
+  SetWhitespaceChars(' ', high(char), False);
   SetWhitespaceChars(Chr(0), ' ', True);
 end;
 
@@ -1296,18 +1268,14 @@ end;
 }
 constructor TZWordState.Create;
 begin
-  {$IFDEF DELPHI12_UP}
-  SetWordChars(#0, high(char), False);
-  {$ELSE}
-  SetWordChars(#0, #255, False);
-  {$ENDIF}
+  SetWordChars(#0, #191, False);
+  SetWordChars(#192, high(char), True);
   SetWordChars('a', 'z', True);
   SetWordChars('A', 'Z', True);
   SetWordChars('0', '9', True);
   SetWordChars('-', '-', True);
   SetWordChars('_', '_', True);
   SetWordChars('''', '''', True);
-  SetWordChars(Char($c0), Char($ff), True); //chars from #192 (À) ~ 255 (ÿ)
 end;
 
 {**
@@ -1348,37 +1316,11 @@ procedure TZWordState.SetWordChars(FromChar, ToChar: Char; Enable: Boolean);
 var
   I: Integer;
 begin
-  {$IFDEF DELPHI12_UP}
   for I := Ord(FromChar) to MinIntValue([Ord(ToChar), Ord(high(char)) ]) do
-  {$ELSE}
-  for I := Ord(FromChar) to MinIntValue([Ord(ToChar), 255]) do
-  {$ENDIF}
     FWordChars[I] := Enable;
 end;
 
 { TZTokenizer }
-
-{**
-  Gets the Binaray-Detect-Mark-String.
-}
-function TZTokenizer.GetEscapeMarkSequence: String;
-begin
-  Result := Self.FMarkSequence;
-end;
-
-{**
-  Sets the Binaray-Detect-Mark-String. Minimum Requirement-Length is 3
-}
-procedure TZTokenizer.SetEscapeMarkSequence(const Value: String);
-begin
-  if ( Value <> '~<|' ) or ( Value <> '')  then
-  begin
-    if ( Length(Value) < 3 ) then
-      raise Exception.Create('EscapeMarkSequence-String isn''t a good Identifier! MinLength = 3');
-    FMarkSequence := Value;
-    FEscapeState.SetMarks(Value);
-  end;
-end;
 
 {**
   Constructs a tokenizer with a default state table (as
@@ -1394,23 +1336,18 @@ begin
     Add('>=');
   end;
   FEscapeState := TZEscapeState.Create;
-  SetEscapeMarkSequence('~<|'); //Default
   FNumberState := TZNumberState.Create;
   FQuoteState := TZQuoteState.Create;
   FWhitespaceState := TZWhitespaceState.Create;
   FWordState := TZWordState.Create;
   FCommentState := TZCppCommentState.Create;
 
-  {$IFDEF DELPHI12_UP}
-  SetCharacterState(#0, high(char), FSymbolState);
-  {$ELSE}
-  SetCharacterState(#0, #255, FSymbolState);
-  {$ENDIF}
+  SetCharacterState(#0, #32, FWhitespaceState);
+  SetCharacterState(#33, #191, FSymbolState);
+  SetCharacterState(#192, High(Char), FWordState);
 
-  SetCharacterState(#0, ' ', FWhitespaceState);
   SetCharacterState('a', 'z', FWordState);
   SetCharacterState('A', 'Z', FWordState);
-  SetCharacterState(Chr($c0),  Chr($ff), FWordState); //chars from #192 (À) ~ 255 (ÿ)
   SetCharacterState('0', '9', FNumberState);
   SetCharacterState('-', '-', FNumberState);
   SetCharacterState('.', '.', FNumberState);
@@ -1482,11 +1419,7 @@ function TZTokenizer.TokenizeBuffer(const Buffer: string;
 var
   Stream: TStream;
 begin
-  {$IFDEF DELPHI12_UP}
-  Stream := TStringStream.Create(Buffer, TEncoding.Unicode);
-  {$ELSE}
-  Stream := TStringStream.Create(Buffer);
-  {$ENDIF}
+  Stream := TStringStream.Create(Buffer{$IFDEF WITH_TENCODING_CLASS}, TEncoding.Unicode{$ENDIF});
   try
     Result := TokenizeStream(Stream, Options);
   finally
@@ -1494,21 +1427,11 @@ begin
   end;
 end;
 
-function TZTokenizer.AnsiGetEscapeString(const EscapeString: AnsiString;
-  const EscapeMarkSequence: String = '~<|'): String;
+function TZTokenizer.AnsiGetEscapeString(const EscapeString: RawByteString): String;
 var
   Temp: String;
-
-  function GetReverted: String;
-  var
-    I: Integer;
-  begin
-    for I := Length(EscapeMarkSequence) downto 1 do
-      Result := Result + Copy(EscapeMarkSequence, i, 1);
-  end;
 begin
-  Self.SetEscapeMarkSequence(EscapeMarkSequence);
-  Temp := EscapeMarkSequence+IntToStr(Length(EscapeString))+GetReverted;
+  Temp := EscapeMarkSequence+IntToStr(Length(EscapeString))+ReverseString(EscapeMarkSequence);
 
   if Length(EscapeString) > 0 then
     Result := Temp+String(EscapeString)+Temp
@@ -1516,42 +1439,24 @@ begin
     Result := 'NULL';
 end;
 
-function TZTokenizer.GetEscapeString(const EscapeString: String;
-  const EscapeMarkSequence: String = '~<|'): String;
+{$IF defined(FPC) and defined(WITH_RAWBYTESTRING)}
+function TZTokenizer.GetEscapeString(const EscapeString: RawByteString): RawByteString;
+{$ELSE}
+function TZTokenizer.GetEscapeString(const EscapeString: String): String;
+{$IFEND}
 var
   Temp: String;
-
-  function GetReverted: String;
-  var
-    I: Integer;
-  begin
-    for I := Length(EscapeMarkSequence) downto 1 do
-      Result := Result + Copy(EscapeMarkSequence, i, 1);
-  end;
 begin
-  Self.SetEscapeMarkSequence(EscapeMarkSequence);
-  Temp := EscapeMarkSequence+IntToStr(Length(EscapeString))+GetReverted;
+  Temp := EscapeMarkSequence+IntToStr(Length(EscapeString))+ReverseString(EscapeMarkSequence);
 
   if Length(EscapeString) > 0 then
+    {$IF defined(FPC) and defined(WITH_RAWBYTESTRING)}
+    Result := RawByteString(Temp)+EscapeString+RawByteString(Temp)
+    {$ELSE}
     Result := Temp+EscapeString+Temp
+    {$IFEND}
   else
     Result := '';
-end;
-
-
-{**
-  Tokenizes a string buffer into a dynamic array of tokens and informs
-  the Tokenizer and EscapeState about the used sequence
-  @param SQL a string buffer to be tokenized.
-  @param EscapeMarkSequence to detect preprepared data
-  @returns a dynamic array of tokens
-}
-function TZTokenizer.TokenizeEscapeBufferToList(const SQL: String;
-  const EscapeMarkSequence: String = '~<|'): TZTokenDynArray;
-begin
-  if ( EscapeMarkSequence <> '~<|' ) and ( EscapeMarkSequence <> '' )then
-    SetEscapeMarkSequence(EscapeMarkSequence);
-  Result := TokenizeBuffer(SQL, [toSkipEOF, toAcceptEscape]); //Disassembles the Query
 end;
 
 {**
@@ -1569,19 +1474,19 @@ var
 begin
   Result := ActualState;
   iReadCount := 0;
-  if  ( FirstChar = Copy(Self.EscapeMarkSequence, 1, 1) ) then //Token was set so check if its Escape
+  if  ( FirstChar = EscapeMarkSequence[1]) then //Token was set so check if its Escape
   begin
-    for i := 2 to Length(Self.EscapeMarkSequence) do
-    if Stream.Read(NextChar, 1 * SizeOf(Char)) > 0  then //Read next Char
-      if NextChar = Copy(Self.EscapeMarkSequence, i, 1) then //Compare Chars
-        Inc(IReadCount) //increment count of read-Chars
-      else
+    for i := 2 to Length(EscapeMarkSequence) do
+      if Stream.Read(NextChar, 1 * SizeOf(Char)) > 0  then //Read next Char
       begin
-        Stream.Seek(-(iReadCount * SizeOf(Char)), soFromCurrent); //Seek Stream back to starting Position
-        Exit;
+        Inc(IReadCount); //increment count of read-Chars
+        if NextChar <> EscapeMarkSequence[I] then //Compare Chars
+        begin
+          Stream.Seek(-(iReadCount * SizeOf(Char)), soFromCurrent); //Seek Stream back to starting Position
+          Exit;
+        end
       end
-    else
-      Exit;
+      else Continue;
   end
   else
     Exit;
@@ -1601,11 +1506,7 @@ function TZTokenizer.TokenizeBufferToList(const Buffer: string;
 var
   Stream: TStream;
 begin
-  {$IFDEF DELPHI12_UP}
-  Stream := TStringStream.Create(Buffer, TEncoding.Unicode);
-  {$ELSE}
-  Stream := TStringStream.Create(Buffer);
-  {$ENDIF}
+  Stream := TStringStream.Create(Buffer{$IFDEF WITH_TENCODING_CLASS}, TEncoding.Unicode{$ENDIF});
   try
     Result := TokenizeStreamToList(Stream, Options);
   finally
@@ -1698,8 +1599,6 @@ begin
         Token.Value := Result[Result.Count-1] + Token.Value;
         Result.Delete(Result.Count-1);
       end;
-      if (Token.Tokentype = ttEscapedQuoted) and (not (toAcceptEscape in Options)) then
-        Token.Tokentype := ttQuoted;
       { Add a read token. }
       LastTokenType := Token.TokenType;
       Result.AddObject(Token.Value, TObject(Ord(Token.TokenType)));

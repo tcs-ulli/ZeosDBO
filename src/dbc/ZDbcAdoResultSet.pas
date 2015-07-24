@@ -8,7 +8,7 @@
 {*********************************************************}
 
 {@********************************************************}
-{    Copyright (c) 1999-2006 Zeos Development Group       }
+{    Copyright (c) 1999-2012 Zeos Development Group       }
 {                                                         }
 { License Agreement:                                      }
 {                                                         }
@@ -40,12 +40,10 @@
 {                                                         }
 { The project web site is located on:                     }
 {   http://zeos.firmos.at  (FORUM)                        }
-{   http://zeosbugs.firmos.at (BUGTRACKER)                }
-{   svn://zeos.firmos.at/zeos/trunk (SVN Repository)      }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
 {                                                         }
 {   http://www.sourceforge.net/projects/zeoslib.          }
-{   http://www.zeoslib.sourceforge.net                    }
-{                                                         }
 {                                                         }
 {                                                         }
 {                                 Zeos Development Group. }
@@ -61,7 +59,9 @@ uses
 {$IFNDEF FPC}
   DateUtils,
 {$ENDIF}
-  Types, Classes, SysUtils, ZClasses, ZSysUtils, ZCollections, ZDbcIntfs,
+  {$IFDEF WITH_TOBJECTLIST_INLINE}System.Types, System.Contnrs{$ELSE}Types{$ENDIF},
+  Classes, SysUtils,
+  ZClasses, ZSysUtils, ZCollections, ZDbcIntfs,
   ZDbcGenericResolver, ZDbcCachedResultSet, ZDbcCache, ZDbcResultSet,
   ZDbcResultsetMetadata, ZCompatibility, ZDbcAdo, ZPlainAdoDriver, ZPlainAdo;
 
@@ -88,7 +88,7 @@ type
     function GetString(ColumnIndex: Integer): String; override;
     function GetUnicodeString(ColumnIndex: Integer): WideString; override;
     function GetBoolean(ColumnIndex: Integer): Boolean; override;
-    function GetByte(ColumnIndex: Integer): ShortInt; override;
+    function GetByte(ColumnIndex: Integer): Byte; override;
     function GetShort(ColumnIndex: Integer): SmallInt; override;
     function GetInt(ColumnIndex: Integer): Integer; override;
     function GetLong(ColumnIndex: Integer): Int64; override;
@@ -118,7 +118,8 @@ type
 implementation
 
 uses
-  Variants, Math, OleDB, ZMessages, ZDbcUtils, ZDbcAdoUtils;
+  Variants, Math, OleDB,
+  ZMessages, ZDbcUtils, ZDbcAdoUtils, ZEncoding;
 
 {**
   Creates this object and assignes the main properties.
@@ -128,8 +129,7 @@ uses
 }
 constructor TZAdoResultSet.Create(Statement: IZStatement; SQL: string; AdoRecordSet: ZPlainAdo.RecordSet);
 begin
-  inherited Create(Statement, SQL, nil,
-    Statement.GetConnection.GetClientCodePageInformations);
+  inherited Create(Statement, SQL, nil, Statement.GetConnection.GetConSettings);
   FAdoRecordSet := AdoRecordSet;
   Open;
 end;
@@ -150,7 +150,7 @@ procedure TZAdoResultSet.Open;
 var
   OleDBRowset: IUnknown;
   OleDBColumnsInfo: IColumnsInfo;
-  pcColumns: {$IFDEF DELPHI16_UP}NativeUInt{$ELSE}Cardinal{$ENDIF};
+  pcColumns: NativeUInt;
   prgInfo, OriginalprgInfo: PDBColumnInfo;
   ppStringsBuffer: PWideChar;
   I: Integer;
@@ -189,7 +189,7 @@ begin
 
   if Assigned(prgInfo) then
     if prgInfo.iOrdinal = 0 then
-      Inc({$IFDEF DELPHI16_UP}NativeInt{$ELSE}Integer{$ENDIF}(prgInfo), SizeOf(TDBColumnInfo)); //M.A. Inc(Integer(prgInfo), SizeOf(TDBColumnInfo));
+      Inc(NativeInt(prgInfo), SizeOf(TDBColumnInfo));
 
   for I := 0 to AdoColumnCount - 1 do
   begin
@@ -200,14 +200,14 @@ begin
     ColType := F.Type_;
     ColumnInfo.ColumnLabel := ColName;
     ColumnInfo.ColumnName := ColName;
-    ColumnInfo.ColumnType := ConvertAdoToSqlType(ColType);
-    if F.Type_ = adGuid then 
-        FieldSize := 38 
-      else 
-        FieldSize := F.DefinedSize;
-      if FieldSize < 0 then
+    ColumnInfo.ColumnType := ConvertAdoToSqlType(ColType, ConSettings.CPType);
+    FieldSize := F.DefinedSize;
+    if FieldSize < 0 then
       FieldSize := 0;
-    ColumnInfo.ColumnDisplaySize := FieldSize;
+    if F.Type_ = adGuid then
+      ColumnInfo.ColumnDisplaySize := 38
+    else
+      ColumnInfo.ColumnDisplaySize := FieldSize;
     ColumnInfo.Precision := FieldSize;
     ColumnInfo.Currency := ColType = adCurrency;
     ColumnInfo.Signed := False;
@@ -231,7 +231,7 @@ begin
     ColumnsInfo.Add(ColumnInfo);
 
     AdoColTypeCache[I] := ColType;
-    Inc({$IFDEF DELPHI16_UP}NativeInt{$ELSE}Integer{$ENDIF}(prgInfo), SizeOf(TDBColumnInfo));  //M.A. Inc(Integer(prgInfo), SizeOf(TDBColumnInfo));
+    Inc(NativeInt(prgInfo), SizeOf(TDBColumnInfo));  //M.A. Inc(Integer(prgInfo), SizeOf(TDBColumnInfo));
   end;
   if Assigned(ppStringsBuffer) then ZAdoMalloc.Free(ppStringsBuffer);
   if Assigned(OriginalprgInfo) then ZAdoMalloc.Free(OriginalprgInfo);
@@ -362,18 +362,22 @@ end;
     value returned is <code>null</code>
 }
 function TZAdoResultSet.GetString(ColumnIndex: Integer): String;
-var
-  NL: Integer;
+{var
+  NL: Integer;}
 begin
   Result := '';
   LastWasNull := IsNull(ColumnIndex);
   if LastWasNull then
      Exit;
-  Result := FAdoRecordSet.Fields.Item[ColumnIndex - 1].Value;
+  if (VarType(FAdoRecordSet.Fields.Item[ColumnIndex - 1].Value) = varOleStr)
+    {$IFDEF UNICODE} or ( VarType(FAdoRecordSet.Fields.Item[ColumnIndex - 1].Value) = varUString){$ENDIF} then
+    Result := ZDbcString(ZWideString(FAdoRecordSet.Fields.Item[ColumnIndex - 1].Value))
+  else
+    Result := ZDbcString(AnsiString(FAdoRecordSet.Fields.Item[ColumnIndex - 1].Value))
+  {Why this? It cuts wanted trailing spaces!
   NL := Length(Result);
-  while (NL > 0) and (Result[NL] = ' ') do
-     Dec(NL);
-  SetLength(Result, NL);
+  while (NL > 0) and (Result[NL] = ' ') do Dec(NL);
+  SetLength(Result, NL);}
 end;
 
 {**
@@ -386,18 +390,19 @@ end;
     value returned is <code>null</code>
 }
 function TZAdoResultSet.GetUnicodeString(ColumnIndex: Integer): WideString;
-var
-  NL: Integer;
+{var
+  NL: Integer;}
 begin
   Result := '';
   LastWasNull := IsNull(ColumnIndex);
   if LastWasNull then
      Exit;
   Result := FAdoRecordSet.Fields.Item[ColumnIndex - 1].Value;
+  {Why this? It cuts wanted trailing spaces!
   NL := Length(Result);
   while (NL > 0) and (Result[NL] = ' ') do
      Dec(NL);
-  SetLength(Result, NL);
+  SetLength(Result, NL);}
 end;
 
 {**
@@ -431,7 +436,7 @@ end;
   @return the column value; if the value is SQL <code>NULL</code>, the
     value returned is <code>0</code>
 }
-function TZAdoResultSet.GetByte(ColumnIndex: Integer): ShortInt;
+function TZAdoResultSet.GetByte(ColumnIndex: Integer): Byte;
 begin
   Result := 0;
   LastWasNull := IsNull(ColumnIndex);
@@ -588,12 +593,26 @@ end;
     value returned is <code>null</code>
 }
 function TZAdoResultSet.GetBytes(ColumnIndex: Integer): TByteDynArray;
+var
+  V: Variant;
+  GUID: TGUID;
 begin
   SetLength(Result, 0);
   LastWasNull := IsNull(ColumnIndex);
   if LastWasNull then
      Exit;
-  Result := FAdoRecordSet.Fields.Item[ColumnIndex - 1].Value;
+  V := FAdoRecordSet.Fields.Item[ColumnIndex - 1].Value;
+  if VarType(V) = varByte then
+    Result := V
+  else
+    if TZColumnInfo(ColumnsInfo[ColumnIndex-1]).ColumnType = stGUID then
+    begin
+      SetLength(Result, 16);
+      GUID := StringToGUID(V);
+      System.Move(Pointer(@GUID)^, Pointer(Result)^, 16);
+    end
+    else
+      Result := V
 end;
 
 {**
@@ -683,16 +702,32 @@ begin
      Exit;
 
   V := FAdoRecordSet.Fields.Item[ColumnIndex - 1].Value;
-  if VarIsStr(V) then
+  if VarIsStr(V) {$IFDEF UNICODE} or ( VarType(V) = varUString){$ENDIF} then
   begin
-    Result := TZAbstractBlob.CreateWithStream(nil);
-    Result.SetString(AnsiString(V));
+    Result := TZAbstractBlob.CreateWithStream(nil, GetStatement.GetConnection);
+    case GetMetadata.GetColumnType(ColumnIndex) of
+      stAsciiStream:
+        if (VarType(V) = varOleStr) {$IFDEF UNICODE} or ( VarType(V) = varUString){$ENDIF} then
+          if ConSettings^.AutoEncode then
+            if ConSettings^.CPType = cCP_UTF8 then
+              Result.SetString(UTF8Encode(V))
+            else
+              Result.SetString(AnsiString(V))
+          else
+            Result.SetString(AnsiString(V))
+        else
+          Result.SetString(GetValidatedAnsiString(V, ConSettings, True));
+      stUnicodeStream:
+        Result.SetUnicodeString(WideString(V));
+      else
+        Result.SetString(RawByteString(V));
+    end;
   end;
   if VarIsArray(V) then
   begin
     P := VarArrayLock(V);
     try
-      Result := TZAbstractBlob.CreateWithData(P, VarArrayHighBound(V, 1)+1);
+      Result := TZAbstractBlob.CreateWithData(P, VarArrayHighBound(V, 1)+1, GetStatement.GetConnection);
     finally
       VarArrayUnLock(V);
     end;
@@ -758,4 +793,5 @@ begin
 end;
 
 end.
+
 

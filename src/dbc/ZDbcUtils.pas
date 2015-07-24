@@ -8,7 +8,7 @@
 {*********************************************************}
 
 {@********************************************************}
-{    Copyright (c) 1999-2006 Zeos Development Group       }
+{    Copyright (c) 1999-2012 Zeos Development Group       }
 {                                                         }
 { License Agreement:                                      }
 {                                                         }
@@ -40,12 +40,10 @@
 {                                                         }
 { The project web site is located on:                     }
 {   http://zeos.firmos.at  (FORUM)                        }
-{   http://zeosbugs.firmos.at (BUGTRACKER)                }
-{   svn://zeos.firmos.at/zeos/trunk (SVN Repository)      }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
 {                                                         }
 {   http://www.sourceforge.net/projects/zeoslib.          }
-{   http://www.zeoslib.sourceforge.net                    }
-{                                                         }
 {                                                         }
 {                                                         }
 {                                 Zeos Development Group. }
@@ -58,7 +56,8 @@ interface
 {$I ZDbc.inc}
 
 uses
-  Types, Classes, SysUtils, Contnrs, ZCompatibility, ZDbcIntfs, ZDbcResultSetMetadata;
+  Types, Classes, {$IFDEF MSEgui}mclasses,{$ENDIF} SysUtils, Contnrs,
+  ZCompatibility, ZDbcIntfs, ZDbcResultSetMetadata;
 
 {**
   Resolves a connection protocol and raises an exception with protocol
@@ -124,35 +123,11 @@ function DefineStatementParameter(Statement: IZStatement; const ParamName: strin
   const Default: string): string;
 
 {**
-  AnsiQuotedStr or NullText
-  @param S the string
-  @param NullText the "NULL"-Text
-  @param QuoteChar the char that is used for quotation
-  @return 'null' if S is '', otherwise AnsiQuotedStr(S)
-}
-function AQSNullText(const Value, NullText: string; QuoteChar: Char = ''''): string;
-
-{**
-  AnsiQuotedStr or Null
-  @param S the string
-  @return 'null' if S is '', otherwise AnsiQuotedStr(S)
-}
-function AQSNull(const Value: string; QuoteChar: Char = ''''): string;
-
-{**
   ToLikeString returns the given string or if the string is empty it returns '%'
   @param Value the string
   @return given Value or '%'
 }
 function ToLikeString(const Value: string): string;
-
-{**
-  PrepareUnicodeStream checks the incoming Stream for his given Memory and
-  returns a valid UTF8 StringStream
-  @param Stream the Stream with the unknown format and data
-  @return a valid utf8 encoded stringstram
-}
-function GetValidatedUnicodeStream(const Stream: TStream): TStream;
 
 {**
   GetSQLHexString returns a valid x'..' database understandable String from
@@ -162,11 +137,27 @@ function GetValidatedUnicodeStream(const Stream: TStream): TStream;
   @param ODBC a boolean if output result should be with a starting 0x...
   @returns a valid hex formated unicode-safe string
 }
+function GetSQLHexWideString(Value: PAnsiChar; Len: Integer; ODBC: Boolean = False): ZWideString;
+function GetSQLHexAnsiString(Value: PAnsiChar; Len: Integer; ODBC: Boolean = False): RawByteString;
 function GetSQLHexString(Value: PAnsiChar; Len: Integer; ODBC: Boolean = False): String;
+
+{**
+  Returns a FieldSize in Bytes dependend to the FieldType and CharWidth
+  @param <code>TZSQLType</code> the Zeos FieldType
+  @param <code>Integer</code> the Current given FieldLength
+  @param <code>Integer</code> the Current CountOfByte/Char
+  @param <code>Boolean</code> does the Driver returns the FullSizeInBytes
+  @returns <code>Integer</code> the count of AnsiChars for Field.Size * SizeOf(Char)
+}
+function GetFieldSize(const SQLType: TZSQLType;ConSettings: PZConSettings;
+  const Precision, CharWidth: Integer; DisplaySize: PInteger = nil;
+    SizeInBytes: Boolean = False): Integer;
+
+function WideStringStream(const AString: WideString): TStream;
 
 implementation
 
-uses ZMessages, ZSysUtils{$IFDEF WITH_WIDESTRUTILS},WideStrUtils{$ENDIF};
+uses ZMessages, ZSysUtils, ZEncoding;
 
 {**
   Resolves a connection protocol and raises an exception with protocol
@@ -275,7 +266,7 @@ begin
     stString, stUnicodeString:
       Result := True;
     stBytes:
-      Result := InitialType in [stString, stUnicodeString, stBytes,
+      Result := InitialType in [stString, stUnicodeString, stBytes, stGUID,
         stAsciiStream, stUnicodeStream, stBinaryStream];
     stTimestamp:
       Result := InitialType in [stString, stUnicodeString, stDate, stTime, stTimestamp];
@@ -318,6 +309,8 @@ begin
       Result := 'UnicodeString';
     stBytes:
       Result := 'Bytes';
+    stGUID:
+      Result := 'GUID';
     stDate:
       Result := 'Date';
     stTime:
@@ -408,32 +401,6 @@ begin
 end;
 
 {**
-  AnsiQuotedStr or NullText
-  @param S the string
-  @param NullText the "NULL"-Text
-  @param QuoteChar the char that is used for quotation
-  @return 'null' if S is '', otherwise AnsiQuotedStr(S)
-}
-function AQSNullText(const Value, NullText: string; QuoteChar: Char): string;
-begin
-  if Value = '' then
-    Result := NullText
-  else
-    Result := AnsiQuotedStr(Value, QuoteChar);
-end;
-
-{**
-  AnsiQuotedStr or Null
-  @param S the string
-  @param QuoteChar the char that is used for quotation
-  @return 'null' if S is '', otherwise AnsiQuotedStr(S)
-}
-function AQSNull(const Value: string; QuoteChar: Char): string;
-begin
-  Result := AQSNullText(Value, 'null', QuoteChar);
-end;
-
-{**
   ToLikeString returns the given string or if the string is empty it returns '%'
   @param Value the string
   @return given Value or '%'
@@ -446,68 +413,6 @@ begin
     Result := Value;
 end;
 
-function GetValidatedUnicodeStream(const Stream: TStream): TStream;
-var
-  Ansi: ZAnsiString;
-  Len: Integer;
-  WS: WideString;
-begin
-  {EgonHugeist: TempBuffer the WideString, }
-  //Step one: Findout, wat's comming in! To avoid User-Bugs
-    //it is possible that a PAnsiChar OR a PWideChar was written into
-    //the Stream!!!  And these chars could be trunced with changing the
-    //Stream.Size.
-  if Assigned(Stream) then
-  begin
-    if Length(PWideChar(TMemoryStream(Stream).Memory)) = Stream.Size then
-    begin
-      if StrLen(PAnsiChar(TMemoryStream(Stream).Memory)) >= Stream.Size then  //Hack!! If no #0 is witten then the PAnsiChar could be oversized
-      begin
-        SetLength(Ansi, Stream.Size);
-        TMemoryStream(Stream).Read(PAnsiChar(Ansi)^, Stream.Size);
-        if DetectUTF8Encoding(Ansi) = etAnsi then
-          Ansi := AnsiToUTF8(String(Ansi));
-      end
-      else
-      begin
-        WS := PWideChar(TMemoryStream(Stream).Memory);
-        SetLength(WS, Stream.Size div 2);
-        Ansi := UTF8Encode(WS);
-      end;
-    end
-    else
-      if StrLen(PAnsiChar(TMemoryStream(Stream).Memory)) < Stream.Size then //PWideChar written
-      begin
-        SetLength(WS, Stream.Size div 2);
-        System.Move(PWideString(TMemoryStream(Stream).Memory)^,
-          PWideChar(WS)^, Stream.Size);
-        Ansi := UTF8Encode(WS);
-      end
-      else
-        if StrLen(PAnsiChar(TMemoryStream(Stream).Memory)) = Stream.Size then
-        begin
-          if DetectUTF8Encoding(PAnsiChar(TMemoryStream(Stream).Memory)) = etAnsi then
-            Ansi := AnsiToUTF8(String(PAnsiChar(TMemoryStream(Stream).Memory)))
-          else
-            Ansi := PAnsiChar(TMemoryStream(Stream).Memory);
-        end
-        else
-        begin
-          SetLength(Ansi, Stream.Size);
-          TMemoryStream(Stream).Read(PAnsiChar(Ansi)^, Stream.Size);
-          if DetectUTF8Encoding(Ansi) = etAnsi then
-            Ansi := AnsiToUTF8(String(Ansi));
-        end;
-    Len := Length(Ansi);
-    Result := TMemoryStream.Create;
-    Result.Size := Len;
-    System.Move(PAnsiChar(Ansi)^, TMemoryStream(Result).Memory^, Len);
-    Result.Position := 0;
-  end
-  else
-    Result := nil;
-end;
-
 {**
   GetSQLHexString returns a valid x'..' database understandable String from
     binary data
@@ -516,7 +421,8 @@ end;
   @param ODBC a boolean if output result should be with a starting 0x...
   @returns a valid hex formated unicode-safe string
 }
-function GetSQLHexString(Value: PAnsiChar; Len: Integer; ODBC: Boolean = False): String;
+
+function GetSQLHexWideString(Value: PAnsiChar; Len: Integer; ODBC: Boolean = False): ZWideString;
 var
   HexVal: AnsiString;
 begin
@@ -524,10 +430,91 @@ begin
   BinToHex(Value, PAnsiChar(HexVal), Len);
 
   if ODBC then
-    Result := '0x'#39+String(HexVal)
+    Result := '0x'+ZWideString(HexVal)
   else
-    Result := 'x'#39+String(HexVal)+#39;
+    Result := 'x'#39+ZWideString(HexVal)+#39;
 end;
+
+function GetSQLHexAnsiString(Value: PAnsiChar; Len: Integer; ODBC: Boolean = False): RawByteString;
+var
+  HexVal: RawByteString;
+begin
+  SetLength(HexVal,Len * 2 );
+  BinToHex(Value, PAnsiChar(HexVal), Len);
+
+  if ODBC then
+    Result := '0x'+HexVal
+  else
+    Result := 'x'#39+HexVal+#39;
+end;
+
+function GetSQLHexString(Value: PAnsiChar; Len: Integer; ODBC: Boolean = False): String;
+begin
+  {$IFDEF UNICODE}
+  Result := GetSQLHexWideString(Value, Len, ODBC);
+  {$ELSE}
+  Result := GetSQLHexAnsiString(Value, Len, ODBC);
+  {$ENDIF}
+end;
+
+{**
+  Returns a FieldSize in Bytes dependend to the FieldType and CharWidth
+  @param <code>TZSQLType</code> the Zeos FieldType
+  @param <code>Integer</code> the Current given FieldLength
+  @param <code>Integer</code> the Current CountOfByte/Char
+  @param <code>Boolean</code> does the Driver returns the FullSizeInBytes
+  @returns <code>Integer</code> the count of AnsiChars for Field.Size * SizeOf(Char)
+}
+function GetFieldSize(const SQLType: TZSQLType; ConSettings: PZConSettings;
+  const Precision, CharWidth: Integer; DisplaySize: PInteger = nil;
+    SizeInBytes: Boolean = False): Integer;
+var
+  TempPrecision: Integer;
+begin
+  if ( SQLType in [stString, stUnicodeString] ) and ( Precision <> 0 )then
+  begin
+    if SizeInBytes then
+      TempPrecision := Precision div CharWidth
+    else
+      TempPrecision := Precision;
+
+    if Assigned(DisplaySize) then
+      DisplaySize^ := TempPrecision;
+
+    if SQLType = stString then
+      //the RowAccessor assumes SizeOf(Char)*Precision+SizeOf(Char)
+      //the Field assumes Precision*SizeOf(Char)
+      {$IFDEF UNICODE}
+      if ConSettings.ClientCodePage.CharWidth >= 2 then //All others > 3 are UTF8
+        Result := TempPrecision * 2 //add more mem for a reserved thirt byte
+      else //two and one byte AnsiChars are one WideChar
+        Result := TempPrecision
+      {$ELSE}
+        if ( ConSettings.CPType = cCP_UTF8 ) or (ConSettings.CTRL_CP = zCP_UTF8) then
+          Result := TempPrecision * 4
+        else
+          Result := TempPrecision * CharWidth
+      {$ENDIF}
+    else //stUnicodeString
+      //UTF8 can pickup LittleEndian/BigEndian 4 Byte Chars
+      //the RowAccessor assumes 2*Precision+2!
+      //the Field assumes 2*Precision ??Does it?
+      if CharWidth > 2 then
+        Result := TempPrecision * 2
+      else
+        Result := TempPrecision;
+  end
+  else
+    Result := Precision;
+end;
+
+function WideStringStream(const AString: WideString): TStream;
+begin
+  Result := TMemoryStream.Create;
+  Result.Write(PWideChar(AString)^, Length(AString)*2);
+  Result.Position := 0;
+end;
+
 
 end.
 

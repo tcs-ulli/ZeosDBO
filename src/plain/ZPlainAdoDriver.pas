@@ -8,7 +8,7 @@
 {*********************************************************}
 
 {@********************************************************}
-{    Copyright (c) 1999-2006 Zeos Development Group       }
+{    Copyright (c) 1999-2012 Zeos Development Group       }
 {                                                         }
 { License Agreement:                                      }
 {                                                         }
@@ -40,12 +40,10 @@
 {                                                         }
 { The project web site is located on:                     }
 {   http://zeos.firmos.at  (FORUM)                        }
-{   http://zeosbugs.firmos.at (BUGTRACKER)                }
-{   svn://zeos.firmos.at/zeos/trunk (SVN Repository)      }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
 {                                                         }
 {   http://www.sourceforge.net/projects/zeoslib.          }
-{   http://www.zeoslib.sourceforge.net                    }
-{                                                         }
 {                                                         }
 {                                                         }
 {                                 Zeos Development Group. }
@@ -60,7 +58,9 @@ interface
 uses ZClasses, ZPlainDriver;
 
 type
-  TZAdoPlainDriver = class (TZLegacyPlainDriver, IZPlainDriver)
+  TZAdoPlainDriver = class (TZAbstractPlainDriver, IZPlainDriver)
+  protected
+    function IsAnsiDriver: Boolean; override;
   public
     constructor Create;
 
@@ -73,16 +73,21 @@ type
 
 implementation
 
-uses ZCompatibility;
+uses ZCompatibility, ZEncoding;
 
 procedure TZAdoPlainDriver.LoadCodePages;
 begin
-  AddCodePage('Not implemented!', -1);
-   { TODO -oEgonHugeist : Must be completed!!!! }
+  AddCodePage('CP_ADO', 0, ceAnsi, ZDefaultSystemCodePage,'',1, False);
+end;
+
+function TZAdoPlainDriver.IsAnsiDriver: Boolean;
+begin
+  Result := False;
 end;
 
 constructor TZAdoPlainDriver.Create;
 begin
+  LoadCodePages;
 end;
 
 function TZAdoPlainDriver.GetProtocol: string;

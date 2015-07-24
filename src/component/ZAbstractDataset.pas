@@ -8,7 +8,7 @@
 {*********************************************************}
 
 {@********************************************************}
-{    Copyright (c) 1999-2006 Zeos Development Group       }
+{    Copyright (c) 1999-2012 Zeos Development Group       }
 {                                                         }
 { License Agreement:                                      }
 {                                                         }
@@ -40,12 +40,10 @@
 {                                                         }
 { The project web site is located on:                     }
 {   http://zeos.firmos.at  (FORUM)                        }
-{   http://zeosbugs.firmos.at (BUGTRACKER)                }
-{   svn://zeos.firmos.at/zeos/trunk (SVN Repository)      }
+{   http://sourceforge.net/p/zeoslib/tickets/ (BUGTRACKER)}
+{   svn://svn.code.sf.net/p/zeoslib/code-0/trunk (SVN)    }
 {                                                         }
 {   http://www.sourceforge.net/projects/zeoslib.          }
-{   http://www.zeoslib.sourceforge.net                    }
-{                                                         }
 {                                                         }
 {                                                         }
 {                                 Zeos Development Group. }
@@ -59,9 +57,9 @@ interface
 
 uses
   Variants,
-  SysUtils, DB, Classes, ZSqlUpdate, ZDbcIntfs, ZVariant,
-  ZDbcCache, ZDbcCachedResultSet, ZAbstractRODataset,
-  ZCompatibility, ZSequence;
+  SysUtils,  Classes, {$IFDEF MSEgui}mdb, mclasses{$ELSE}DB{$ENDIF},
+  ZSqlUpdate, ZDbcIntfs, ZVariant, ZDbcCache, ZDbcCachedResultSet,
+  ZAbstractRODataset, ZCompatibility, ZSequence;
 
 type
   {$IFDEF oldFPC} // added in 2006, probably pre 2.2.4
@@ -84,6 +82,7 @@ type
   }
   TZAbstractDataset = class(TZAbstractRODataset)
   private
+    FCachedUpdatesBeforeMasterUpdate: Boolean;
     FCachedUpdates: Boolean;
     FUpdateObject: TZUpdateSQL;
     FCachedResultSet: IZCachedResultSet;
@@ -97,7 +96,8 @@ type
 
     FBeforeApplyUpdates: TNotifyEvent; {bangfauzan addition}
     FAfterApplyUpdates: TNotifyEvent; {bangfauzan addition}
-
+    FDetailDataSets: TList;
+    FDetailCachedUpdates: array of Boolean;
   private
     function GetUpdatesPending: Boolean;
     procedure SetUpdateObject(Value: TZUpdateSQL);
@@ -138,7 +138,8 @@ type
     function PSUpdateRecord(UpdateKind: TUpdateKind;
       Delta: TDataSet): Boolean; override;
   {$ENDIF}
-
+    procedure RegisterDetailDataSet(Value: TZAbstractDataset; CachedUpdates: Boolean);
+    procedure DisposeCachedUpdates;
   public
     constructor Create(AOwner: TComponent); override;
     destructor Destroy; override;
@@ -173,7 +174,6 @@ type
 
 
   published
-//    property Constraints;
     property BeforeInsert;
     property AfterInsert;
     property BeforeEdit;
@@ -207,6 +207,7 @@ begin
   FWhereMode := wmWhereKeyOnly;
   FUpdateMode := umUpdateChanged;
   RequestLive := True;
+  FDetailDataSets := TList.Create;
 end;
 
 {**
@@ -214,6 +215,7 @@ end;
 }
 destructor TZAbstractDataset.Destroy;
 begin
+  FreeAndNil(FDetailDataSets);
   inherited Destroy;
 end;
 
@@ -347,10 +349,13 @@ procedure TZAbstractDataset.InternalClose;
 begin
   inherited InternalClose;
 
-  if Assigned(CachedResultSet) then
-    CachedResultSet.Close;
-  CachedResultSet := nil;
-  CachedResolver := nil;
+  if not DoNotCloseResultset then
+  begin
+    if Assigned(CachedResultSet) then
+      CachedResultSet.Close;
+    CachedResultSet := nil;
+    CachedResolver := nil;
+  end;
 end;
 
 {**
@@ -363,6 +368,9 @@ end;
 {**
   Performs an internal record updates.
 }
+{$IFDEF FPC}
+  {$HINTS OFF}
+{$ENDIF}
 procedure TZAbstractDataset.InternalUpdate;
 var
   RowNo: Integer;
@@ -388,6 +396,9 @@ begin
     end;
   end;
 end;
+{$IFDEF FPC}
+  {$HINTS ON}
+{$ENDIF}
 
 {**
   Performs an internal adding a new record.
@@ -395,6 +406,9 @@ end;
   @param Append <code>True</code> if record should be added to the end
     of the result set.
 }
+{$IFDEF FPC}
+  {$HINTS OFF}
+{$ENDIF}
 procedure TZAbstractDataset.InternalAddRecord(Buffer: Pointer; Append: Boolean);
 var
   RowNo: Integer;
@@ -435,10 +449,17 @@ begin
     end;
   end;
 end;
+{$IFDEF FPC}
+  {$HINTS ON}
+{$ENDIF}
+
 
 {**
   Performs an internal post updates.
 }
+{$IFDEF FPC}
+  {$HINTS OFF}
+{$ENDIF}
 procedure TZAbstractDataset.InternalPost;
 var
   RowBuffer: PZRowBuffer;
@@ -447,6 +468,7 @@ var
   {$ELSE}
   BM:TBookMarkStr;
   {$ENDIF}
+  I: Integer;
 begin
   if (FSequenceField <> '') and Assigned(FSequence) then
   begin
@@ -456,15 +478,42 @@ begin
 
   //inherited;  //AVZ - Firebird defaults come through when this is commented out
 
+
   if not GetActiveBuffer(RowBuffer) then
     raise EZDatabaseError.Create(SInternalError);
 
   Connection.ShowSqlHourGlass;
   try
+    //revert Master Detail updates makes it possible to update
+    // with ForeignKey contraints
+    if Assigned(MasterLink.DataSet) then
+      if (TDataSet(MasterLink.DataSet) is TZAbstractDataset) then
+        if ( doUpdateMasterFirst in TZAbstractDataset(MasterLink.DataSet).Options )
+         or ( doUpdateMasterFirst in Options ) then
+        begin //This is an detail-table
+          FCachedUpdatesBeforeMasterUpdate := CachedUpdates; //buffer old value
+          if not(CachedUpdates) then
+            CachedUpdates := True; //Execute without writing
+          TZAbstractDataset(MasterLink.DataSet).RegisterDetailDataSet(Self,
+            TZAbstractDataset(MasterLink.DataSet).CachedUpdates);
+        end;
+
     if State = dsInsert then
       InternalAddRecord(RowBuffer, False)
     else
       InternalUpdate;
+
+    // Apply Detail updates now
+    if FDetailDataSets.Count > 0 then
+      for i := 0 to FDetailDataSets.Count -1 do
+        if (TDataSet(FDetailDataSets.Items[i]) is TZAbstractDataset) then
+          begin
+            if not (Self.FDetailCachedUpdates[I]) then
+              TZAbstractDataset(TDataSet(FDetailDataSets.Items[i])).ApplyUpdates;
+            TZAbstractDataset(TDataSet(FDetailDataSets.Items[i])).CachedUpdates := Self.FDetailCachedUpdates[I];
+          end;
+    FDetailDataSets.Clear;
+    SetLength(FDetailCachedUpdates, 0);
 
     {BUG-FIX: bangfauzan addition}
     if (SortedFields <> '') and not (doDontSortOnPost in Options) then
@@ -472,29 +521,22 @@ begin
       FreeFieldBuffers;
       SetState(dsBrowse);
       Resync([]);
-      {$IFDEF WITH_TBOOKMARK}
-      BM := GetBookmark;
-      {$ELSE}
       BM := Bookmark;
-      {$ENDIF}
       if BookmarkValid({$IFDEF WITH_TBOOKMARK}BM{$ELSE}@BM{$ENDIF}) Then
       begin
         InternalGotoBookmark({$IFDEF WITH_TBOOKMARK}BM{$ELSE}@BM{$ENDIF});
-        Resync([rmExact, rmCenter]); 
-      end; 
+        Resync([rmExact, rmCenter]);
+      end;
       DisableControls;
       InternalSort;
-      {$IFDEF WITH_TBOOKMARK}
-      GotoBookmark(BM);
-      {$ELSE}
-      Bookmark := BM;
-      {$ENDIF}
+      BookMark:=BM;
       UpdateCursorPos;
       EnableControls;
     end;
     {end of bangfauzan addition}
   finally
     Connection.HideSqlHourGlass;
+    //DetailLinks.Free;
   end;
 end;
 
@@ -549,6 +591,9 @@ begin
          RowAccessor);
   end;
 end;
+{$IFDEF FPC}
+  {$HINTS ON}
+{$ENDIF}
 
 {**
   Processes component notifications.
@@ -590,7 +635,11 @@ begin
     DoBeforeApplyUpdates; {bangfauzan addition}
 
     if CachedResultSet <> nil then
-      CachedResultSet.PostUpdates;
+      if Connection.AutoCommit and
+        not ( Connection.TransactIsolationLevel in [tiReadCommitted, tiSerializable] ) then
+        CachedResultSet.PostUpdates
+      else
+        CachedResultSet.PostUpdatesCached;
 
     if not (State in [dsInactive]) then
       Resync([]);
@@ -600,6 +649,16 @@ begin
   finally
     Connection.HideSqlHourGlass;
   end;
+end;
+
+{**
+   Dispose all cached updates stored in the resultset.
+}
+procedure TZAbstractDataset.DisposeCachedUpdates;
+begin
+  if Active then
+    if Assigned(CachedResultSet) then
+      CachedResultSet.DisposeCachedUpdates;
 end;
 
 {**
@@ -637,29 +696,32 @@ var
     i: Integer;
     ostate:TDataSetState;
 begin
-  if State=dsBrowse then begin
-   if CachedResultSet <> nil then begin
-    UpdateCursorPos;
-    RowNo := Integer(CurrentRows[CurrentRow - 1]);
-    CachedResultSet.MoveAbsolute(RowNo);
-    CachedResultSet.RefreshRow;
-    if not (State in [dsInactive]) then begin
-     if RefreshDetails then begin
-      Resync([]);
-     end else begin
-      FetchFromResultSet(ResultSet, FieldsLookupTable, Fields, RowAccessor);
-      ostate:=State;
-      SetTempState(dsInternalCalc);
-      try
-       for I := 0 to Fields.Count - 1 do begin
-        DataEvent(deFieldChange,ULong(Fields[i]));
-       end;
-      finally
-       RestoreState(ostate);
+  if State=dsBrowse then
+  begin
+    if CachedResultSet <> nil then
+    begin
+      UpdateCursorPos;
+      RowNo := Integer(CurrentRows[CurrentRow - 1]);
+      CachedResultSet.MoveAbsolute(RowNo);
+      CachedResultSet.RefreshRow;
+      if not (State in [dsInactive]) then
+      begin
+        if RefreshDetails then
+          Resync([])
+        else
+        begin
+          FetchFromResultSet(ResultSet, FieldsLookupTable, Fields, RowAccessor);
+          ostate:=State;
+          SetTempState(dsInternalCalc);
+          try
+            for I := 0 to Fields.Count - 1 do
+              DataEvent(deFieldChange,ULong(Fields[i]));
+          finally
+            RestoreState(ostate);
+          end;
+        end;
       end;
-     end;
     end;
-   end;
   end
   else
   begin
@@ -709,6 +771,9 @@ end;
   @param Delta a dataset where the current position shows the row to update.
   @returns <code>True</code> if updates were successfully applied.
 }
+{$IFDEF FPC}
+  {$HINTS OFF}
+{$ENDIF}
 function TZAbstractDataset.PSUpdateRecord(UpdateKind: TUpdateKind;
   Delta: TDataSet): Boolean;
 
@@ -876,8 +941,18 @@ begin
     Self.Active := ActiveMode;
   end;
 end;
+{$IFDEF FPC}
+  {$HINTS ON}
+{$ENDIF}
 
 {$ENDIF}
+procedure TZAbstractDataset.RegisterDetailDataSet(Value: TZAbstractDataset;
+  CachedUpdates: Boolean);
+begin
+  FDetailDataSets.Add(Value);
+  SetLength(Self.FDetailCachedUpdates, Length(FDetailCachedUpdates)+1);
+  FDetailCachedUpdates[High(FDetailCachedUpdates)] := CachedUpdates;
+end;
 
 {============================bangfauzan addition===================}
 
