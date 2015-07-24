@@ -72,7 +72,7 @@ type
   TZSQLiteQuoteState = class (TZQuoteState)
   public
     function NextToken(Stream: TStream; FirstChar: Char;
-      Tokenizer: TZTokenizer): TZToken; override;
+      {%H-}Tokenizer: TZTokenizer): TZToken; override;
 
     function EncodeString(const Value: string; QuoteChar: Char): string; override;
     function DecodeString(const Value: string; QuoteChar: Char): string; override;
@@ -102,8 +102,8 @@ type
 
   {** Implements a default tokenizer object. }
   TZSQLiteTokenizer = class (TZTokenizer)
-  public
-    constructor Create;
+  protected
+    procedure CreateTokenStates; override;
   end;
 
 implementation
@@ -155,7 +155,7 @@ begin
     FloatPoint := LastChar = '.';
     if FloatPoint then
     begin
-      Stream.Read(TempChar, SizeOf(Char));
+      Stream.Read(TempChar{%H-}, SizeOf(Char));
       Result.Value := Result.Value + TempChar;
     end;
   end;
@@ -212,7 +212,7 @@ var
 begin
   Result.Value := FirstChar;
   LastChar := #0;
-  while Stream.Read(ReadChar, SizeOf(Char)) > 0 do
+  while Stream.Read(ReadChar{%H-}, SizeOf(Char)) > 0 do
   begin
     if ((LastChar = FirstChar) and (ReadChar <> FirstChar)
       and (FirstChar <> '[')) or ((FirstChar = '[') and (LastChar = ']')) then
@@ -288,7 +288,7 @@ begin
 
   if FirstChar = '-' then
   begin
-    ReadNum := Stream.Read(ReadChar, SizeOf(Char));
+    ReadNum := Stream.Read(ReadChar{%H-}, SizeOf(Char));
     if (ReadNum > 0) and (ReadChar = '-') then
     begin
       Result.TokenType := ttComment;
@@ -357,7 +357,7 @@ end;
   Constructs a tokenizer with a default state table (as
   described in the class comment).
 }
-constructor TZSQLiteTokenizer.Create;
+procedure TZSQLiteTokenizer.CreateTokenStates;
 begin
   EscapeState := TZEscapeState.Create;
   WhitespaceState := TZWhitespaceState.Create;

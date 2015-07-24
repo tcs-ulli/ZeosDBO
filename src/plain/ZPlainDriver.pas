@@ -72,13 +72,6 @@ type
       CtrlsCPType: TZControlsCodePage = cCP_UTF16): TStringDynArray;
     function ValidateCharEncoding(const CharacterSetName: String; const DoArrange: Boolean = False): PZCodePage; overload;
     function ValidateCharEncoding(const CharacterSetID: Integer; const DoArrange: Boolean = False): PZCodePage; overload;
-    function ZDbcString(const Ansi: RawByteString; ConSettings: PZConSettings): String;
-    function ZPlainString(const AStr: String; ConSettings: PZConSettings): RawByteString; overload;
-    function ZPlainString(const AStr: WideString; ConSettings: PZConSettings): RawByteString; overload;
-    function ZPlainString(const AStr: String; ConSettings: PZConSettings; const ToCP: Word): RawByteString; overload;
-    function ZDbcUnicodeString(const AStr: RawByteString; const FromCP: Word): ZWideString; overload;
-    function GetPrepreparedSQL(Handle: Pointer; const SQL: String;
-    ConSettings: PZConSettings; out LogSQL: String): RawByteString;
     function EscapeString(Handle: Pointer; const Value: ZWideString;
       ConSettings: PZConSettings): ZWideString; overload;
     function EscapeString(Handle: Pointer; const Value: RawByteString;
@@ -90,10 +83,9 @@ type
   {ADDED by fduenas 15-06-2006}
   {** Base class of a generic plain driver with TZNativeLibraryLoader-object. }
 
-  TZAbstractPlainDriver = class(TZCodePagedObject, IZPlainDriver)
+  TZAbstractPlainDriver = class(TInterfacedObject, IZPlainDriver)
   protected
     FCodePages: array of TZCodePage;
-    FTokenizer: IZTokenizer;
     FLoader: TZNativeLibraryLoader;
     procedure LoadApi; virtual;
     function IsAnsiDriver: Boolean; virtual;
@@ -102,13 +94,10 @@ type
     function GetUnicodeCodePageName: String; virtual;
     function ValidateCharEncoding(const CharacterSetName: String; const DoArrange: Boolean = False): PZCodePage; overload;
     function ValidateCharEncoding(const CharacterSetID: Integer; const DoArrange: Boolean = False): PZCodePage; overload;
-    function GetPrepreparedSQL(Handle: Pointer; const SQL: String;
-      ConSettings: PZConSettings; out LogSQL: String): RawByteString; virtual;
     function EscapeString(Handle: Pointer; const Value: ZWideString;
       ConSettings: PZConSettings): ZWideString; overload;
     function EscapeString(Handle: Pointer; const Value: RawByteString;
       ConSettings: PZConSettings; WasEncoded: Boolean = False): RawByteString; overload; virtual;
-    function GetTokenizer: IZTokenizer;
   public
     constructor Create;
     constructor CreateWithLibrary(const LibName : String);
@@ -221,55 +210,17 @@ begin
     ValidateCharEncoding(Result^.ZAlias); //recalls em selves
 end;
 
-function TZAbstractPlainDriver.GetPrepreparedSQL(Handle: Pointer;
-  const SQL: String; ConSettings: PZConSettings; out LogSQL: String): RawByteString;
-var
-  SQLTokens: TZTokenDynArray;
-  i: Integer;
-begin
-  Result := '';
-  if ConSettings.AutoEncode then
-  begin
-    SQLTokens := FTokenizer.TokenizeBuffer(SQL, [toSkipEOF]); //Disassembles the Query
-    for i := Low(SQLTokens) to high(SQLTokens) do  //Assembles the Query
-    begin
-      case (SQLTokens[i].TokenType) of
-        ttEscape:
-          Result := Result + {$IFDEF UNICODE}ZPlainString(SQLTokens[i].Value,
-            ConSettings){$ELSE}SQLTokens[i].Value{$ENDIF};
-        ttQuoted,  ttWord, ttQuotedIdentifier, ttKeyword:
-          Result := Result + ZPlainString(SQLTokens[i].Value, ConSettings)
-        else
-          Result := Result + RawByteString(SQLTokens[i].Value);
-      end;
-    end;
-  end
-  else
-    {$IFDEF UNICODE}
-    Result := ZPlainString(SQL, ConSettings);
-    {$ELSE}
-    Result := SQL;
-    {$ENDIF}
-  LogSQL := String(Result);
-end;
-
 {$IFDEF FPC}
   {$HINTS OFF}
 {$ENDIF}
 function TZAbstractPlainDriver.EscapeString(Handle: Pointer;
   const Value: ZWideString; ConSettings: PZConSettings): ZWideString;
-var
-  StrFrom: RawByteString;
-  Outbuffer: RawByteString;
 begin
-  StrFrom := ZPlainString(Value, ConSettings);
-  Outbuffer := EscapeString(Handle, StrFrom, ConSettings, True);
-  {$IFDEF UNICODE}
-  Result := ZDbcString(OutBuffer, ConSettings);
-  {$ELSE}
-  Result := ZDbcUnicodeString(Outbuffer, ConSettings.ClientCodePage.CP);
-  {$ENDIF}
+  Result := ConSettings^.ConvFuncs.ZRawToUnicode(EscapeString(Handle,
+    ConSettings^.ConvFuncs.ZUnicodeToRaw(Value, ConSettings^.ClientCodePage^.CP),
+    ConSettings, True) , ConSettings^.ClientCodePage^.CP);
 end;
+
 function TZAbstractPlainDriver.EscapeString(Handle: Pointer;
   const Value: RawByteString; ConSettings: PZConSettings; WasEncoded: Boolean = False): RawByteString;
 begin
@@ -278,11 +229,6 @@ end;
 {$IFDEF FPC}
   {$HINTS ON}
 {$ENDIF}
-
-function TZAbstractPlainDriver.GetTokenizer: IZTokenizer;
-begin
-  Result := FTokenizer;
-end;
 
 procedure TZAbstractPlainDriver.AddCodePage(const Name: String;
       const ID:  Integer; Encoding: TZCharEncoding = ceAnsi;
@@ -402,13 +348,11 @@ end;
 constructor TZAbstractPlainDriver.Create;
 begin
   inherited Create;
-  FTokenizer := TZTokenizer.Create;
 end;
 
 destructor TZAbstractPlainDriver.Destroy;
 begin
   SetLength(FCodePages, 0);
-  FTokenizer := nil;
   if Assigned(FLoader) then
     FreeAndNil(FLoader);
   inherited Destroy;

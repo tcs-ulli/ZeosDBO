@@ -55,7 +55,7 @@ interface
 implementation
 
 uses
-  Classes, {$IFDEF MSEgui}mclasses,{$ENDIF} Contnrs, DateUtils, SysUtils, Types,
+  Classes, {$IFDEF MSEgui}mclasses,{$ENDIF} Contnrs, DateUtils, SysUtils,
   SyncObjs,
   ZCompatibility, ZClasses, ZURL, ZDbcConnection, ZDbcIntfs, ZPlainDriver,
   ZMessages, ZVariant;
@@ -132,6 +132,7 @@ type
     procedure CheckCharEncoding(CharSet: String;
       const DoArrange: Boolean = False);
     function GetClientCodePageInformations: PZCodePage; //EgonHugeist
+    function GetClientVariantManager: IZClientVariantManager;
     function GetAutoEncodeStrings: Boolean; //EgonHugeist
     procedure SetAutoEncodeStrings(const Value: Boolean);
     function CreateStatement: IZStatement;
@@ -175,7 +176,7 @@ type
     constructor Create(const ConnectionPool: TConnectionPool);
     destructor Destroy; override;
     function GetBinaryEscapeString(const Value: RawByteString): String; overload;
-    function GetBinaryEscapeString(const Value: TByteDynArray): String; overload;
+    function GetBinaryEscapeString(const Value: TBytes): String; overload;
     function GetEscapeString(const Value: ZWideString): ZWideString; overload; virtual;
     function GetEscapeString(const Value: RawByteString): RawByteString; overload; virtual;
     function GetEncoding: TZCharEncoding;
@@ -682,7 +683,7 @@ begin
   Result := GetConnection.GetBinaryEscapeString(Value);
 end;
 
-function TZDbcPooledConnection.GetBinaryEscapeString(const Value: TByteDynArray): String;
+function TZDbcPooledConnection.GetBinaryEscapeString(const Value: TBytes): String;
 begin
   Result := GetConnection.GetBinaryEscapeString(Value);
 end;
@@ -699,7 +700,7 @@ end;
 
 function TZDbcPooledConnection.GetEncoding: TZCharEncoding;
 begin
-  Result := ConSettings.ClientCodePage^.Encoding;
+  Result := ConSettings^.ClientCodePage^.Encoding;
 end;
 
 function TZDbcPooledConnection.GetConSettings: PZConSettings;
@@ -729,7 +730,12 @@ end;
 }
 function TZDbcPooledConnection.GetClientCodePageInformations: PZCodePage; //EgonHugeist
 begin
-  Result := ConSettings.ClientCodePage
+  Result := ConSettings^.ClientCodePage
+end;
+
+function TZDbcPooledConnection.GetClientVariantManager: IZClientVariantManager;
+begin
+  Result := GetConnection.GetClientVariantManager;
 end;
 
 { TZDbcPooledConnectionDriver }
@@ -882,7 +888,7 @@ begin
         if (FConnectionPool.FConnections[I] <> nil) and
            (not FConnectionPool.FSlotsInUse[I]) and
            (FConnectionPool.FConnectionsReturnTimes[I] <> 0) and
-           (MilliSecondsBetween(FConnectionPool.FConnectionsReturnTimes[I], Now) > FConnectionPool.FConnectionTimeout * 1000) then
+           (MilliSecondsBetween(FConnectionPool.FConnectionsReturnTimes[I], Now) {%H-}> FConnectionPool.FConnectionTimeout * 1000) then
              FConnectionPool.FConnections[I] := nil;
     finally
       FConnectionPool.FCriticalSection.Leave;

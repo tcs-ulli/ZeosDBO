@@ -75,7 +75,7 @@ function ConvertAdoToTypeName(FieldType: SmallInt): string;
   @return a SQL undepended type.
 }
 function ConvertAdoToSqlType(const FieldType: SmallInt;
-  const CtrlsCPType: TZControlsCodePage; UseCtrsCPType: Boolean = True): TZSQLType;
+  const CtrlsCPType: TZControlsCodePage): TZSQLType;
 
 {**
   Converts a Zeos type into ADO types.
@@ -153,7 +153,7 @@ implementation
 
 uses
   ComObj, OleDB, Variants,
-  ZSysUtils, ZDbcAdoResultSet, ZDbcCachedResultSet, ZDbcResultSet, ZEncoding;
+  ZSysUtils, ZDbcAdoResultSet, ZDbcCachedResultSet, ZDbcResultSet, ZDbcUtils;
 
 {**
   Converts an ADO native types into string related.
@@ -214,50 +214,44 @@ end;
   @return a SQL undepended type.
 }
 function ConvertAdoToSqlType(const FieldType: SmallInt;
-  const CtrlsCPType: TZControlsCodePage; UseCtrsCPType: Boolean = True): TZSQLType;
+  const CtrlsCPType: TZControlsCodePage): TZSQLType;
 begin
+  //http://msdn.microsoft.com/en-us/library/windows/desktop/ms675318%28v=vs.85%29.aspx
   case FieldType of
-    adChar, adVarChar, adBSTR: Result := stString;
-    adWChar, adVarWChar: Result := stUnicodeString;
+    adChar, adVarChar,
+    adWChar, adVarWChar, adBSTR: Result := stString;
     adBoolean: Result := stBoolean;
-//Bug #889223, bug with tinyint on mssql
-//    adTinyInt, adUnsignedTinyInt: Result := stByte;
-    adTinyInt, adUnsignedTinyInt: Result := stShort;
-    adSmallInt, adUnsignedSmallInt: Result := stShort;
-    adInteger, adUnsignedInt: Result := stInteger;
-    adBigInt, adUnsignedBigInt: Result := stLong;
+    adTinyInt: Result := stShort;
+    adUnsignedTinyInt: Result := stByte;
+    adSmallInt: Result := stSmall;
+    adUnsignedSmallInt: Result := stWord;
+    adInteger, adError{Indicates a 32-bit error code}: Result := stInteger;
+    adUnsignedInt: Result := stLongWord;
+    adBigInt: Result := stLong;
+    adUnsignedBigInt: Result := stULong;
     adSingle: Result := stFloat;
     adDouble: Result := stDouble;
     adDecimal: Result := stBigDecimal;
     adNumeric, adVarNumeric: Result := stBigDecimal;
-    adCurrency: Result := stBigDecimal;
+    adCurrency: Result := stCurrency;
     adDBDate: Result := stDate;
     adDBTime: Result := stTime;
     adDate : Result := stDate;
     adDBTimeStamp, adFileTime: Result := stTimestamp;
     adLongVarChar: Result := stAsciiStream;
-    adLongVarWChar: Result := stUnicodeStream;
+    adLongVarWChar: Result := stAsciiStream;
     adBinary, adVarBinary: Result := stBytes;
     adLongVarBinary: Result := stBinaryStream;
     adGUID: Result := stGUID;
-
-    adEmpty, adError, AdArray, adChapter, adIDispatch, adIUnknown,
-    adPropVariant, adUserDefined, adVariant: Result := stString;
+    adEmpty, AdArray, adChapter,
+    adPropVariant, adUserDefined: Result := stString;
   else
-    Result := stString;
+    {adIDispatch, adIUnknown, adVariant: reserved, nut used tpyes}Result := stUnknown
   end;
-  if UseCtrsCPType then
-    case CtrlsCPType of
-      cCP_UTF16:
-        case Result of
-          stString: Result := stUnicodeString;
-          stAsciiStream: Result := stUnicodeStream;
-        end;
-      else
-        case Result of
-          stUnicodeString: Result := stString;
-          stUnicodeStream: Result := stAsciiStream;
-        end;
+  if CtrlsCPType = cCP_UTF16 then
+    case Result of
+      stString: Result := stUnicodeString;
+      stAsciiStream: Result := stUnicodeStream;
     end;
 end;
 
@@ -273,7 +267,7 @@ begin
     stUnicodeString: Result := adVarWChar;
     stBoolean: Result := adBoolean;
     stByte: Result := adTinyInt;
-    stShort: Result := adSmallInt;
+    stSmall: Result := adSmallInt;
     stInteger: Result := adInteger;
     stLong: Result := adBigInt;
     stBigDecimal: Result := adDecimal;
@@ -494,31 +488,39 @@ begin
   if not (RetValue.VType = vtNull) and (RetValue.VType = vtInterface) and
     (SQLType in [stAsciiStream, stUnicodeStream, stBinaryStream]) then
   begin
-    B := DefVarManager.GetAsInterface(Value) as IZBlob;
+    B := SoftVarManager.GetAsInterface(Value) as IZBlob;
     if B.IsEmpty then
       RetValue := NullVariant
     else
       case SQLType of
-        stAsciiStream:
+        stAsciiStream, stUnicodeStream:
+          if B.IsClob then
           begin
-            {$IFDEF UNICODE}
-            DefVarManager.SetAsString(RetValue, String(B.GetString));
-            {$ELSE}
-            DefVarManager.SetAsString(RetValue, GetValidatedAnsiStringFromBuffer(B.GetBuffer, B.Length, Connection.GetConSettings));
-            {$ENDIF}
-            TmpSQLType := stString;
-          end;
-        stUnicodeStream:
-          begin
-            if B.Connection = nil then
-              B := TZAbstractBlob.CreateWithData(B.GetBuffer, B.Length, Connection, B.WasDecoded);
-            DefVarManager.SetAsUnicodeString(RetValue, B.GetUnicodeString);
+            SoftVarManager.SetAsUnicodeString(RetValue, B.GetUnicodeString);
             TmpSQLType := stUnicodeString;
+          end
+          else
+          begin
+            if SQLType = stAsciiStream then
+            begin
+              {$IFDEF UNICODE}
+              SoftVarManager.SetAsString(RetValue, String(B.GetString));
+              {$ELSE}
+              SoftVarManager.SetAsString(RetValue, GetValidatedAnsiStringFromBuffer(B.GetBuffer, B.Length, Connection.GetConSettings));
+              {$ENDIF}
+              TmpSQLType := stString;
+            end
+            else
+            begin
+              B := TZAbstractClob.CreateWithStream(GetValidatedUnicodeStream(B.GetBuffer, B.Length, Connection.GetConSettings, False), 1200{zCP_UTF16}, Connection.GetConSettings);
+              SoftVarManager.SetAsUnicodeString(RetValue, B.GetUnicodeString);
+              TmpSQLType := stUnicodeString;
+            end;
           end;
         stBinaryStream:
           begin
             if Assigned(B) then
-              DefVarManager.SetAsBytes(RetValue, B.GetBytes);
+              SoftVarManager.SetAsBytes(RetValue, B.GetBytes);
             TmpSQLType := stBytes;
           end;
       end;
@@ -530,43 +532,24 @@ begin
     vtBytes: V := SoftVarManager.GetAsBytes(RetValue);
     vtInteger: V := Integer(SoftVarManager.GetAsInteger(RetValue));
     vtFloat: V := SoftVarManager.GetAsFloat(RetValue);
-    vtString:
-      {$IFDEF UNICODE}
-      V := SoftVarManager.GetAsString(RetValue);
-      {$ELSE}
-      if ParamDirection = adParamInputOutput then //can't say why but bidirectional params need to be converted first.
-        //On the other hand they where not refreshed after second call! Is there a problem with Variant vs. OleVariant and strings?
-      begin
-        V := WideString(SoftVarManager.GetAsString(RetValue));
-        TmpSQLType := stUnicodeString;
-      end
-      else
-        if SQLType = stAsciiStream then
-          V := SoftVarManager.GetAsString(RetValue)
-        else
-          V := Connection.GetIZPlainDriver.ZPlainString(SoftVarManager.GetAsString(RetValue), Connection.GetConSettings);
-      {$ENDIF}
-    vtUnicodeString: V := WideString(SoftVarManager.GetAsUnicodeString(RetValue));
+    vtUnicodeString, vtString, vtAnsiString, vtUTF8String, vtRawByteString, vtCharRec:
+    begin
+      RetValue.VUnicodeString := Connection.GetClientVariantManager.GetAsUnicodeString(RetValue);
+      V := WideString(RetValue.VUnicodeString);
+    end;
     vtDateTime: V := TDateTime(SoftVarManager.GetAsDateTime(RetValue));
   end;
 
   S := 0; //init val
   case TmpSQLType of
-    stString:
+    stString, stUnicodeString:
       begin
-        S := Length(VarToStr(V));
-        if S = 0 then S := 1;
-        //V := Null; patch by zx - see http://zeos.firmos.at/viewtopic.php?t=1255
-      end;
-    stUnicodeString:
-      begin
-        S := Length(VarToWideStr(V))*2; //strange! Need size in bytes!!
+        S := Length(RetValue.VUnicodeString) shl 1; //strange! Need size in bytes!!
         if S = 0 then S := 1;
         //V := Null; patch by zx - see http://zeos.firmos.at/viewtopic.php?t=1255
       end;
     stBytes:
       begin
-        //V := StrToBytes(VarToStr(V));
         if (VarType(V) and varArray) <> 0 then
           S := VarArrayHighBound(V, 1) + 1;
         if S = 0 then V := Null;

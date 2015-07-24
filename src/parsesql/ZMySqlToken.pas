@@ -72,7 +72,7 @@ type
   TZMySQLQuoteState = class (TZQuoteState)
   public
     function NextToken(Stream: TStream; FirstChar: Char;
-      Tokenizer: TZTokenizer): TZToken; override;
+      {%H-}Tokenizer: TZTokenizer): TZToken; override;
 
     function EncodeString(const Value: string; QuoteChar: Char): string; override;
     function DecodeString(const Value: string; QuoteChar: Char): string; override;
@@ -102,13 +102,11 @@ type
 
   {** Implements a default tokenizer object. }
   TZMySQLTokenizer = class (TZTokenizer)
-  public
-    constructor Create;
+  protected
+    procedure CreateTokenStates; override;
   end;
 
 implementation
-
-uses StrUtils;
 
 { TZMySQLNumberState }
 
@@ -255,7 +253,7 @@ begin
 
   LastChar := #0;
 
-  while Stream.Read(ReadChar, SizeOf(Char)) > 0 do
+  while Stream.Read(ReadChar{%H-}, SizeOf(Char)) > 0 do
   begin
     //if ReadChar = QuoteChar then Inc(QuoteCount);
     if (LastChar = FirstChar) and (ReadChar <> FirstChar) then
@@ -330,7 +328,7 @@ begin
 
   if FirstChar = '-' then
   begin
-    ReadNum := Stream.Read(ReadChar, SizeOf(Char));
+    ReadNum := Stream.Read(ReadChar{%H-}, SizeOf(Char));
     if (ReadNum > 0) and (ReadChar = '-') then
     begin
       Result.TokenType := ttComment;
@@ -414,10 +412,9 @@ end;
 { TZMySQLTokenizer }
 
 {**
-  Constructs a tokenizer with a default state table (as
-  described in the class comment).
+  Constructs a default state table (as described in the class comment).
 }
-constructor TZMySQLTokenizer.Create;
+procedure TZMySQLTokenizer.CreateTokenStates;
 begin
   WhitespaceState := TZWhitespaceState.Create;
 

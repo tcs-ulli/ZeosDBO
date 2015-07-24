@@ -85,6 +85,7 @@ uses
   Classes, ZConnection, ZAbstractConnection, ZDataset, ZSqlUpdate, ZSqlProcessor,
   ZStoredProcedure, ZGroupedConnection, ZConnectionGroup ,
   ZSqlMonitor, ZSqlMetadata, ZSequence
+  {$IFDEF WITH_ZSTRINGFIELDS}, ZAbstractRODataset{$ENDIF}
   {$IFDEF ENABLE_INTERBASE}, ZIBEventAlerter {$ENDIF}
   {$IFDEF ENABLE_POSTGRESQL}, ZPgEventAlerter {$ENDIF};
 

@@ -77,29 +77,30 @@ type
     FPlainDriver: IZMySQLPlainDriver;
     FUseResult: Boolean;
     FIgnoreUseResult: Boolean;
-    TempStr: String;
+    FLengthArray: PMySQLLengthArray;
+    function GetBufferAndLength(ColumnIndex: Integer; var Len: ULong): PAnsiChar; {$IFDEF WITHINLINE}inline;{$ENDIF}
+    function GetBuffer(ColumnIndex: Integer): PAnsiChar; {$IFDEF WITHINLINE}inline;{$ENDIF}
   protected
     procedure Open; override;
     function InternalGetString(ColumnIndex: Integer): RawByteString; override;
   public
-    constructor Create(PlainDriver: IZMySQLPlainDriver; Statement: IZStatement;
-      SQL: string; Handle: PZMySQLConnect; UseResult: Boolean;
-      AffectedRows: PInteger; IgnoreUseResult: Boolean = False);
-    destructor Destroy; override;
-
+    constructor Create(const PlainDriver: IZMySQLPlainDriver;
+      const Statement: IZStatement; const SQL: string;
+      const Handle: PZMySQLConnect; const UseResult: Boolean;
+      AffectedRows: PInteger; const IgnoreUseResult: Boolean = False);
     procedure Close; override;
 
     function IsNull(ColumnIndex: Integer): Boolean; override;
-    function GetPChar(ColumnIndex: Integer): PChar; override;
+    function GetPAnsiChar(ColumnIndex: Integer; out Len: NativeUInt): PAnsiChar; override;
+    function GetPAnsiChar(ColumnIndex: Integer): PAnsiChar; override;
     function GetBoolean(ColumnIndex: Integer): Boolean; override;
-    function GetByte(ColumnIndex: Integer): Byte; override;
-    function GetShort(ColumnIndex: Integer): SmallInt; override;
     function GetInt(ColumnIndex: Integer): Integer; override;
     function GetLong(ColumnIndex: Integer): Int64; override;
+    function GetULong(ColumnIndex: Integer): UInt64; override;
     function GetFloat(ColumnIndex: Integer): Single; override;
     function GetDouble(ColumnIndex: Integer): Double; override;
     function GetBigDecimal(ColumnIndex: Integer): Extended; override;
-    function GetBytes(ColumnIndex: Integer): TByteDynArray; override;
+    function GetBytes(ColumnIndex: Integer): TBytes; override;
     function GetDate(ColumnIndex: Integer): TDateTime; override;
     function GetTime(ColumnIndex: Integer): TDateTime; override;
     function GetTimestamp(ColumnIndex: Integer): TDateTime; override;
@@ -120,29 +121,33 @@ type
     FUseResult: Boolean;
     FColumnArray: TZMysqlColumnBuffer;
     FBindBuffer: TZMySqlResultSetBindBuffer;
-    function bufferasint64(ColumnIndex: Integer): Int64;
-    function bufferasextended(ColumnIndex: Integer): Extended;
-
+    FMysqlFieldTypes: array of TMysqlFieldTypes;
+    FMySQLSignedFlags: TBooleanDynArray;
   protected
     function InternalGetString(ColumnIndex: Integer): RawByteString; override;
     procedure Open; override;
   public
     constructor Create(PlainDriver: IZMySQLPlainDriver; Statement: IZStatement;
       SQL: string; Handle: PZMySQLConnect; UseResult: Boolean);
-    destructor Destroy; override;
 
     procedure Close; override;
 
     function IsNull(ColumnIndex: Integer): Boolean; override;
+    function GetPAnsiChar(ColumnIndex: Integer; out Len: NativeUInt): PAnsiChar; override;
+    function GetPAnsiChar(ColumnIndex: Integer): PAnsiChar; override;
     function GetBoolean(ColumnIndex: Integer): Boolean; override;
     function GetByte(ColumnIndex: Integer): Byte; override;
-    function GetShort(ColumnIndex: Integer): SmallInt; override;
+    function GetShort(ColumnIndex: Integer): ShortInt; override;
+    function GetWord(ColumnIndex: Integer): Word; override;
+    function GetSmall(ColumnIndex: Integer): SmallInt; override;
+    function GetUInt(ColumnIndex: Integer): LongWord; override;
     function GetInt(ColumnIndex: Integer): Integer; override;
+    function GetULong(ColumnIndex: Integer): UInt64; override;
     function GetLong(ColumnIndex: Integer): Int64; override;
     function GetFloat(ColumnIndex: Integer): Single; override;
     function GetDouble(ColumnIndex: Integer): Double; override;
     function GetBigDecimal(ColumnIndex: Integer): Extended; override;
-    function GetBytes(ColumnIndex: Integer): TByteDynArray; override;
+    function GetBytes(ColumnIndex: Integer): TBytes; override;
     function GetDate(ColumnIndex: Integer): TDateTime; override;
     function GetTime(ColumnIndex: Integer): TDateTime; override;
     function GetTimestamp(ColumnIndex: Integer): TDateTime; override;
@@ -183,7 +188,8 @@ type
 implementation
 
 uses
-  Math, ZMessages, ZDbcMySqlUtils, ZMatchPattern, ZDbcMysql, ZEncoding, ZSysUtils;
+  Math, {$IFDEF WITH_UNITANSISTRINGS}AnsiStrings,{$ENDIF} ZFastCode,
+  ZSysUtils, ZMessages, ZDbcMySqlUtils, ZDbcMysql, ZEncoding, ZDbcUtils;
 
 { TZMySQLResultSetMetadata }
 
@@ -196,7 +202,7 @@ function TZMySQLResultSetMetadata.GetColumnType(Column: Integer): TZSQLType;
 begin
   if not Loaded then
      LoadColumns;
-  Result := TZColumnInfo(ResultSet.ColumnsInfo[Column - 1]).ColumnType;
+  Result := TZColumnInfo(ResultSet.ColumnsInfo[Column{$IFNDEF GENERIC_INDEX} - 1{$ENDIF}]).ColumnType;
 end;
 
 { TZMySQLResultSet }
@@ -210,9 +216,10 @@ end;
   @param UseResult <code>True</code> to use results,
     <code>False</code> to store result.
 }
-constructor TZMySQLResultSet.Create(PlainDriver: IZMySQLPlainDriver;
-  Statement: IZStatement; SQL: string; Handle: PZMySQLConnect;
-  UseResult: Boolean; AffectedRows: PInteger; IgnoreUseResult: Boolean = False);
+constructor TZMySQLResultSet.Create(const PlainDriver: IZMySQLPlainDriver;
+  const Statement: IZStatement; const SQL: string;
+  const Handle: PZMySQLConnect; const UseResult: Boolean;
+  AffectedRows: PInteger; const IgnoreUseResult: Boolean = False);
 begin
   inherited Create(Statement, SQL, TZMySQLResultSetMetadata.Create(
     Statement.GetConnection.GetMetadata, SQL, Self),
@@ -231,14 +238,34 @@ begin
     AffectedRows^ := LastRowNo;
 end;
 
-{**
-  Destroys this object and cleanups the memory.
-}
-destructor TZMySQLResultSet.Destroy;
+function TZMySQLResultSet.GetBufferAndLength(ColumnIndex: Integer; var Len: ULong): PAnsiChar;
 begin
-  inherited Destroy;
+{$IFNDEF DISABLE_CHECKING}
+  CheckClosed;
+  if FRowHandle = nil then
+    raise EZSQLException.Create(SRowDataIsNotAvailable);
+{$ENDIF}
+  {$IFNDEF GENERIC_INDEX}
+  ColumnIndex := ColumnIndex - 1;
+  {$ENDIF}
+  Len := FLengthArray^[ColumnIndex];
+  Result := FPlainDriver.GetFieldData(FRowHandle, ColumnIndex);
+  LastWasNull := Result = nil;
 end;
 
+function TZMySQLResultSet.GetBuffer(ColumnIndex: Integer): PAnsiChar;
+begin
+{$IFNDEF DISABLE_CHECKING}
+  CheckClosed;
+  if FRowHandle = nil then
+    raise EZSQLException.Create(SRowDataIsNotAvailable);
+{$ENDIF}
+  {$IFNDEF GENERIC_INDEX}
+  ColumnIndex := ColumnIndex - 1;
+  {$ENDIF}
+  Result := FPlainDriver.GetFieldData(FRowHandle, ColumnIndex);
+  LastWasNull := Result = nil;
+end;
 {**
   Opens this recordset.
 }
@@ -324,23 +351,31 @@ end;
     value returned is <code>true</code>. <code>false</code> otherwise.
 }
 function TZMySQLResultSet.IsNull(ColumnIndex: Integer): Boolean;
-var
-   Temp: PAnsiChar;
 begin
 {$IFNDEF DISABLE_CHECKING}
   CheckClosed;
   if FRowHandle = nil then
     raise EZSQLException.Create(SRowDataIsNotAvailable);
 {$ENDIF}
+  Result := (GetBuffer(ColumnIndex) = nil);
+end;
 
-  Temp := FPlainDriver.GetFieldData(FRowHandle, ColumnIndex - 1);
-  Result := (Temp = nil);
-  if not Result and (TZAbstractResultSetMetadata(Metadata).
-    GetColumnType(ColumnIndex) in [stDate, stTimestamp]) then
-  begin
-    Result := (AnsiSQLDateToDateTime(String(Temp)) = 0)
-      and (TimestampStrToDateTime(String(Temp)) = 0);
-  end;
+{**
+  Gets the value of the designated column in the current row
+  of this <code>ResultSet</code> object as
+  a <code>PAnsiChar</code> in the Delphi programming language.
+
+  @param columnIndex the first column is 1, the second is 2, ...
+  @param Len the Length of the PAnsiChar String
+  @return the column value; if the value is SQL <code>NULL</code>, the
+    value returned is <code>null</code>
+}
+function TZMySQLResultSet.GetPAnsiChar(ColumnIndex: Integer; out Len: NativeUInt): PAnsiChar;
+var
+  L: ULong;
+begin
+  Result := GetBufferAndLength(ColumnIndex, L{%H-});
+  Len := L;
 end;
 
 {**
@@ -352,17 +387,11 @@ end;
   @return the column value; if the value is SQL <code>NULL</code>, the
     value returned is <code>null</code>
 }
-function TZMySQLResultSet.GetPChar(ColumnIndex: Integer): PChar;
+function TZMySQLResultSet.GetPAnsiChar(ColumnIndex: Integer): PAnsiChar;
+var
+  Len: ULong;
 begin
-{$IFNDEF DISABLE_CHECKING}
-  CheckClosed;
-  if FRowHandle = nil then
-    raise EZSQLException.Create(SRowDataIsNotAvailable);
-{$ENDIF}
-
-  TempStr := ZDbcString(FPlainDriver.GetFieldData(FRowHandle, ColumnIndex - 1));
-  Result := PChar(TempStr);
-  LastWasNull := Result = nil;
+  Result := GetBufferAndLength(ColumnIndex, Len{%H-});
 end;
 
 {**
@@ -376,34 +405,14 @@ end;
 }
 function TZMySQLResultSet.InternalGetString(ColumnIndex: Integer): RawByteString;
 var
-  LengthPointer: PULong;
-  Length: ULong;
+  Len: ULong;
   Buffer: PAnsiChar;
 begin
-{$IFNDEF DISABLE_CHECKING}
-  CheckClosed;
-  if FRowHandle = nil then
-    raise EZSQLException.Create(SRowDataIsNotAvailable);
-{$ENDIF}
-
-  ColumnIndex := ColumnIndex - 1;
-  LengthPointer := FPlainDriver.FetchLengths(FQueryHandle);
-  if LengthPointer <> nil then
-    Length  := PULong(NativeUint(LengthPointer) + NativeUInt(ColumnIndex) * SizeOf(ULOng))^
+  Buffer := GetBufferAndLength(ColumnIndex, Len{%H-});
+  if LastWasNull then
+    Result := ''
   else
-    Length := 0;
-  Buffer := FPlainDriver.GetFieldData(FRowHandle, ColumnIndex);
-  LastWasNull := Buffer = nil;
-  Result := '';
-  if not LastWasNull then
-  {$IFDEF WITH_RAWBYTESTRING}
-  begin
-    SetLength(Result, Length);
-    Move(Buffer^, PAnsiChar(Result)^, Length);
-  end;
-  {$ELSE}
-    SetString(Result, Buffer, Length);
-  {$ENDIF}
+    ZSetString(Buffer, Len, Result);
 end;
 
 {**
@@ -417,48 +426,17 @@ end;
 }
 function TZMySQLResultSet.GetBoolean(ColumnIndex: Integer): Boolean;
 var
-  Temp: string;
+  Buffer: PAnsiChar;
 begin
 {$IFNDEF DISABLE_CHECKING}
   CheckColumnConvertion(ColumnIndex, stBoolean);
 {$ENDIF}
-  Temp := UpperCase(String(InternalGetString(ColumnIndex)));
-  Result := (Temp = 'Y') or (Temp = 'YES') or (Temp = 'T') or
-    (Temp = 'TRUE') or (StrToIntDef(Temp, 0) <> 0);
-end;
+  Buffer := GetBuffer(ColumnIndex);
 
-{**
-  Gets the value of the designated column in the current row
-  of this <code>ResultSet</code> object as
-  a <code>byte</code> in the Java programming language.
-
-  @param columnIndex the first column is 1, the second is 2, ...
-  @return the column value; if the value is SQL <code>NULL</code>, the
-    value returned is <code>0</code>
-}
-function TZMySQLResultSet.GetByte(ColumnIndex: Integer): Byte;
-begin
-{$IFNDEF DISABLE_CHECKING}
-  CheckColumnConvertion(ColumnIndex, stByte);
-{$ENDIF}
-  Result := Byte(StrToIntDef(String(InternalGetString(ColumnIndex)), 0));
-end;
-
-{**
-  Gets the value of the designated column in the current row
-  of this <code>ResultSet</code> object as
-  a <code>short</code> in the Java programming language.
-
-  @param columnIndex the first column is 1, the second is 2, ...
-  @return the column value; if the value is SQL <code>NULL</code>, the
-    value returned is <code>0</code>
-}
-function TZMySQLResultSet.GetShort(ColumnIndex: Integer): SmallInt;
-begin
-{$IFNDEF DISABLE_CHECKING}
-  CheckColumnConvertion(ColumnIndex, stShort);
-{$ENDIF}
-  Result := SmallInt(StrToIntDef(String(InternalGetString(ColumnIndex)), 0));
+  if LastWasNull then
+    Result := False
+  else
+    Result := StrToBoolEx(Buffer, True, False);
 end;
 
 {**
@@ -471,11 +449,18 @@ end;
     value returned is <code>0</code>
 }
 function TZMySQLResultSet.GetInt(ColumnIndex: Integer): Integer;
+var
+  Buffer: PAnsiChar;
 begin
 {$IFNDEF DISABLE_CHECKING}
   CheckColumnConvertion(ColumnIndex, stInteger);
 {$ENDIF}
-  Result := StrToIntDef(String(InternalGetString(ColumnIndex)), 0);
+  Buffer := GetBuffer(ColumnIndex);
+
+  if LastWasNull then
+    Result := 0
+  else
+    Result := RawToIntDef(Buffer, 0);
 end;
 
 {**
@@ -488,11 +473,42 @@ end;
     value returned is <code>0</code>
 }
 function TZMySQLResultSet.GetLong(ColumnIndex: Integer): Int64;
+var
+  Buffer: PAnsiChar;
 begin
 {$IFNDEF DISABLE_CHECKING}
   CheckColumnConvertion(ColumnIndex, stLong);
 {$ENDIF}
-  Result := StrToInt64Def(String(InternalGetString(ColumnIndex)), 0);
+  Buffer := GetBuffer(ColumnIndex);
+
+  if LastWasNull then
+    Result := 0
+  else
+    Result := RawToInt64Def(Buffer, 0);
+end;
+
+{**
+  Gets the value of the designated column in the current row
+  of this <code>ResultSet</code> object as
+  a <code>long</code> in the Java programming language.
+
+  @param columnIndex the first column is 1, the second is 2, ...
+  @return the column value; if the value is SQL <code>NULL</code>, the
+    value returned is <code>0</code>
+}
+function TZMySQLResultSet.GetULong(ColumnIndex: Integer): UInt64;
+var
+  Buffer: PAnsiChar;
+begin
+{$IFNDEF DISABLE_CHECKING}
+  CheckColumnConvertion(ColumnIndex, stLong);
+{$ENDIF}
+  Buffer := GetBuffer(ColumnIndex);
+
+  if LastWasNull then
+    Result := 0
+  else
+    Result := RawToUInt64Def(Buffer, 0);
 end;
 
 {**
@@ -505,11 +521,19 @@ end;
     value returned is <code>0</code>
 }
 function TZMySQLResultSet.GetFloat(ColumnIndex: Integer): Single;
+var
+  Len: ULong;
+  Buffer: PAnsiChar;
 begin
 {$IFNDEF DISABLE_CHECKING}
   CheckColumnConvertion(ColumnIndex, stFloat);
 {$ENDIF}
-  Result := SQLStrToFloatDef(InternalGetString(ColumnIndex), 0);
+  Buffer := GetBufferAndLength(ColumnIndex, Len{%H-});
+
+  if LastWasNull then
+    Result := 0
+  else
+    Result := ZSysUtils.SQLStrToFloatDef(Buffer, 0, Len);
 end;
 
 {**
@@ -522,11 +546,19 @@ end;
     value returned is <code>0</code>
 }
 function TZMySQLResultSet.GetDouble(ColumnIndex: Integer): Double;
+var
+  Len: ULong;
+  Buffer: PAnsiChar;
 begin
 {$IFNDEF DISABLE_CHECKING}
   CheckColumnConvertion(ColumnIndex, stDouble);
 {$ENDIF}
-  Result := SQLStrToFloatDef(InternalGetString(ColumnIndex), 0);
+  Buffer := GetBufferAndLength(ColumnIndex, Len{%H-});
+
+  if LastWasNull then
+    Result := 0
+  else
+    Result := ZSysUtils.SQLStrToFloatDef(Buffer, 0, Len);
 end;
 
 {**
@@ -540,11 +572,19 @@ end;
     value returned is <code>null</code>
 }
 function TZMySQLResultSet.GetBigDecimal(ColumnIndex: Integer): Extended;
+var
+  Len: ULong;
+  Buffer: PAnsiChar;
 begin
 {$IFNDEF DISABLE_CHECKING}
   CheckColumnConvertion(ColumnIndex, stBigDecimal);
 {$ENDIF}
-  Result := SQLStrToFloatDef(InternalGetString(ColumnIndex), 0);
+  Buffer := GetBufferAndLength(ColumnIndex, Len{%H-});
+
+  if LastWasNull then
+    Result := 0
+  else
+    Result := ZSysUtils.SQLStrToFloatDef(Buffer, 0, Len);
 end;
 
 {**
@@ -557,12 +597,19 @@ end;
   @return the column value; if the value is SQL <code>NULL</code>, the
     value returned is <code>null</code>
 }
-function TZMySQLResultSet.GetBytes(ColumnIndex: Integer): TByteDynArray;
+function TZMySQLResultSet.GetBytes(ColumnIndex: Integer): TBytes;
+var
+  Len: ULong;
+  Buffer: PAnsiChar;
 begin
 {$IFNDEF DISABLE_CHECKING}
   CheckColumnConvertion(ColumnIndex, stBytes);
 {$ENDIF}
-  Result := StrToBytes(InternalGetString(ColumnIndex));
+  Buffer := GetBufferAndLength(ColumnIndex, Len{%H-});
+
+  SetLength(Result, Len);
+  if Len > 0 then
+    System.Move(Buffer^, Pointer(Result)^, Len);
 end;
 
 {**
@@ -576,25 +623,26 @@ end;
 }
 function TZMySQLResultSet.GetDate(ColumnIndex: Integer): TDateTime;
 var
-  Value: string;
+  Len: ULong;
+  Buffer: PAnsiChar;
+  Failed: Boolean;
 begin
 {$IFNDEF DISABLE_CHECKING}
   CheckColumnConvertion(ColumnIndex, stDate);
 {$ENDIF}
-  Value := String(InternalGetString(ColumnIndex));
+  Buffer := GetBufferAndLength(ColumnIndex, Len{%H-});
 
-  LastWasNull := (LastWasNull or (Copy(Value, 1, 10)='0000-00-00'));
   if LastWasNull then
-  begin
-    Result := 0;
-    Exit;
-  end;
-
-  if IsMatch('????-??-??*', Value) then
-    Result := Trunc(AnsiSQLDateToDateTime(Value))
+    Result := 0
   else
-    Result := Trunc(TimestampStrToDateTime(Value));
-  LastWasNull := Result = 0;
+  begin
+    if Len = ConSettings^.ReadFormatSettings.DateFormatLen then
+      Result := RawSQLDateToDateTime(Buffer,  Len, ConSettings^.ReadFormatSettings, Failed{%H-})
+    else
+      Result := {$IFDEF USE_FAST_TRUNC}ZFastCode.{$ENDIF}Trunc(
+        RawSQLTimeStampToDateTime(Buffer, Len, ConSettings^.ReadFormatSettings, Failed));
+    LastWasNull := Result = 0;
+  end;
 end;
 
 {**
@@ -608,23 +656,24 @@ end;
 }
 function TZMySQLResultSet.GetTime(ColumnIndex: Integer): TDateTime;
 var
-  Value: string;
+  Len: ULong;
+  Buffer: PAnsiChar;
+  Failed: Boolean;
 begin
 {$IFNDEF DISABLE_CHECKING}
   CheckColumnConvertion(ColumnIndex, stTime);
 {$ENDIF}
-  Value := String(InternalGetString(ColumnIndex));
+  Buffer := GetBufferAndLength(ColumnIndex, Len{%H-});
 
   if LastWasNull then
-  begin
-    Result := 0;
-    Exit;
-  end;
-
-  if IsMatch('*??:??:??*', Value) then
-    Result := Frac(AnsiSQLDateToDateTime(Value))
+    Result := 0
   else
-    Result := Frac(TimestampStrToDateTime(Value));
+  begin
+    if (Buffer+2)^ = ':' then //possible date if Len = 10 then
+      Result := RawSQLTimeToDateTime(Buffer,Len, ConSettings^.ReadFormatSettings, Failed{%H-})
+    else
+      Result := Frac(RawSQLTimeStampToDateTime(Buffer, Len, ConSettings^.ReadFormatSettings, Failed));
+  end;
 end;
 
 {**
@@ -639,23 +688,25 @@ end;
 }
 function TZMySQLResultSet.GetTimestamp(ColumnIndex: Integer): TDateTime;
 var
-  Temp: string;
+  Len: ULong;
+  Buffer: PAnsiChar;
+  Failed: Boolean;
 begin
 {$IFNDEF DISABLE_CHECKING}
   CheckColumnConvertion(ColumnIndex, stTimestamp);
 {$ENDIF}
-  Temp := String(GetPChar(ColumnIndex));
+  Buffer := GetBufferAndLength(ColumnIndex, Len{%H-});
 
   if LastWasNull then
-  begin
-    Result := 0;
-    Exit;
-  end;
-
-  if IsMatch('????-??-??*', Temp) or IsMatch('??:??:??*', Temp) then
-    Result := AnsiSQLDateToDateTime(Temp)
+    Result := 0
   else
-    Result := TimestampStrToDateTime(Temp);
+    if (Buffer+2)^ = ':' then
+      Result := RawSQLTimeToDateTime(Buffer, Len, ConSettings^.ReadFormatSettings, Failed{%H-})
+    else
+      if (ConSettings^.ReadFormatSettings.DateTimeFormatLen - Len) <= 4 then
+        Result := RawSQLTimeStampToDateTime(Buffer, Len, ConSettings^.ReadFormatSettings, Failed)
+      else
+        Result := RawSQLTimeToDateTime(Buffer, Len, ConSettings^.ReadFormatSettings, Failed);
   LastWasNull := Result = 0;
 end;
 
@@ -670,32 +721,23 @@ end;
 }
 function TZMySQLResultSet.GetBlob(ColumnIndex: Integer): IZBlob;
 var
-  Stream: TStream;
+  Buffer: PAnsiChar;
+  Len: ULong;
 begin
 {$IFNDEF DISABLE_CHECKING}
   CheckBlobColumn(ColumnIndex);
 {$ENDIF}
-  Stream := nil;
-  try
-    if not IsNull(ColumnIndex) then
-    begin
-      case GetMetaData.GetColumnType(ColumnIndex) of
-        stAsciiStream: Stream := TStringStream.Create(GetValidatedAnsiString(InternalGetString(ColumnIndex), ConSettings, True));
-        stUnicodeStream: Stream := GetValidatedUnicodeStream(InternalGetString(ColumnIndex), ConSettings, True);
-        else
-          Stream := TStringStream.Create(InternalGetString(ColumnIndex));
-      end;
-      if not Assigned(Stream) then //improve TZTestCompMySQLBugReport.Test1045286
-        Stream := TMemoryStream.Create;
-      Result := TZAbstractBlob.CreateWithStream(Stream, GetStatement.GetConnection,
-        GetMetaData.GetColumnType(ColumnIndex) = stUnicodeStream);
-    end
-    else
-      Result := TZAbstractBlob.CreateWithStream(nil, GetStatement.GetConnection);
-  finally
-    if Assigned(Stream) then
-      Stream.Free;
-  end;
+  Buffer := GetBufferAndLength(ColumnIndex, Len{%H-});
+  if LastWasNull then
+    Result := nil
+  else
+    case GetMetaData.GetColumnType(ColumnIndex) of
+      stBytes, stBinaryStream:
+        Result := TZAbstractBlob.CreateWithData(Buffer, Len)
+      else
+        Result := TZAbstractClob.CreateWithData(Buffer, Len,
+          ConSettings^.ClientCodePage^.CP, ConSettings)
+    end;
 end;
 
 {**
@@ -759,6 +801,10 @@ begin
   end
   else
     RaiseForwardOnlyException;
+  if Result then
+    FLengthArray := FPlainDriver.FetchLengths(FQueryHandle)
+  else
+    FLengthArray := nil;
 end;
 
 {**
@@ -782,7 +828,7 @@ begin
   Result := False;
   if (MaxRows > 0) and (RowNo >= MaxRows) then
     Exit;
-  if Assigned(FQueryHandle) then
+  if FQueryHandle <> nil then
     FRowHandle := FPlainDriver.FetchRow(FQueryHandle);
   if FRowHandle <> nil then
   begin
@@ -797,6 +843,10 @@ begin
       RowNo := LastRowNo + 1;
     Result := False;
   end;
+  if Result then
+    FLengthArray := FPlainDriver.FetchLengths(FQueryHandle)
+  else
+    FLengthArray := nil;
 end;
 
 procedure TZMySQLResultSet.ReleaseHandle;
@@ -805,6 +855,7 @@ begin
     FPlainDriver.FreeResult(FQueryHandle);
   FQueryHandle := nil;
 end;
+
 { TZMySQLPreparedResultSet }
 
 {**
@@ -838,14 +889,6 @@ begin
 end;
 
 {**
-  Destroys this object and cleanups the memory.
-}
-destructor TZMySQLPreparedResultSet.Destroy;
-begin
-  inherited Destroy;
-end;
-
-{**
   Opens this recordset.
 }
 procedure TZMySQLPreparedResultSet.Open;
@@ -862,6 +905,8 @@ begin
   FieldCount := FPlainDriver.GetPreparedFieldCount(FPrepStmt);
   if FieldCount = 0 then
     raise EZSQLException.Create(SCanNotRetrieveResultSetData);
+  SetLength(FMysqlFieldTypes, FieldCount);
+  SetLength(FMySQLSignedFlags, FieldCount);
 
   FResultMetaData := FPlainDriver.GetPreparedMetaData(FPrepStmt);
   if not Assigned(FResultMetaData) then
@@ -878,7 +923,7 @@ begin
       LastRowNo := 0;
   end;
 
-    { Initialize Bind Array and Column Array }
+  { Initialize Bind Array and Column Array }
   FBindBuffer := TZMySqlResultSetBindBuffer.Create(FPlainDriver,FieldCount,FColumnArray);
 
   { Fills the column info. }
@@ -896,6 +941,8 @@ begin
     ColumnsInfo.Add(ColumnInfo);
 
     FBindBuffer.AddColumn(FPlainDriver, FieldHandle);
+    FMysqlFieldTypes[I] := FPlainDriver.GetFieldType(FieldHandle); //save exact MySQL type
+    FMySQLSignedFlags[i] := ColumnInfo.Signed;
   end;
   FPlainDriver.FreeResult(FResultMetaData);
   FResultMetaData := nil;
@@ -927,11 +974,12 @@ begin
   if Assigned(FBindBuffer) then
     FreeAndNil(FBindBuffer);
   if Assigned(FPrepStmt) then
-    begin
+  begin
+    FPlainDriver.FreePreparedResult(FPrepStmt);
+    while(FPlainDriver.GetPreparedNextResult(FPrepStmt) = 0) do
       FPlainDriver.FreePreparedResult(FPrepStmt);
-      while(FPlainDriver.GetPreparedNextResult(FPrepStmt) = 0) do
-        FPlainDriver.FreePreparedResult(FPrepStmt);
-    end;
+    FPrepStmt := nil;
+  end;
   inherited Close;
 
 end;
@@ -949,8 +997,135 @@ begin
 {$IFNDEF DISABLE_CHECKING}
   CheckClosed;
 {$ENDIF}
+  Result := FColumnArray[ColumnIndex{$IFNDEF GENERIC_INDEX}-1{$ENDIF}].is_null =1;
+end;
 
-  Result := FColumnArray[ColumnIndex-1].is_null =1;
+{**
+  Gets the value of the designated column in the current row
+  of this <code>ResultSet</code> object as
+  a <code>PAnsiChar</code> in the Delphi programming language.
+
+  @param columnIndex the first column is 1, the second is 2, ...
+  @param Len the Length of the String in bytes
+  @return the column value; if the value is SQL <code>NULL</code>, the
+    value returned is <code>null</code>
+}
+function TZMySQLPreparedResultSet.GetPAnsiChar(ColumnIndex: Integer; out Len: NativeUInt): PAnsichar;
+var
+  TmpDateTime, TmpDateTime2: TDateTime;
+begin
+  {$IFNDEF GENERIC_INDEX}
+  ColumnIndex := ColumnIndex -1;
+  {$ENDIF}
+  LastWasNull := FColumnArray[ColumnIndex].is_null =1;
+  if LastWasNull then
+  begin
+    Result := nil;
+    Len := 0;
+  end
+  else
+  begin
+    case FMysqlFieldTypes[ColumnIndex] of
+      FIELD_TYPE_TINY:
+        if FMySQLSignedFlags[ColumnIndex] then
+          FRawTemp := IntToRaw(PShortInt(FColumnArray[ColumnIndex].buffer)^)
+        else
+          FRawTemp := IntToRaw(PByte(FColumnArray[ColumnIndex].buffer)^);
+      FIELD_TYPE_SHORT:
+        if FMySQLSignedFlags[ColumnIndex] then
+          FRawTemp := IntToRaw(PSmallInt(FColumnArray[ColumnIndex].buffer)^)
+        else
+          FRawTemp := IntToRaw(PWord(FColumnArray[ColumnIndex].buffer)^);
+      FIELD_TYPE_LONG:
+        if FMySQLSignedFlags[ColumnIndex] then
+          FRawTemp := IntToRaw(PLongInt(FColumnArray[ColumnIndex].buffer)^)
+        else
+          FRawTemp := IntToRaw(PLongWord(FColumnArray[ColumnIndex].buffer)^);
+      FIELD_TYPE_FLOAT:
+        FRawTemp := FloatToSQLRaw(PSingle(FColumnArray[ColumnIndex].buffer)^);
+      FIELD_TYPE_DOUBLE:
+        FRawTemp := FloatToSQLRaw(PDouble(FColumnArray[ColumnIndex].buffer)^);
+      FIELD_TYPE_NULL:
+        FRawTemp := '';
+      FIELD_TYPE_TIMESTAMP, FIELD_TYPE_DATETIME:
+        begin
+          if not sysUtils.TryEncodeDate(
+            PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.Year,
+            PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.Month,
+            PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.Day, TmpDateTime) then
+              TmpDateTime := encodeDate(1900, 1, 1);
+          if not sysUtils.TryEncodeTime(
+            PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.Hour,
+            PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.Minute,
+            PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.Second,
+            0{PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.second_part} , TmpDateTime2 ) then
+              TmpDateTime2 := 0;
+          FRawTemp := DateTimeToRawSQLTimeStamp(TmpDateTime+TmpDateTime2, ConSettings^.ReadFormatSettings, False);
+        end;
+      FIELD_TYPE_LONGLONG:
+        if FMySQLSignedFlags[ColumnIndex] then
+          FRawTemp := IntToRaw(PInt64(FColumnArray[ColumnIndex].buffer)^)
+        else
+          FRawTemp := IntToRaw(PUInt64(FColumnArray[ColumnIndex].buffer)^);
+      FIELD_TYPE_INT24: //warning Delphi deosn't have a 24 bit float -> samllint have 2Byte, integer have 4Byte but int24 have 3Byte!
+        if FMySQLSignedFlags[ColumnIndex] then
+          FRawTemp := IntToRaw(PInteger(FColumnArray[ColumnIndex].buffer)^)
+        else
+          FRawTemp := IntToRaw(PLongWord(FColumnArray[ColumnIndex].buffer)^);
+      FIELD_TYPE_DATE, FIELD_TYPE_NEWDATE:
+        begin
+          if not sysUtils.TryEncodeDate(
+            PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.Year,
+            PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.Month,
+            PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.Day, TmpDateTime) then
+              TmpDateTime := encodeDate(1900, 1, 1);
+          FRawTemp := DateTimeToRawSQLDate(TmpDateTime, ConSettings^.ReadFormatSettings, False);
+        end;
+      FIELD_TYPE_TIME:
+        begin
+          if not sysUtils.TryEncodeTime(
+            PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.Hour,
+            PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.Minute,
+            PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.Second,
+            0{PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.second_part}, TmpDateTime) then
+              TmpDateTime := 0;
+          FRawTemp := DateTimeToRawSQLTime(TmpDateTime, ConSettings^.ReadFormatSettings, False);
+        end;
+      FIELD_TYPE_YEAR:
+        FRawTemp := IntToRaw(PWord(FColumnArray[ColumnIndex].buffer)^);
+      FIELD_TYPE_BIT,//http://dev.mysql.com/doc/refman/5.0/en/bit-type.html
+      FIELD_TYPE_DECIMAL, FIELD_TYPE_NEWDECIMAL, FIELD_TYPE_VARCHAR,
+      FIELD_TYPE_ENUM, FIELD_TYPE_SET, FIELD_TYPE_TINY_BLOB,
+      FIELD_TYPE_MEDIUM_BLOB, FIELD_TYPE_LONG_BLOB, FIELD_TYPE_BLOB,
+      FIELD_TYPE_VAR_STRING, FIELD_TYPE_STRING, FIELD_TYPE_GEOMETRY:
+        begin
+          Result := PAnsiChar(FColumnArray[ColumnIndex].buffer);
+          Len := FColumnArray[ColumnIndex].length;
+          Exit;
+        end;
+      else
+        raise EZSQLException.Create(Format(SErrorConvertionField,
+          ['Field '+ZFastCode.IntToStr(ColumnIndex{$IFNDEF GENERIC_INDEX}+1{$ENDIF}),
+            DefineColumnTypeName(GetMetadata.GetColumnType(ColumnIndex{$IFNDEF GENERIC_INDEX}+1{$ENDIF}))]));
+    end;
+    Len := NativeUInt({%H-}PLengthInt(NativeUInt(FRawTemp) - StringLenOffSet)^);
+    Result := Pointer(FRawTemp);
+  end;
+end;
+
+{**
+  Gets the value of the designated column in the current row
+  of this <code>ResultSet</code> object as
+  a <code>PAnsiChar</code> in the Delphi programming language.
+
+  @param columnIndex the first column is 1, the second is 2, ...
+  @return the column value; if the value is SQL <code>NULL</code>, the
+    value returned is <code>null</code>
+}
+function TZMySQLPreparedResultSet.GetPAnsiChar(ColumnIndex: Integer): PAnsiChar;
+var Len: NativeUInt;
+begin
+  Result := GetPAnsiChar(ColumnIndex, Len);
 end;
 
 {**
@@ -963,12 +1138,102 @@ end;
     value returned is <code>null</code>
 }
 function TZMySQLPreparedResultSet.InternalGetString(ColumnIndex: Integer): RawByteString;
+var
+  TmpDateTime, TmpDateTime2: TDateTime;
+  Signed: Boolean;
 begin
-{$IFNDEF DISABLE_CHECKING}
-  CheckClosed;
-{$ENDIF}
-  Result := PAnsiChar(FColumnArray[ColumnIndex - 1].buffer);
-  LastWasNull := FColumnArray[ColumnIndex-1].is_null =1;
+  Signed := FBindBuffer.GetBufferIsSigned(ColumnIndex);
+
+  {$IFNDEF GENERIC_INDEX}
+  ColumnIndex := ColumnIndex -1;
+  {$ENDIF}
+  LastWasNull := FColumnArray[ColumnIndex].is_null =1;
+  if LastWasNull then
+    Result := ''
+  else
+  begin
+    case FMysqlFieldTypes[ColumnIndex] of
+      FIELD_TYPE_TINY:
+        if Signed then
+          Result := IntToRaw(PShortInt(FColumnArray[ColumnIndex].buffer)^)
+        else
+          Result := IntToRaw(PByte(FColumnArray[ColumnIndex].buffer)^);
+      FIELD_TYPE_SHORT:
+        if Signed then
+          Result := IntToRaw(PSmallInt(FColumnArray[ColumnIndex].buffer)^)
+        else
+          Result := IntToRaw(PWord(FColumnArray[ColumnIndex].buffer)^);
+      FIELD_TYPE_LONG:
+        if Signed then
+          Result := IntToRaw(PLongInt(FColumnArray[ColumnIndex].buffer)^)
+        else
+          Result := IntToRaw(PLongWord(FColumnArray[ColumnIndex].buffer)^);
+      FIELD_TYPE_FLOAT:
+        Result := FloatToSQLRaw(PSingle(FColumnArray[ColumnIndex].buffer)^);
+      FIELD_TYPE_DOUBLE:
+        Result := FloatToSQLRaw(PDouble(FColumnArray[ColumnIndex].buffer)^);
+      FIELD_TYPE_NULL:
+        Result := '';
+      FIELD_TYPE_TIMESTAMP, FIELD_TYPE_DATETIME:
+        begin
+          if not sysUtils.TryEncodeDate(
+            PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.Year,
+            PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.Month,
+            PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.Day, TmpDateTime) then
+              TmpDateTime := encodeDate(1900, 1, 1);
+          if not sysUtils.TryEncodeTime(
+            PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.Hour,
+            PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.Minute,
+            PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.Second,
+            0{PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.second_part} , TmpDateTime2 ) then
+              TmpDateTime2 := 0;
+          Result := DateTimeToRawSQLTimeStamp(TmpDateTime+TmpDateTime2, ConSettings^.ReadFormatSettings, False);
+        end;
+      FIELD_TYPE_LONGLONG:
+        if Signed then
+          Result := IntToRaw(PInt64(FColumnArray[ColumnIndex].buffer)^)
+        else
+          Result := IntToRaw(PUInt64(FColumnArray[ColumnIndex].buffer)^);
+      FIELD_TYPE_INT24: //warning Delphi deosn't have a 24 bit float -> samllint have 2Byte, integer have 4Byte but int24 have 3Byte!
+        if Signed then
+          Result := IntToRaw(PInteger(FColumnArray[ColumnIndex].buffer)^)
+        else
+          Result := IntToRaw(PLongWord(FColumnArray[ColumnIndex].buffer)^);
+      FIELD_TYPE_DATE, FIELD_TYPE_NEWDATE:
+        begin
+          if not sysUtils.TryEncodeDate(
+            PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.Year,
+            PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.Month,
+            PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.Day, TmpDateTime) then
+              TmpDateTime := encodeDate(1900, 1, 1);
+          Result := DateTimeToRawSQLDate(TmpDateTime, ConSettings^.ReadFormatSettings, False);
+        end;
+      FIELD_TYPE_TIME:
+        begin
+          if not sysUtils.TryEncodeTime(
+            PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.Hour,
+            PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.Minute,
+            PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.Second,
+            0{PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.second_part}, TmpDateTime) then
+              TmpDateTime := 0;
+          Result := DateTimeToRawSQLTime(TmpDateTime, ConSettings^.ReadFormatSettings, False);
+        end;
+      FIELD_TYPE_YEAR:
+        Result := IntToRaw(PWord(FColumnArray[ColumnIndex].buffer)^);
+      FIELD_TYPE_BIT:
+        Result := IntToRaw(PByte(FColumnArray[ColumnIndex].buffer)^);
+      FIELD_TYPE_DECIMAL, FIELD_TYPE_NEWDECIMAL, FIELD_TYPE_VARCHAR,
+      FIELD_TYPE_ENUM, FIELD_TYPE_SET, FIELD_TYPE_TINY_BLOB,
+      FIELD_TYPE_MEDIUM_BLOB, FIELD_TYPE_LONG_BLOB, FIELD_TYPE_BLOB,
+      FIELD_TYPE_VAR_STRING, FIELD_TYPE_STRING, FIELD_TYPE_GEOMETRY:
+        ZSetString(PAnsiChar(FColumnArray[ColumnIndex].buffer),
+          FColumnArray[ColumnIndex].length, Result);
+      else
+        raise EZSQLException.Create(Format(SErrorConvertionField,
+          ['Field '+ZFastCode.IntToStr(ColumnIndex{$IFNDEF GENERIC_INDEX}+1{$ENDIF}),
+            DefineColumnTypeName(GetMetadata.GetColumnType(ColumnIndex{$IFNDEF GENERIC_INDEX}+1{$ENDIF}))]));
+    end;
+  end;
 end;
 
 {**
@@ -981,15 +1246,73 @@ end;
     value returned is <code>false</code>
 }
 function TZMySQLPreparedResultSet.GetBoolean(ColumnIndex: Integer): Boolean;
-var
-  Temp: string;
 begin
 {$IFNDEF DISABLE_CHECKING}
+  CheckClosed;
   CheckColumnConvertion(ColumnIndex, stBoolean);
 {$ENDIF}
-   Temp := UpperCase(String(InternalGetString(ColumnIndex)));
-  Result := (Temp = 'Y') or (Temp = 'YES') or (Temp = 'T') or
-    (Temp = 'TRUE') or (StrToIntDef(Temp, 0) <> 0);
+  {$IFNDEF GENERIC_INDEX}
+  ColumnIndex := ColumnIndex -1;
+  {$ENDIF}
+  LastWasNull := FColumnArray[ColumnIndex].is_null =1;
+  if LastWasNull then
+    Result := False
+  else
+    //http://dev.mysql.com/doc/refman/5.1/de/numeric-types.html
+    Case FMysqlFieldTypes[ColumnIndex] of
+      FIELD_TYPE_DECIMAL, FIELD_TYPE_NEWDECIMAL:
+        Result := {$IFDEF USE_FAST_TRUNC}ZFastCode.{$ENDIF}Trunc(RawToFloatDef(PAnsiChar(FColumnArray[ColumnIndex].buffer), '.', 0)) <> 0;
+      FIELD_TYPE_TINY:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PShortInt(FColumnArray[ColumnIndex].buffer)^ <> 0
+        else
+          Result := PByte(FColumnArray[ColumnIndex].buffer)^ <> 0;
+      FIELD_TYPE_SHORT:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PSmallInt(FColumnArray[ColumnIndex].buffer)^ <> 0
+        else
+          Result := PWord(FColumnArray[ColumnIndex].buffer)^ <> 0;
+      FIELD_TYPE_LONG:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PLongInt(FColumnArray[ColumnIndex].buffer)^ <> 0
+        else
+          Result := PLongWord(FColumnArray[ColumnIndex].buffer)^ <> 0;
+      FIELD_TYPE_FLOAT:     Result := {$IFDEF USE_FAST_TRUNC}ZFastCode.{$ENDIF}Trunc(PSingle(FColumnArray[ColumnIndex].buffer)^) <> 0;
+      FIELD_TYPE_DOUBLE:    Result := {$IFDEF USE_FAST_TRUNC}ZFastCode.{$ENDIF}Trunc(PDouble(FColumnArray[ColumnIndex].buffer)^) <> 0;
+      FIELD_TYPE_NULL:      Result := False;
+      FIELD_TYPE_TIMESTAMP, FIELD_TYPE_DATE, FIELD_TYPE_TIME, FIELD_TYPE_DATETIME,
+      FIELD_TYPE_NEWDATE:   Result := False;
+      FIELD_TYPE_LONGLONG:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PInt64(FColumnArray[ColumnIndex].buffer)^ <> 0
+        else
+          Result := PUInt64(FColumnArray[ColumnIndex].buffer)^ <> 0;
+      FIELD_TYPE_INT24: //warning Delphi deosn't have a 24 bit float -> samllint is a 2Byte, integer is a 4Byte but int24 is a 3Byte value!
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PLongInt(FColumnArray[ColumnIndex].buffer)^ <> 0
+        else
+          Result := PLongWord(FColumnArray[ColumnIndex].buffer)^ <> 0;
+      FIELD_TYPE_YEAR:
+        Result := PWord(FColumnArray[ColumnIndex].buffer)^ <> 0;
+      FIELD_TYPE_VARCHAR, FIELD_TYPE_VAR_STRING, FIELD_TYPE_STRING,
+      FIELD_TYPE_ENUM, FIELD_TYPE_SET:
+        Result := StrToBoolEx(PAnsiChar(FColumnArray[ColumnIndex].buffer), True, False);
+      FIELD_TYPE_BIT,//http://dev.mysql.com/doc/refman/5.0/en/bit-type.html
+      FIELD_TYPE_TINY_BLOB, FIELD_TYPE_MEDIUM_BLOB, FIELD_TYPE_LONG_BLOB,
+      FIELD_TYPE_BLOB, FIELD_TYPE_GEOMETRY:
+        if ( FColumnArray[ColumnIndex].length > 0 ) and
+           (FColumnArray[ColumnIndex].length < 12{Max Int32 Length = 11} ) then
+        begin
+          ZSetString(PAnsiChar(FColumnArray[ColumnIndex].buffer), FColumnArray[ColumnIndex].length, FRawTemp);
+          Result := StrToBoolEx(FRawTemp)
+        end
+        else //avoid senceless processing
+          Result := False;
+      else
+        raise EZSQLException.Create(Format(SErrorConvertionField,
+          ['Field '+ZFastCode.IntToStr(ColumnIndex{$IFNDEF GENERIC_INDEX}+1{$ENDIF}),
+            DefineColumnTypeName(GetMetadata.GetColumnType(ColumnIndex{$IFNDEF GENERIC_INDEX}+1{$ENDIF}))]));
+    end
 end;
 
 {**
@@ -1004,10 +1327,71 @@ end;
 function TZMySQLPreparedResultSet.GetByte(ColumnIndex: Integer): Byte;
 begin
 {$IFNDEF DISABLE_CHECKING}
+  CheckClosed;
   CheckColumnConvertion(ColumnIndex, stByte);
 {$ENDIF}
-  Result := Byte(bufferasInt64(ColumnIndex));
-  LastWasNull := FColumnArray[ColumnIndex-1].is_null =1;
+  {$IFNDEF GENERIC_INDEX}
+  ColumnIndex := ColumnIndex -1;
+  {$ENDIF}
+  LastWasNull := FColumnArray[ColumnIndex].is_null =1;
+  if LastWasNull then
+    Result := 0
+  else
+    //http://dev.mysql.com/doc/refman/5.1/de/numeric-types.html
+    Case FMysqlFieldTypes[ColumnIndex] of
+      FIELD_TYPE_DECIMAL, FIELD_TYPE_NEWDECIMAL:
+        Result := {$IFDEF USE_FAST_TRUNC}ZFastCode.{$ENDIF}Trunc(RawToFloatDef(PAnsiChar(FColumnArray[ColumnIndex].buffer), '.', 0));
+      FIELD_TYPE_TINY:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PShortInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PByte(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_SHORT:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PSmallInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_LONG:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PLongInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PLongWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_FLOAT:     Result := {$IFDEF USE_FAST_TRUNC}ZFastCode.{$ENDIF}Trunc(PSingle(FColumnArray[ColumnIndex].buffer)^);
+      FIELD_TYPE_DOUBLE:    Result := {$IFDEF USE_FAST_TRUNC}ZFastCode.{$ENDIF}Trunc(PDouble(FColumnArray[ColumnIndex].buffer)^);
+      FIELD_TYPE_NULL:      Result := 0;
+      FIELD_TYPE_TIMESTAMP, FIELD_TYPE_DATE, FIELD_TYPE_TIME, FIELD_TYPE_DATETIME,
+      FIELD_TYPE_NEWDATE:   Result := 0;
+      FIELD_TYPE_LONGLONG:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PInt64(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PUInt64(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_INT24: //warning Delphi deosn't have a 24 bit float -> samllint is a 2Byte, integer is a 4Byte but int24 is a 3Byte value!
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PLongInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PLongWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_YEAR:
+        Result := PWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_VARCHAR, FIELD_TYPE_VAR_STRING, FIELD_TYPE_STRING,
+      FIELD_TYPE_ENUM, FIELD_TYPE_SET:
+        Result := RawToIntDef(PAnsiChar(FColumnArray[ColumnIndex].buffer), 0);
+      FIELD_TYPE_BIT,//http://dev.mysql.com/doc/refman/5.0/en/bit-type.html
+      FIELD_TYPE_TINY_BLOB, FIELD_TYPE_MEDIUM_BLOB, FIELD_TYPE_LONG_BLOB,
+      FIELD_TYPE_BLOB, FIELD_TYPE_GEOMETRY:
+        if ( FColumnArray[ColumnIndex].length > 0 ) and
+           (FColumnArray[ColumnIndex].length < 4{max Length = 3} ) then
+        begin
+          ZSetString(PAnsiChar(FColumnArray[ColumnIndex].buffer), FColumnArray[ColumnIndex].length, FRawTemp);
+          Result := RawToIntDef(FRawTemp, 0)
+        end
+        else //avoid senceless processing
+          Result := 0;
+      else
+        raise EZSQLException.Create(Format(SErrorConvertionField,
+          ['Field '+ZFastCode.IntToStr(ColumnIndex{$IFNDEF GENERIC_INDEX}+1{$ENDIF}),
+            DefineColumnTypeName(GetMetadata.GetColumnType(ColumnIndex{$IFNDEF GENERIC_INDEX}+1{$ENDIF}))]));
+    end
 end;
 
 {**
@@ -1019,13 +1403,311 @@ end;
   @return the column value; if the value is SQL <code>NULL</code>, the
     value returned is <code>0</code>
 }
-function TZMySQLPreparedResultSet.GetShort(ColumnIndex: Integer): SmallInt;
-Begin
+function TZMySQLPreparedResultSet.GetShort(ColumnIndex: Integer): ShortInt;
+begin
 {$IFNDEF DISABLE_CHECKING}
+  CheckClosed;
   CheckColumnConvertion(ColumnIndex, stShort);
 {$ENDIF}
- Result := Integer(bufferasInt64(ColumnIndex));
- LastWasNull := FColumnArray[ColumnIndex-1].is_null =1;
+  {$IFNDEF GENERIC_INDEX}
+  ColumnIndex := ColumnIndex -1;
+  {$ENDIF}
+  LastWasNull := FColumnArray[ColumnIndex].is_null =1;
+  if LastWasNull then
+    Result := 0
+  else
+    //http://dev.mysql.com/doc/refman/5.1/de/numeric-types.html
+    Case FMysqlFieldTypes[ColumnIndex] of
+      FIELD_TYPE_DECIMAL, FIELD_TYPE_NEWDECIMAL:
+        Result := {$IFDEF USE_FAST_TRUNC}ZFastCode.{$ENDIF}Trunc(RawToFloatDef(PAnsiChar(FColumnArray[ColumnIndex].buffer), '.', 0));
+      FIELD_TYPE_TINY:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PShortInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PByte(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_SHORT:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PSmallInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_LONG:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PLongInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PLongWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_FLOAT:     Result := {$IFDEF USE_FAST_TRUNC}ZFastCode.{$ENDIF}Trunc(PSingle(FColumnArray[ColumnIndex].buffer)^);
+      FIELD_TYPE_DOUBLE:    Result := {$IFDEF USE_FAST_TRUNC}ZFastCode.{$ENDIF}Trunc(PDouble(FColumnArray[ColumnIndex].buffer)^);
+      FIELD_TYPE_NULL:      Result := 0;
+      FIELD_TYPE_TIMESTAMP, FIELD_TYPE_DATE, FIELD_TYPE_TIME, FIELD_TYPE_DATETIME,
+      FIELD_TYPE_NEWDATE:   Result := 0;
+      FIELD_TYPE_LONGLONG:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PInt64(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PUInt64(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_INT24: //warning Delphi deosn't have a 24 bit float -> samllint is a 2Byte, integer is a 4Byte but int24 is a 3Byte value!
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PLongInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PLongWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_YEAR:
+        Result := PWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_VARCHAR, FIELD_TYPE_VAR_STRING, FIELD_TYPE_STRING,
+      FIELD_TYPE_ENUM, FIELD_TYPE_SET:
+        Result := RawToIntDef(PAnsiChar(FColumnArray[ColumnIndex].buffer), 0);
+      FIELD_TYPE_BIT,//http://dev.mysql.com/doc/refman/5.0/en/bit-type.html
+      FIELD_TYPE_TINY_BLOB, FIELD_TYPE_MEDIUM_BLOB, FIELD_TYPE_LONG_BLOB,
+      FIELD_TYPE_BLOB, FIELD_TYPE_GEOMETRY:
+        if ( FColumnArray[ColumnIndex].length > 0 ) and
+           (FColumnArray[ColumnIndex].length < 5{Max ShortInt Length = 3+#0} ) then
+        begin
+          ZSetString(PAnsiChar(FColumnArray[ColumnIndex].buffer), FColumnArray[ColumnIndex].length, FRawTemp);
+          Result := RawToIntDef(FRawTemp, 0)
+        end
+        else //avoid senceless processing
+          Result := 0;
+      else
+        raise EZSQLException.Create(Format(SErrorConvertionField,
+          ['Field '+ZFastCode.IntToStr(ColumnIndex{$IFNDEF GENERIC_INDEX}+1{$ENDIF}),
+            DefineColumnTypeName(GetMetadata.GetColumnType(ColumnIndex{$IFNDEF GENERIC_INDEX}+1{$ENDIF}))]));
+    end
+end;
+
+{**
+  Gets the value of the designated column in the current row
+  of this <code>ResultSet</code> object as
+  a <code>Word</code> in the Java programming language.
+
+  @param columnIndex the first column is 1, the second is 2, ...
+  @return the column value; if the value is SQL <code>NULL</code>, the
+    value returned is <code>0</code>
+}
+function TZMySQLPreparedResultSet.GetWord(ColumnIndex: Integer): Word;
+begin
+{$IFNDEF DISABLE_CHECKING}
+  CheckClosed;
+  CheckColumnConvertion(ColumnIndex, stWord);
+{$ENDIF}
+  {$IFNDEF GENERIC_INDEX}
+  ColumnIndex := ColumnIndex -1;
+  {$ENDIF}
+  LastWasNull := FColumnArray[ColumnIndex].is_null =1;
+  if LastWasNull then
+    Result := 0
+  else
+    //http://dev.mysql.com/doc/refman/5.1/de/numeric-types.html
+    Case FMysqlFieldTypes[ColumnIndex] of
+      FIELD_TYPE_DECIMAL, FIELD_TYPE_NEWDECIMAL:
+        Result := {$IFDEF USE_FAST_TRUNC}ZFastCode.{$ENDIF}Trunc(RawToFloatDef(PAnsiChar(FColumnArray[ColumnIndex].buffer), '.', 0));
+      FIELD_TYPE_TINY:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PShortInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PByte(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_SHORT:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PSmallInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_LONG:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PLongInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PLongWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_FLOAT:     Result := {$IFDEF USE_FAST_TRUNC}ZFastCode.{$ENDIF}Trunc(PSingle(FColumnArray[ColumnIndex].buffer)^);
+      FIELD_TYPE_DOUBLE:    Result := {$IFDEF USE_FAST_TRUNC}ZFastCode.{$ENDIF}Trunc(PDouble(FColumnArray[ColumnIndex].buffer)^);
+      FIELD_TYPE_NULL:      Result := 0;
+      FIELD_TYPE_TIMESTAMP, FIELD_TYPE_DATE, FIELD_TYPE_TIME, FIELD_TYPE_DATETIME,
+      FIELD_TYPE_NEWDATE:   Result := 0;
+      FIELD_TYPE_LONGLONG:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PInt64(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PUInt64(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_INT24: //warning Delphi deosn't have a 24 bit float -> samllint is a 2Byte, integer is a 4Byte but int24 is a 3Byte value!
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PLongInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PLongWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_YEAR:
+        Result := PWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_VARCHAR, FIELD_TYPE_VAR_STRING, FIELD_TYPE_STRING,
+      FIELD_TYPE_ENUM, FIELD_TYPE_SET:
+        Result := RawToIntDef(PAnsiChar(FColumnArray[ColumnIndex].buffer), 0);
+      FIELD_TYPE_BIT,//http://dev.mysql.com/doc/refman/5.0/en/bit-type.html
+      FIELD_TYPE_TINY_BLOB, FIELD_TYPE_MEDIUM_BLOB, FIELD_TYPE_LONG_BLOB,
+      FIELD_TYPE_BLOB, FIELD_TYPE_GEOMETRY:
+        if ( FColumnArray[ColumnIndex].length > 0 ) and
+           (FColumnArray[ColumnIndex].length < 7{Max Word Length = 5+#0} ) then
+        begin
+          ZSetString(PAnsiChar(FColumnArray[ColumnIndex].buffer), FColumnArray[ColumnIndex].length, FRawTemp);
+          Result := RawToIntDef(FRawTemp, 0)
+        end
+        else //avoid senceless processing
+          Result := 0;
+      else
+        raise EZSQLException.Create(Format(SErrorConvertionField,
+          ['Field '+ZFastCode.IntToStr(ColumnIndex{$IFNDEF GENERIC_INDEX}+1{$ENDIF}),
+            DefineColumnTypeName(GetMetadata.GetColumnType(ColumnIndex{$IFNDEF GENERIC_INDEX}+1{$ENDIF}))]));
+    end
+end;
+
+{**
+  Gets the value of the designated column in the current row
+  of this <code>ResultSet</code> object as
+  a <code>SmallInt</code> in the Java programming language.
+
+  @param columnIndex the first column is 1, the second is 2, ...
+  @return the column value; if the value is SQL <code>NULL</code>, the
+    value returned is <code>0</code>
+}
+function TZMySQLPreparedResultSet.GetSmall(ColumnIndex: Integer): SmallInt;
+begin
+{$IFNDEF DISABLE_CHECKING}
+  CheckClosed;
+  CheckColumnConvertion(ColumnIndex, stSmall);
+{$ENDIF}
+  {$IFNDEF GENERIC_INDEX}
+  ColumnIndex := ColumnIndex -1;
+  {$ENDIF}
+  LastWasNull := FColumnArray[ColumnIndex].is_null =1;
+  if LastWasNull then
+    Result := 0
+  else
+    //http://dev.mysql.com/doc/refman/5.1/de/numeric-types.html
+    Case FMysqlFieldTypes[ColumnIndex] of
+      FIELD_TYPE_DECIMAL, FIELD_TYPE_NEWDECIMAL:
+        Result := {$IFDEF USE_FAST_TRUNC}ZFastCode.{$ENDIF}Trunc(RawToFloatDef(PAnsiChar(FColumnArray[ColumnIndex].buffer), '.', 0));
+      FIELD_TYPE_TINY:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PShortInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PByte(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_SHORT:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PSmallInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_LONG:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PLongInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PLongWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_FLOAT:     Result := {$IFDEF USE_FAST_TRUNC}ZFastCode.{$ENDIF}Trunc(PSingle(FColumnArray[ColumnIndex].buffer)^);
+      FIELD_TYPE_DOUBLE:    Result := {$IFDEF USE_FAST_TRUNC}ZFastCode.{$ENDIF}Trunc(PDouble(FColumnArray[ColumnIndex].buffer)^);
+      FIELD_TYPE_NULL:      Result := 0;
+      FIELD_TYPE_TIMESTAMP, FIELD_TYPE_DATE, FIELD_TYPE_TIME, FIELD_TYPE_DATETIME,
+      FIELD_TYPE_NEWDATE:   Result := 0;
+      FIELD_TYPE_LONGLONG:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PInt64(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PUInt64(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_INT24: //warning Delphi deosn't have a 24 bit float -> samllint is a 2Byte, integer is a 4Byte but int24 is a 3Byte value!
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PLongInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PLongWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_YEAR:
+        Result := PWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_VARCHAR, FIELD_TYPE_VAR_STRING, FIELD_TYPE_STRING,
+      FIELD_TYPE_ENUM, FIELD_TYPE_SET:
+        Result := RawToIntDef(PAnsiChar(FColumnArray[ColumnIndex].buffer), 0);
+      FIELD_TYPE_BIT,//http://dev.mysql.com/doc/refman/5.0/en/bit-type.html
+      FIELD_TYPE_TINY_BLOB, FIELD_TYPE_MEDIUM_BLOB, FIELD_TYPE_LONG_BLOB,
+      FIELD_TYPE_BLOB, FIELD_TYPE_GEOMETRY:
+        if ( FColumnArray[ColumnIndex].length > 0 ) and
+           (FColumnArray[ColumnIndex].length < 8{Max SmallInt Length = 6+#0} ) then
+        begin
+          ZSetString(PAnsiChar(FColumnArray[ColumnIndex].buffer), FColumnArray[ColumnIndex].length, FRawTemp);
+          Result := RawToIntDef(FRawTemp, 0)
+        end
+        else //avoid senceless processing
+          Result := 0;
+      else
+        raise EZSQLException.Create(Format(SErrorConvertionField,
+          ['Field '+ZFastCode.IntToStr(ColumnIndex{$IFNDEF GENERIC_INDEX}+1{$ENDIF}),
+            DefineColumnTypeName(GetMetadata.GetColumnType(ColumnIndex{$IFNDEF GENERIC_INDEX}+1{$ENDIF}))]));
+    end
+end;
+
+{**
+  Gets the value of the designated column in the current row
+  of this <code>ResultSet</code> object as
+  a <code>LongWord</code> in the Java programming language.
+
+  @param columnIndex the first column is 1, the second is 2, ...
+  @return the column value; if the value is SQL <code>NULL</code>, the
+    value returned is <code>0</code>
+}
+function TZMySQLPreparedResultSet.GetUInt(ColumnIndex: Integer): LongWord;
+begin
+{$IFNDEF DISABLE_CHECKING}
+  CheckClosed;
+  CheckColumnConvertion(ColumnIndex, stLongWord);
+{$ENDIF}
+  {$IFNDEF GENERIC_INDEX}
+  ColumnIndex := ColumnIndex -1;
+  {$ENDIF}
+  LastWasNull := FColumnArray[ColumnIndex].is_null =1;
+  if LastWasNull then
+    Result := 0
+  else
+    //http://dev.mysql.com/doc/refman/5.1/de/numeric-types.html
+    Case FMysqlFieldTypes[ColumnIndex] of
+      FIELD_TYPE_DECIMAL, FIELD_TYPE_NEWDECIMAL:
+        Result := {$IFDEF USE_FAST_TRUNC}ZFastCode.{$ENDIF}Trunc(RawToFloatDef(PAnsiChar(FColumnArray[ColumnIndex].buffer), '.', 0));
+      FIELD_TYPE_TINY:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PShortInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PByte(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_SHORT:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PSmallInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_LONG:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PLongInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PLongWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_FLOAT:     Result := {$IFDEF USE_FAST_TRUNC}ZFastCode.{$ENDIF}Trunc(PSingle(FColumnArray[ColumnIndex].buffer)^);
+      FIELD_TYPE_DOUBLE:    Result := {$IFDEF USE_FAST_TRUNC}ZFastCode.{$ENDIF}Trunc(PDouble(FColumnArray[ColumnIndex].buffer)^);
+      FIELD_TYPE_NULL:      Result := 0;
+      FIELD_TYPE_TIMESTAMP, FIELD_TYPE_DATE, FIELD_TYPE_TIME, FIELD_TYPE_DATETIME,
+      FIELD_TYPE_NEWDATE:   Result := 0;
+      FIELD_TYPE_LONGLONG:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PInt64(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PUInt64(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_INT24: //warning Delphi deosn't have a 24 bit float -> samllint is a 2Byte, integer is a 4Byte but int24 is a 3Byte value!
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PLongInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PLongWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_YEAR:
+        Result := PWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_VARCHAR, FIELD_TYPE_VAR_STRING, FIELD_TYPE_STRING,
+      FIELD_TYPE_ENUM, FIELD_TYPE_SET:
+        Result := RawToUInt64Def(PAnsiChar(FColumnArray[ColumnIndex].buffer), 0);
+      FIELD_TYPE_BIT,//http://dev.mysql.com/doc/refman/5.0/en/bit-type.html
+      FIELD_TYPE_TINY_BLOB, FIELD_TYPE_MEDIUM_BLOB, FIELD_TYPE_LONG_BLOB,
+      FIELD_TYPE_BLOB, FIELD_TYPE_GEOMETRY:
+        if ( FColumnArray[ColumnIndex].length > 0 ) and
+           (FColumnArray[ColumnIndex].length < 12{Max LongWord Length = 10+#0} ) then
+        begin
+          ZSetString(PAnsiChar(FColumnArray[ColumnIndex].buffer), FColumnArray[ColumnIndex].length, FRawTemp);
+          Result := RawToUInt64Def(FRawTemp, 0)
+        end
+        else //avoid senceless processing
+          Result := 0;
+      else
+        raise EZSQLException.Create(Format(SErrorConvertionField,
+          ['Field '+ZFastCode.IntToStr(ColumnIndex{$IFNDEF GENERIC_INDEX}+1{$ENDIF}),
+            DefineColumnTypeName(GetMetadata.GetColumnType(ColumnIndex{$IFNDEF GENERIC_INDEX}+1{$ENDIF}))]));
+    end
 end;
 
 {**
@@ -1040,10 +1722,150 @@ end;
 function TZMySQLPreparedResultSet.GetInt(ColumnIndex: Integer): Integer;
 begin
 {$IFNDEF DISABLE_CHECKING}
+  CheckClosed;
   CheckColumnConvertion(ColumnIndex, stInteger);
 {$ENDIF}
-  Result := bufferasInt64(ColumnIndex);
-  LastWasNull := FColumnArray[ColumnIndex-1].is_null =1;
+  {$IFNDEF GENERIC_INDEX}
+  ColumnIndex := ColumnIndex -1;
+  {$ENDIF}
+  LastWasNull := FColumnArray[ColumnIndex].is_null =1;
+  if LastWasNull then
+    Result := 0
+  else
+    //http://dev.mysql.com/doc/refman/5.1/de/numeric-types.html
+    Case FMysqlFieldTypes[ColumnIndex] of
+      FIELD_TYPE_DECIMAL, FIELD_TYPE_NEWDECIMAL:
+        Result := {$IFDEF USE_FAST_TRUNC}ZFastCode.{$ENDIF}Trunc(RawToFloatDef(PAnsiChar(FColumnArray[ColumnIndex].buffer), '.', 0));
+      FIELD_TYPE_TINY:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PShortInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PByte(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_SHORT:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PSmallInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_LONG:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PLongInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PLongWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_FLOAT:     Result := {$IFDEF USE_FAST_TRUNC}ZFastCode.{$ENDIF}Trunc(PSingle(FColumnArray[ColumnIndex].buffer)^);
+      FIELD_TYPE_DOUBLE:    Result := {$IFDEF USE_FAST_TRUNC}ZFastCode.{$ENDIF}Trunc(PDouble(FColumnArray[ColumnIndex].buffer)^);
+      FIELD_TYPE_NULL:      Result := 0;
+      FIELD_TYPE_TIMESTAMP, FIELD_TYPE_DATE, FIELD_TYPE_TIME, FIELD_TYPE_DATETIME,
+      FIELD_TYPE_NEWDATE:   Result := 0;
+      FIELD_TYPE_LONGLONG:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PInt64(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PUInt64(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_INT24: //warning Delphi deosn't have a 24 bit float -> samllint is a 2Byte, integer is a 4Byte but int24 is a 3Byte value!
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PLongInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PLongWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_YEAR:
+        Result := PWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_VARCHAR, FIELD_TYPE_VAR_STRING, FIELD_TYPE_STRING,
+      FIELD_TYPE_ENUM, FIELD_TYPE_SET:
+        Result := RawToIntDef(PAnsiChar(FColumnArray[ColumnIndex].buffer), 0);
+      FIELD_TYPE_BIT,//http://dev.mysql.com/doc/refman/5.0/en/bit-type.html
+      FIELD_TYPE_TINY_BLOB, FIELD_TYPE_MEDIUM_BLOB, FIELD_TYPE_LONG_BLOB,
+      FIELD_TYPE_BLOB, FIELD_TYPE_GEOMETRY:
+        if ( FColumnArray[ColumnIndex].length > 0 ) and
+           (FColumnArray[ColumnIndex].length < 13{Max Int32 Length = 11+#0} ) then
+        begin
+          ZSetString(PAnsiChar(FColumnArray[ColumnIndex].buffer), FColumnArray[ColumnIndex].length, FRawTemp);
+          Result := RawToIntDef(FRawTemp, 0)
+        end
+        else //avoid senceless processing
+          Result := 0;
+      else
+        raise EZSQLException.Create(Format(SErrorConvertionField,
+          ['Field '+ZFastCode.IntToStr(ColumnIndex{$IFNDEF GENERIC_INDEX}+1{$ENDIF}),
+            DefineColumnTypeName(GetMetadata.GetColumnType(ColumnIndex{$IFNDEF GENERIC_INDEX}+1{$ENDIF}))]));
+    end
+end;
+
+{**
+  Gets the value of the designated column in the current row
+  of this <code>ResultSet</code> object as
+  a <code>UInt64</code> in the Java programming language.
+
+  @param columnIndex the first column is 1, the second is 2, ...
+  @return the column value; if the value is SQL <code>NULL</code>, the
+    value returned is <code>0</code>
+}
+function TZMySQLPreparedResultSet.GetULong(ColumnIndex: Integer): UInt64;
+begin
+{$IFNDEF DISABLE_CHECKING}
+  CheckClosed;
+  CheckColumnConvertion(ColumnIndex, stULong);
+{$ENDIF}
+  {$IFNDEF GENERIC_INDEX}
+  ColumnIndex := ColumnIndex -1;
+  {$ENDIF}
+  LastWasNull := FColumnArray[ColumnIndex].is_null =1;
+  if LastWasNull then
+    Result := 0
+  else
+    //http://dev.mysql.com/doc/refman/5.1/de/numeric-types.html
+    Case FMysqlFieldTypes[ColumnIndex] of
+      FIELD_TYPE_DECIMAL, FIELD_TYPE_NEWDECIMAL:
+        Result := {$IFDEF USE_FAST_TRUNC}ZFastCode.{$ENDIF}Trunc(RawToFloatDef(PAnsiChar(FColumnArray[ColumnIndex].buffer), '.', 0));
+      FIELD_TYPE_TINY:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PShortInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PByte(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_SHORT:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PSmallInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_LONG:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PLongInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PLongWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_FLOAT:     Result := {$IFDEF USE_FAST_TRUNC}ZFastCode.{$ENDIF}Trunc(PSingle(FColumnArray[ColumnIndex].buffer)^);
+      FIELD_TYPE_DOUBLE:    Result := {$IFDEF USE_FAST_TRUNC}ZFastCode.{$ENDIF}Trunc(PDouble(FColumnArray[ColumnIndex].buffer)^);
+      FIELD_TYPE_NULL:      Result := 0;
+      FIELD_TYPE_TIMESTAMP, FIELD_TYPE_DATE, FIELD_TYPE_TIME, FIELD_TYPE_DATETIME,
+      FIELD_TYPE_NEWDATE:   Result := 0;
+      FIELD_TYPE_LONGLONG:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PInt64(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PUInt64(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_INT24: //warning Delphi deosn't have a 24 bit float -> samllint is a 2Byte, integer is a 4Byte but int24 is a 3Byte value!
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PLongInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PLongWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_YEAR:
+        Result := PWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_VARCHAR, FIELD_TYPE_VAR_STRING, FIELD_TYPE_STRING,
+      FIELD_TYPE_ENUM, FIELD_TYPE_SET:
+        Result := RawToUInt64Def(PAnsiChar(FColumnArray[ColumnIndex].buffer), 0);
+      FIELD_TYPE_BIT,//http://dev.mysql.com/doc/refman/5.0/en/bit-type.html
+      FIELD_TYPE_TINY_BLOB, FIELD_TYPE_MEDIUM_BLOB, FIELD_TYPE_LONG_BLOB,
+      FIELD_TYPE_BLOB, FIELD_TYPE_GEOMETRY:
+        if ( FColumnArray[ColumnIndex].length > 0 ) and
+           (FColumnArray[ColumnIndex].length < 22{Max UInt64 Length = 20+#0} ) then
+        begin
+          ZSetString(PAnsiChar(FColumnArray[ColumnIndex].buffer), FColumnArray[ColumnIndex].length, FRawTemp);
+          Result := RawToUInt64Def(FRawTemp, 0)
+        end
+        else //avoid senceless processing
+          Result := 0;
+      else
+        raise EZSQLException.Create(Format(SErrorConvertionField,
+          ['Field '+ZFastCode.IntToStr(ColumnIndex{$IFNDEF GENERIC_INDEX}+1{$ENDIF}),
+            DefineColumnTypeName(GetMetadata.GetColumnType(ColumnIndex{$IFNDEF GENERIC_INDEX}+1{$ENDIF}))]));
+    end
 end;
 
 {**
@@ -1056,12 +1878,73 @@ end;
     value returned is <code>0</code>
 }
 function TZMySQLPreparedResultSet.GetLong(ColumnIndex: Integer): Int64;
-Begin
+begin
 {$IFNDEF DISABLE_CHECKING}
-  CheckColumnConvertion(ColumnIndex, stLong);
+  CheckClosed;
+  CheckColumnConvertion(ColumnIndex, stULong);
 {$ENDIF}
-  Result := bufferasInt64(ColumnIndex);
-  LastWasNull := FColumnArray[ColumnIndex-1].is_null =1;
+  {$IFNDEF GENERIC_INDEX}
+  ColumnIndex := ColumnIndex -1;
+  {$ENDIF}
+  LastWasNull := FColumnArray[ColumnIndex].is_null =1;
+  if LastWasNull then
+    Result := 0
+  else
+    //http://dev.mysql.com/doc/refman/5.1/de/numeric-types.html
+    Case FMysqlFieldTypes[ColumnIndex] of
+      FIELD_TYPE_DECIMAL, FIELD_TYPE_NEWDECIMAL:
+        Result := {$IFDEF USE_FAST_TRUNC}ZFastCode.{$ENDIF}Trunc(RawToFloatDef(PAnsiChar(FColumnArray[ColumnIndex].buffer), '.', 0));
+      FIELD_TYPE_TINY:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PShortInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PByte(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_SHORT:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PSmallInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_LONG:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PLongInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PLongWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_FLOAT:     Result := {$IFDEF USE_FAST_TRUNC}ZFastCode.{$ENDIF}Trunc(PSingle(FColumnArray[ColumnIndex].buffer)^);
+      FIELD_TYPE_DOUBLE:    Result := {$IFDEF USE_FAST_TRUNC}ZFastCode.{$ENDIF}Trunc(PDouble(FColumnArray[ColumnIndex].buffer)^);
+      FIELD_TYPE_NULL:      Result := 0;
+      FIELD_TYPE_TIMESTAMP, FIELD_TYPE_DATE, FIELD_TYPE_TIME, FIELD_TYPE_DATETIME,
+      FIELD_TYPE_NEWDATE:   Result := 0;
+      FIELD_TYPE_LONGLONG:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PInt64(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PUInt64(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_INT24: //warning Delphi deosn't have a 24 bit float -> samllint is a 2Byte, integer is a 4Byte but int24 is a 3Byte value!
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PLongInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PLongWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_YEAR:
+        Result := PWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_VARCHAR, FIELD_TYPE_VAR_STRING, FIELD_TYPE_STRING,
+      FIELD_TYPE_ENUM, FIELD_TYPE_SET:
+        Result := RawToInt64Def(PAnsiChar(FColumnArray[ColumnIndex].buffer), 0);
+      FIELD_TYPE_BIT,//http://dev.mysql.com/doc/refman/5.0/en/bit-type.html
+      FIELD_TYPE_TINY_BLOB, FIELD_TYPE_MEDIUM_BLOB, FIELD_TYPE_LONG_BLOB,
+      FIELD_TYPE_BLOB, FIELD_TYPE_GEOMETRY:
+        if ( FColumnArray[ColumnIndex].length > 0 ) and
+           (FColumnArray[ColumnIndex].length < 22{Max Int64 Length = 20+#0}) then
+        begin
+          ZSetString(PAnsiChar(FColumnArray[ColumnIndex].buffer), FColumnArray[ColumnIndex].length, FRawTemp);
+          Result := RawToInt64Def(FRawTemp, 0)
+        end
+        else //avoid senceless processing
+          Result := 0;
+      else
+        raise EZSQLException.Create(Format(SErrorConvertionField,
+          ['Field '+ZFastCode.IntToStr(ColumnIndex{$IFNDEF GENERIC_INDEX}+1{$ENDIF}),
+            DefineColumnTypeName(GetMetadata.GetColumnType(ColumnIndex{$IFNDEF GENERIC_INDEX}+1{$ENDIF}))]));
+    end
 end;
 
 {**
@@ -1076,10 +1959,71 @@ end;
 function TZMySQLPreparedResultSet.GetFloat(ColumnIndex: Integer): Single;
 begin
 {$IFNDEF DISABLE_CHECKING}
+  CheckClosed;
   CheckColumnConvertion(ColumnIndex, stFloat);
 {$ENDIF}
-  Result := BufferAsExtended(ColumnIndex);
-  LastWasNull := FColumnArray[ColumnIndex-1].is_null =1;
+  {$IFNDEF GENERIC_INDEX}
+  ColumnIndex := ColumnIndex -1;
+  {$ENDIF}
+  LastWasNull := FColumnArray[ColumnIndex].is_null =1;
+  if LastWasNull then
+    Result := 0
+  else
+    //http://dev.mysql.com/doc/refman/5.1/de/numeric-types.html
+    Case FMysqlFieldTypes[ColumnIndex] of
+      FIELD_TYPE_DECIMAL, FIELD_TYPE_NEWDECIMAL:
+        Result := RawToFloatDef(PAnsiChar(FColumnArray[ColumnIndex].buffer), '.', 0);
+      FIELD_TYPE_TINY:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PShortInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PByte(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_SHORT:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PSmallInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_LONG:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PLongInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PLongWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_FLOAT:     Result := PSingle(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_DOUBLE:    Result := PDouble(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_NULL:      Result := 0;
+      FIELD_TYPE_TIMESTAMP, FIELD_TYPE_DATE, FIELD_TYPE_TIME, FIELD_TYPE_DATETIME,
+      FIELD_TYPE_NEWDATE:   Result := 0;
+      FIELD_TYPE_LONGLONG:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PInt64(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PUInt64(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_INT24: //warning Delphi deosn't have a 24 bit float -> samllint is a 2Byte, integer is a 4Byte but int24 is a 3Byte value!
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PLongInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PLongWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_YEAR:
+        Result := PWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_VARCHAR, FIELD_TYPE_VAR_STRING, FIELD_TYPE_STRING,
+      FIELD_TYPE_ENUM, FIELD_TYPE_SET:
+        Result := RawToFloatDef(PAnsiChar(FColumnArray[ColumnIndex].buffer), '.', 0);
+      FIELD_TYPE_BIT,//http://dev.mysql.com/doc/refman/5.0/en/bit-type.html
+      FIELD_TYPE_TINY_BLOB, FIELD_TYPE_MEDIUM_BLOB, FIELD_TYPE_LONG_BLOB,
+      FIELD_TYPE_BLOB, FIELD_TYPE_GEOMETRY:
+        if ( FColumnArray[ColumnIndex].length > 0 ) and
+           (FColumnArray[ColumnIndex].length < 30{Max Extended Length = 28 ??} ) then
+        begin
+          ZSetString(PAnsiChar(FColumnArray[ColumnIndex].buffer), FColumnArray[ColumnIndex].length, FRawTemp);
+          Result := RawToFloatDef(FRawTemp, '.', 0)
+        end
+        else //avoid senceless processing
+          Result := 0;
+      else
+        raise EZSQLException.Create(Format(SErrorConvertionField,
+          ['Field '+ZFastCode.IntToStr(ColumnIndex{$IFNDEF GENERIC_INDEX}+1{$ENDIF}),
+            DefineColumnTypeName(GetMetadata.GetColumnType(ColumnIndex{$IFNDEF GENERIC_INDEX}+1{$ENDIF}))]));
+    end
 end;
 
 {**
@@ -1094,10 +2038,71 @@ end;
 function TZMySQLPreparedResultSet.GetDouble(ColumnIndex: Integer): Double;
 begin
 {$IFNDEF DISABLE_CHECKING}
+  CheckClosed;
   CheckColumnConvertion(ColumnIndex, stDouble);
 {$ENDIF}
-  Result := BufferAsExtended(ColumnIndex);
-  LastWasNull := FColumnArray[ColumnIndex-1].is_null =1;
+  {$IFNDEF GENERIC_INDEX}
+  ColumnIndex := ColumnIndex -1;
+  {$ENDIF}
+  LastWasNull := FColumnArray[ColumnIndex].is_null =1;
+  if LastWasNull then
+    Result := 0
+  else
+    //http://dev.mysql.com/doc/refman/5.1/de/numeric-types.html
+    Case FMysqlFieldTypes[ColumnIndex] of
+      FIELD_TYPE_DECIMAL, FIELD_TYPE_NEWDECIMAL:
+        Result := RawToFloatDef(PAnsiChar(FColumnArray[ColumnIndex].buffer), '.', 0);
+      FIELD_TYPE_TINY:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PShortInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PByte(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_SHORT:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PSmallInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_LONG:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PLongInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PLongWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_FLOAT:     Result := PSingle(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_DOUBLE:    Result := PDouble(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_NULL:      Result := 0;
+      FIELD_TYPE_TIMESTAMP, FIELD_TYPE_DATE, FIELD_TYPE_TIME, FIELD_TYPE_DATETIME,
+      FIELD_TYPE_NEWDATE:   Result := 0;
+      FIELD_TYPE_LONGLONG:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PInt64(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PUInt64(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_INT24: //warning Delphi deosn't have a 24 bit float -> samllint is a 2Byte, integer is a 4Byte but int24 is a 3Byte value!
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PLongInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PLongWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_YEAR:
+        Result := PWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_VARCHAR, FIELD_TYPE_VAR_STRING, FIELD_TYPE_STRING,
+      FIELD_TYPE_ENUM, FIELD_TYPE_SET:
+        Result := RawToFloatDef(PAnsiChar(FColumnArray[ColumnIndex].buffer), '.', 0);
+      FIELD_TYPE_BIT,//http://dev.mysql.com/doc/refman/5.0/en/bit-type.html
+      FIELD_TYPE_TINY_BLOB, FIELD_TYPE_MEDIUM_BLOB, FIELD_TYPE_LONG_BLOB,
+      FIELD_TYPE_BLOB, FIELD_TYPE_GEOMETRY:
+        if ( FColumnArray[ColumnIndex].length > 0 ) and
+           (FColumnArray[ColumnIndex].length < 30{Max Extended Length = 28 ??+#0} ) then
+        begin
+          ZSetString(PAnsiChar(FColumnArray[ColumnIndex].buffer), FColumnArray[ColumnIndex].length, FRawTemp);
+          Result := RawToFloatDef(FRawTemp, '.', 0)
+        end
+        else //avoid senceless processing
+          Result := 0;
+      else
+        raise EZSQLException.Create(Format(SErrorConvertionField,
+          ['Field '+ZFastCode.IntToStr(ColumnIndex{$IFNDEF GENERIC_INDEX}+1{$ENDIF}),
+            DefineColumnTypeName(GetMetadata.GetColumnType(ColumnIndex{$IFNDEF GENERIC_INDEX}+1{$ENDIF}))]));
+    end
 end;
 
 {**
@@ -1113,10 +2118,68 @@ end;
 function TZMySQLPreparedResultSet.GetBigDecimal(ColumnIndex: Integer): Extended;
 begin
 {$IFNDEF DISABLE_CHECKING}
+  CheckClosed;
   CheckColumnConvertion(ColumnIndex, stBigDecimal);
 {$ENDIF}
-  Result := BufferAsExtended(ColumnIndex);
-  LastWasNull := FColumnArray[ColumnIndex-1].is_null =1;
+  LastWasNull := FColumnArray[ColumnIndex{$IFNDEF GENERIC_INDEX}-1{$ENDIF}].is_null =1;
+  if LastWasNull then
+    Result := 0
+  else
+    //http://dev.mysql.com/doc/refman/5.1/de/numeric-types.html
+    Case FMysqlFieldTypes[ColumnIndex] of
+      FIELD_TYPE_DECIMAL, FIELD_TYPE_NEWDECIMAL:
+        Result := RawToFloatDef(PAnsiChar(FColumnArray[ColumnIndex].buffer), '.', 0);
+      FIELD_TYPE_TINY:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PShortInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PByte(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_SHORT:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PSmallInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_LONG:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PLongInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PLongWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_FLOAT:     Result := PSingle(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_DOUBLE:    Result := PDouble(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_NULL:      Result := 0;
+      FIELD_TYPE_TIMESTAMP, FIELD_TYPE_DATE, FIELD_TYPE_TIME, FIELD_TYPE_DATETIME,
+      FIELD_TYPE_NEWDATE:   Result := 0;
+      FIELD_TYPE_LONGLONG:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PInt64(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PUInt64(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_INT24: //warning Delphi deosn't have a 24 bit float -> samllint is a 2Byte, integer is a 4Byte but int24 is a 3Byte value!
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PLongInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PLongWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_YEAR:
+        Result := PWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_VARCHAR, FIELD_TYPE_VAR_STRING, FIELD_TYPE_STRING,
+      FIELD_TYPE_ENUM, FIELD_TYPE_SET:
+        Result := RawToFloatDef(PAnsiChar(FColumnArray[ColumnIndex].buffer), '.', 0);
+      FIELD_TYPE_BIT,//http://dev.mysql.com/doc/refman/5.0/en/bit-type.html
+      FIELD_TYPE_TINY_BLOB, FIELD_TYPE_MEDIUM_BLOB, FIELD_TYPE_LONG_BLOB,
+      FIELD_TYPE_BLOB, FIELD_TYPE_GEOMETRY:
+        if ( FColumnArray[ColumnIndex].length > 0 ) and
+           (FColumnArray[ColumnIndex].length < 29{Max Extended Length = 28 ??+#0} ) then
+        begin
+          ZSetString(PAnsiChar(FColumnArray[ColumnIndex].buffer), FColumnArray[ColumnIndex].length, FRawTemp);
+          Result := RawToFloatDef(FRawTemp, '.', 0)
+        end
+        else //avoid senceless processing
+          Result := 0;
+      else
+        raise EZSQLException.Create(Format(SErrorConvertionField,
+          ['Field '+ZFastCode.IntToStr(ColumnIndex{$IFNDEF GENERIC_INDEX}+1{$ENDIF}),
+            DefineColumnTypeName(GetMetadata.GetColumnType(ColumnIndex{$IFNDEF GENERIC_INDEX}+1{$ENDIF}))]));
+    end
 end;
 
 {**
@@ -1129,13 +2192,47 @@ end;
   @return the column value; if the value is SQL <code>NULL</code>, the
     value returned is <code>null</code>
 }
-function TZMySQLPreparedResultSet.GetBytes(ColumnIndex: Integer): TByteDynArray;
+function TZMySQLPreparedResultSet.GetBytes(ColumnIndex: Integer): TBytes;
 begin
 {$IFNDEF DISABLE_CHECKING}
-  CheckColumnConvertion(ColumnIndex, stBytes);
+  CheckClosed;
+  CheckColumnConvertion(ColumnIndex, stFloat);
 {$ENDIF}
-  Result := StrToBytes(InternalGetString(ColumnIndex));
-  LastWasNull := FColumnArray[ColumnIndex-1].is_null =1;
+  {$IFNDEF GENERIC_INDEX}
+  ColumnIndex := ColumnIndex -1;
+  {$ENDIF}
+  LastWasNull := FColumnArray[ColumnIndex].is_null =1;
+  if LastWasNull then
+    Result := nil
+  else
+    //http://dev.mysql.com/doc/refman/5.1/de/numeric-types.html
+    Case FMysqlFieldTypes[ColumnIndex] of
+      FIELD_TYPE_TINY,
+      FIELD_TYPE_SHORT,
+      FIELD_TYPE_LONG,
+      FIELD_TYPE_FLOAT,
+      FIELD_TYPE_DOUBLE,
+      FIELD_TYPE_NULL,
+      FIELD_TYPE_TIMESTAMP, FIELD_TYPE_DATE, FIELD_TYPE_TIME, FIELD_TYPE_DATETIME,
+      FIELD_TYPE_NEWDATE,
+      FIELD_TYPE_LONGLONG,
+      FIELD_TYPE_INT24,
+      FIELD_TYPE_YEAR: Result := nil;
+      FIELD_TYPE_BIT,//http://dev.mysql.com/doc/refman/5.0/en/bit-type.html
+      FIELD_TYPE_DECIMAL, FIELD_TYPE_NEWDECIMAL,
+      FIELD_TYPE_VARCHAR, FIELD_TYPE_VAR_STRING, FIELD_TYPE_STRING,
+      FIELD_TYPE_ENUM, FIELD_TYPE_SET,
+      FIELD_TYPE_TINY_BLOB, FIELD_TYPE_MEDIUM_BLOB, FIELD_TYPE_LONG_BLOB,
+      FIELD_TYPE_BLOB, FIELD_TYPE_GEOMETRY:
+        begin
+          SetLength(Result, FColumnArray[ColumnIndex].length);
+          System.Move(Pointer(FColumnArray[ColumnIndex].buffer)^, Pointer(Result)^, FColumnArray[ColumnIndex].length);
+        end
+      else
+        raise EZSQLException.Create(Format(SErrorConvertionField,
+          ['Field '+ZFastCode.IntToStr(ColumnIndex{$IFNDEF GENERIC_INDEX}+1{$ENDIF}),
+            DefineColumnTypeName(GetMetadata.GetColumnType(ColumnIndex{$IFNDEF GENERIC_INDEX}+1{$ENDIF}))]));
+    end
 end;
 
 {**
@@ -1148,16 +2245,84 @@ end;
     value returned is <code>null</code>
 }
 function TZMySQLPreparedResultSet.GetDate(ColumnIndex: Integer): TDateTime;
+var
+  Failed: Boolean;
 begin
 {$IFNDEF DISABLE_CHECKING}
+  CheckClosed;
   CheckColumnConvertion(ColumnIndex, stDate);
 {$ENDIF}
-  if not sysUtils.TryEncodeDate(PMYSQL_TIME(FColumnArray[ColumnIndex - 1].buffer)^.Year,
-                                PMYSQL_TIME(FColumnArray[ColumnIndex - 1].buffer)^.Month,
-                                PMYSQL_TIME(FColumnArray[ColumnIndex - 1].buffer)^.Day,
-                                Result) then
-            Result := encodeDate(1900, 1, 1);
-  LastWasNull := FColumnArray[ColumnIndex-1].is_null =1;
+  {$IFNDEF GENERIC_INDEX}
+  ColumnIndex := ColumnIndex -1;
+  {$ENDIF}
+  LastWasNull := FColumnArray[ColumnIndex].is_null =1;
+  if LastWasNull then
+    Result := 0
+  else
+    //http://dev.mysql.com/doc/refman/5.1/de/numeric-types.html
+    Case FMysqlFieldTypes[ColumnIndex] of
+      FIELD_TYPE_BIT: //http://dev.mysql.com/doc/refman/5.0/en/bit-type.html
+        Result := 0;
+      FIELD_TYPE_DECIMAL, FIELD_TYPE_NEWDECIMAL:
+        Result := RawToFloatDef(PAnsiChar(FColumnArray[ColumnIndex].buffer), '.', 0);
+      FIELD_TYPE_TINY:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PShortInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PByte(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_SHORT:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PSmallInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_LONG:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PLongInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PLongWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_FLOAT:     Result := PSingle(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_DOUBLE:    Result := PDouble(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_NULL:      Result := 0;
+      FIELD_TYPE_TIMESTAMP, FIELD_TYPE_DATE, FIELD_TYPE_DATETIME,
+      FIELD_TYPE_NEWDATE:
+        if not sysUtils.TryEncodeDate(
+            PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.Year,
+            PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.Month,
+            PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.Day, Result) then
+          Result := encodeDate(1900, 1, 1);
+      FIELD_TYPE_TIME: Result := 0;
+      FIELD_TYPE_LONGLONG:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PInt64(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PUInt64(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_INT24: //warning Delphi deosn't have a 24 bit float -> samllint is a 2Byte, integer is a 4Byte but int24 is a 3Byte value!
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PLongInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PLongWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_YEAR:
+        if not TryEncodeDate(PWord(FColumnArray[ColumnIndex].buffer)^, 1,1, Result) then
+          Result := 0;
+      FIELD_TYPE_VARCHAR, FIELD_TYPE_VAR_STRING, FIELD_TYPE_STRING,
+      FIELD_TYPE_ENUM, FIELD_TYPE_SET,
+      FIELD_TYPE_TINY_BLOB, FIELD_TYPE_MEDIUM_BLOB, FIELD_TYPE_LONG_BLOB,
+      FIELD_TYPE_BLOB, FIELD_TYPE_GEOMETRY:
+        begin
+          if FColumnArray[ColumnIndex].length = ConSettings^.ReadFormatSettings.DateFormatLen then
+            Result := RawSQLDateToDateTime(PAnsiChar(FColumnArray[ColumnIndex].buffer),
+              FColumnArray[ColumnIndex].length, ConSettings^.ReadFormatSettings, Failed{%H-})
+          else
+            Result := {$IFDEF USE_FAST_TRUNC}ZFastCode.{$ENDIF}Trunc(
+              RawSQLTimeStampToDateTime(PAnsiChar(FColumnArray[ColumnIndex].buffer),
+                FColumnArray[ColumnIndex].length, ConSettings^.ReadFormatSettings, Failed));
+          LastWasNull := Result = 0;
+        end;
+      else
+        raise EZSQLException.Create(Format(SErrorConvertionField,
+          ['Field '+ZFastCode.IntToStr(ColumnIndex{$IFNDEF GENERIC_INDEX}+1{$ENDIF}),
+            DefineColumnTypeName(GetMetadata.GetColumnType(ColumnIndex{$IFNDEF GENERIC_INDEX}+1{$ENDIF}))]));
+    end
 end;
 
 {**
@@ -1170,17 +2335,83 @@ end;
     value returned is <code>null</code>
 }
 function TZMySQLPreparedResultSet.GetTime(ColumnIndex: Integer): TDateTime;
+var
+  Failed: Boolean;
 begin
 {$IFNDEF DISABLE_CHECKING}
+  CheckClosed;
   CheckColumnConvertion(ColumnIndex, stTime);
 {$ENDIF}
-  if not sysUtils.TryEncodeTime(PMYSQL_TIME(FColumnArray[ColumnIndex - 1].buffer)^.Hour,
-                                PMYSQL_TIME(FColumnArray[ColumnIndex - 1].buffer)^.Minute,
-                                PMYSQL_TIME(FColumnArray[ColumnIndex - 1].buffer)^.Second,
-                                0,
-                                Result) then
-      Result :=  encodeTime(0,0,0,0);
-  LastWasNull := FColumnArray[ColumnIndex-1].is_null =1;
+  {$IFNDEF GENERIC_INDEX}
+  ColumnIndex := ColumnIndex -1;
+  {$ENDIF}
+  LastWasNull := FColumnArray[ColumnIndex].is_null =1;
+  if LastWasNull then
+    Result := 0
+  else
+    //http://dev.mysql.com/doc/refman/5.1/de/numeric-types.html
+    Case FMysqlFieldTypes[ColumnIndex] of
+      FIELD_TYPE_BIT://http://dev.mysql.com/doc/refman/5.0/en/bit-type.html
+        Result := 0;
+      FIELD_TYPE_DECIMAL, FIELD_TYPE_NEWDECIMAL:
+        Result := RawToFloatDef(PAnsiChar(FColumnArray[ColumnIndex].buffer), '.', 0);
+      FIELD_TYPE_TINY:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PShortInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PByte(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_SHORT:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PSmallInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_LONG:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PLongInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PLongWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_FLOAT:     Result := PSingle(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_DOUBLE:    Result := PDouble(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_NULL:      Result := 0;
+      FIELD_TYPE_DATE, FIELD_TYPE_NEWDATE: Result := 0;
+      FIELD_TYPE_TIMESTAMP, FIELD_TYPE_DATETIME, FIELD_TYPE_TIME:
+        if not sysUtils.TryEncodeTime(
+            PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.Hour,
+            PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.Minute,
+            PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.Second,
+            0{PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.second_part}, Result) then
+          Result := 0;
+      FIELD_TYPE_LONGLONG:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PInt64(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PUInt64(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_INT24: //warning Delphi deosn't have a 24 bit float -> samllint is a 2Byte, integer is a 4Byte but int24 is a 3Byte value!
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PLongInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PLongWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_YEAR:
+        if not TryEncodeDate(PWord(FColumnArray[ColumnIndex].buffer)^, 1,1, Result) then
+          Result := 0;
+      FIELD_TYPE_VARCHAR, FIELD_TYPE_VAR_STRING, FIELD_TYPE_STRING,
+      FIELD_TYPE_ENUM, FIELD_TYPE_SET,
+      FIELD_TYPE_TINY_BLOB, FIELD_TYPE_MEDIUM_BLOB, FIELD_TYPE_LONG_BLOB,
+      FIELD_TYPE_BLOB, FIELD_TYPE_GEOMETRY:
+        begin
+          if (PAnsiChar(FColumnArray[ColumnIndex].buffer)+2)^ = ':' then //possible date if Len = 10 then
+            Result := RawSQLTimeToDateTime(PAnsiChar(FColumnArray[ColumnIndex].buffer),
+              FColumnArray[ColumnIndex].length, ConSettings^.ReadFormatSettings, Failed{%H-})
+          else
+            Result := Frac(RawSQLTimeStampToDateTime(PAnsiChar(FColumnArray[ColumnIndex].buffer),
+              FColumnArray[ColumnIndex].length, ConSettings^.ReadFormatSettings, Failed));
+          LastWasNull := Result = 0;
+        end;
+      else
+        raise EZSQLException.Create(Format(SErrorConvertionField,
+          ['Field '+ZFastCode.IntToStr(ColumnIndex{$IFNDEF GENERIC_INDEX}+1{$ENDIF}),
+            DefineColumnTypeName(GetMetadata.GetColumnType(ColumnIndex{$IFNDEF GENERIC_INDEX}+1{$ENDIF}))]));
+    end
 end;
 
 {**
@@ -1194,12 +2425,106 @@ end;
   @exception SQLException if a database access error occurs
 }
 function TZMySQLPreparedResultSet.GetTimestamp(ColumnIndex: Integer): TDateTime;
+var
+  Failed: Boolean;
+  tmp: TDateTime;
 begin
 {$IFNDEF DISABLE_CHECKING}
-  CheckColumnConvertion(ColumnIndex, stTimestamp);
+  CheckClosed;
+  CheckColumnConvertion(ColumnIndex, stTimeStamp);
 {$ENDIF}
-  Result := GetDate(ColumnIndex) + GetTime(ColumnIndex);
-  LastWasNull := FColumnArray[ColumnIndex-1].is_null =1;
+  {$IFNDEF GENERIC_INDEX}
+  ColumnIndex := ColumnIndex -1;
+  {$ENDIF}
+  LastWasNull := FColumnArray[ColumnIndex].is_null =1;
+  if LastWasNull then
+    Result := 0
+  else
+    //http://dev.mysql.com/doc/refman/5.1/de/numeric-types.html
+    Case FMysqlFieldTypes[ColumnIndex] of
+      FIELD_TYPE_BIT://http://dev.mysql.com/doc/refman/5.0/en/bit-type.html
+        Result := 0;
+      FIELD_TYPE_DECIMAL, FIELD_TYPE_NEWDECIMAL:
+        Result := RawToFloatDef(PAnsiChar(FColumnArray[ColumnIndex].buffer), '.', 0);
+      FIELD_TYPE_TINY:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PShortInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PByte(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_SHORT:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PSmallInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_LONG:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PLongInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PLongWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_FLOAT:     Result := PSingle(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_DOUBLE:    Result := PDouble(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_NULL:      Result := 0;
+      FIELD_TYPE_DATE, FIELD_TYPE_NEWDATE:
+        if not sysUtils.TryEncodeDate(
+            PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.Year,
+            PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.Month,
+            PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.Day, Result) then
+          Result := encodeDate(1900, 1, 1);
+      FIELD_TYPE_TIME:
+        if not sysUtils.TryEncodeTime(
+            PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.Hour,
+            PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.Minute,
+            PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.Second,
+            0{PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.second_part}, Result) then
+          Result := 0;
+      FIELD_TYPE_TIMESTAMP, FIELD_TYPE_DATETIME:
+        begin
+          if not sysUtils.TryEncodeDate(
+              PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.Year,
+              PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.Month,
+              PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.Day, tmp) then
+            tmp := encodeDate(1900, 1, 1);
+          if not sysUtils.TryEncodeTime(
+              PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.Hour,
+              PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.Minute,
+              PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.Second,
+              0{PMYSQL_TIME(FColumnArray[ColumnIndex].buffer)^.second_part}, Result) then
+            Result := 0;
+          Result := Result + tmp;
+        end;
+      FIELD_TYPE_LONGLONG:
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PInt64(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PUInt64(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_INT24: //warning Delphi deosn't have a 24 bit float -> samllint is a 2Byte, integer is a 4Byte but int24 is a 3Byte value!
+        if FMySQLSignedFlags[ColumnIndex] then
+          Result := PLongInt(FColumnArray[ColumnIndex].buffer)^
+        else
+          Result := PLongWord(FColumnArray[ColumnIndex].buffer)^;
+      FIELD_TYPE_YEAR:
+        if not TryEncodeDate(PWord(FColumnArray[ColumnIndex].buffer)^, 1,1, Result) then
+          Result := 0;
+      FIELD_TYPE_VARCHAR, FIELD_TYPE_VAR_STRING, FIELD_TYPE_STRING,
+      FIELD_TYPE_ENUM, FIELD_TYPE_SET,
+      FIELD_TYPE_TINY_BLOB, FIELD_TYPE_MEDIUM_BLOB, FIELD_TYPE_LONG_BLOB,
+      FIELD_TYPE_BLOB, FIELD_TYPE_GEOMETRY:
+        begin
+          if (PAnsiChar(FColumnArray[ColumnIndex].buffer)+2)^ = ':' then
+            Result := RawSQLTimeToDateTime(PAnsiChar(FColumnArray[ColumnIndex].buffer),
+              FColumnArray[ColumnIndex].length, ConSettings^.ReadFormatSettings, Failed{%H-})
+          else
+            if (ConSettings^.ReadFormatSettings.DateTimeFormatLen - FColumnArray[ColumnIndex].length) <= 4 then
+              Result := RawSQLTimeStampToDateTime(PAnsiChar(FColumnArray[ColumnIndex].buffer), FColumnArray[ColumnIndex].length, ConSettings^.ReadFormatSettings, Failed)
+            else
+              Result := RawSQLTimeToDateTime(PAnsiChar(FColumnArray[ColumnIndex].buffer), FColumnArray[ColumnIndex].length, ConSettings^.ReadFormatSettings, Failed);
+          LastWasNull := Result = 0;
+        end;
+      else
+        raise EZSQLException.Create(Format(SErrorConvertionField,
+          ['Field '+ZFastCode.IntToStr(ColumnIndex{$IFNDEF GENERIC_INDEX}+1{$ENDIF}),
+            DefineColumnTypeName(GetMetadata.GetColumnType(ColumnIndex{$IFNDEF GENERIC_INDEX}+1{$ENDIF}))]));
+    end
 end;
 
 {**
@@ -1229,7 +2554,7 @@ begin
   CheckColumnConvertion(ColumnIndex, stAsciiStream);
 {$ENDIF}
   Result := TStringStream.Create(InternalGetString(ColumnIndex));
-  LastWasNull := FColumnArray[ColumnIndex-1].is_null =1;
+  LastWasNull := FColumnArray[ColumnIndex{$IFNDEF GENERIC_INDEX}-1{$ENDIF}].is_null =1;
 end;
 
 {**
@@ -1263,11 +2588,11 @@ begin
 {$IFNDEF DISABLE_CHECKING}
   CheckColumnConvertion(ColumnIndex, stUnicodeStream);
 {$ENDIF}
-  WS := ZDbcUnicodeString(InternalGetString(ColumnIndex));
+  WS := ConSettings^.ConvFuncs.ZRawToUnicode(InternalGetString(ColumnIndex), ConSettings^.ClientCodePage^.CP);
   Result := TMemoryStream.Create;
   Result.Write(PWideChar(WS)^, Length(WS) *2);
   Result.Position := 0;
-  LastWasNull := FColumnArray[ColumnIndex-1].is_null =1;
+  LastWasNull := FColumnArray[ColumnIndex{$IFNDEF GENERIC_INDEX}-1{$ENDIF}].is_null =1;
 end;
 
 {**
@@ -1295,10 +2620,16 @@ begin
 {$IFNDEF DISABLE_CHECKING}
   CheckColumnConvertion(ColumnIndex, stBinaryStream);
 {$ENDIF}
+  {$IFNDEF GENERIC_INDEX}
+  ColumnIndex := ColumnIndex -1;
+  {$ENDIF}
   Result := TMemoryStream.Create;
-  Result.Write(FColumnArray[ColumnIndex - 1].buffer[0], FColumnArray[ColumnIndex - 1].length);
-  Result.Position := 0;
-  LastWasNull := FColumnArray[ColumnIndex-1].is_null =1;
+  LastWasNull := FColumnArray[ColumnIndex].is_null =1;
+  if not LastWasNull then
+  begin
+    Result.Write(FColumnArray[ColumnIndex].buffer[0], FColumnArray[ColumnIndex].length);
+    Result.Position := 0;
+  end;
 end;
 
 {**
@@ -1312,7 +2643,7 @@ end;
 }
 function TZMySQLPreparedResultSet.GetBlob(ColumnIndex: Integer): IZBlob;
 var
-  Stream: TStream;
+  RawTemp: RawByteString;
 begin
   Result := nil;
 {$IFNDEF DISABLE_CHECKING}
@@ -1320,105 +2651,21 @@ begin
 {$ENDIF}
 
   LastWasNull := IsNull(ColumnIndex);
-  if LastWasNull then
-      Exit;
-
-  Stream := nil;
-  try
-    if not LastWasNull then
-    begin
-      case GetMetadata.GetColumnType(ColumnIndex) of
-        stBinaryStream: Stream := GetBinaryStream(ColumnIndex);
-        stUnicodeStream: Stream := GetUnicodeStream(ColumnIndex);
+  if not LastWasNull then
+    case GetMetadata.GetColumnType(ColumnIndex) of
+      stBinaryStream, stBytes:
+        Result := TZAbstractBlob.CreateWithData(Pointer(FColumnArray[ColumnIndex{$IFNDEF GENERIC_INDEX}-1{$ENDIF}].buffer),
+          FColumnArray[ColumnIndex{$IFNDEF GENERIC_INDEX}-1{$ENDIF}].length);
+      stAsciiStream, stUnicodeStream, stString, stUnicodeString:
+        Result := TZAbstractClob.CreateWithData(PAnsichar(FColumnArray[ColumnIndex{$IFNDEF GENERIC_INDEX}-1{$ENDIF}].buffer),
+          FColumnArray[ColumnIndex{$IFNDEF GENERIC_INDEX}-1{$ENDIF}].length, ConSettings^.ClientCodePage^.CP, ConSettings);
       else
-        Stream := TStringStream.Create(GetValidatedAnsiString(InternalGetString(ColumnIndex), ConSettings, True));
-      end;
-      Result := TZAbstractBlob.CreateWithStream(Stream, GetStatement.GetConnection,
-        GetMetadata.GetColumnType(ColumnIndex) = stUnicodeStream)
-    end
-    else
-      Result := TZAbstractBlob.CreateWithStream(nil, GetStatement.GetConnection);
-  finally
-    if Assigned(Stream) then
-      Stream.Free;
-  end;
-end;
-
-function TZMySQLPreparedResultSet.bufferasint64(ColumnIndex: Integer): Int64;
-begin
-  //http://dev.mysql.com/doc/refman/5.1/de/numeric-types.html
-  if FBindBuffer.GetBufferIsSigned(ColumnIndex) then
-    Case FBindBuffer.GetBufferType(ColumnIndex) of
-      FIELD_TYPE_DECIMAL:   Result := 0;
-      FIELD_TYPE_TINY:      Result := PByte(FColumnArray[ColumnIndex-1].buffer)^;
-      FIELD_TYPE_SHORT:     Result := PWord(FColumnArray[ColumnIndex-1].buffer)^;
-      FIELD_TYPE_LONG:      Result := PCardinal(FColumnArray[ColumnIndex-1].buffer)^;
-      FIELD_TYPE_FLOAT:     Result := 0;
-      FIELD_TYPE_DOUBLE:    Result := 0;
-      FIELD_TYPE_NULL:      Result := 0;
-      FIELD_TYPE_TIMESTAMP: Result := 0;
-      FIELD_TYPE_LONGLONG:  Result := PULongLong(FColumnArray[ColumnIndex-1].buffer)^;
-      FIELD_TYPE_INT24:     Result := PCardinal(FColumnArray[ColumnIndex-1].buffer)^;
-      (*FIELD_TYPE_DATE      = 10,
-      FIELD_TYPE_TIME      = 11,
-      FIELD_TYPE_DATETIME  = 12,*)
-      FIELD_TYPE_YEAR:      Result := PWord(FColumnArray[ColumnIndex-1].buffer)^;
-      (*FIELD_TYPE_NEWDATE   = 14,
-      FIELD_TYPE_VARCHAR   = 15, //<--ADDED by fduenas 20-06-2006
-      FIELD_TYPE_BIT: ;
-      FIELD_TYPE_NEWDECIMAL = 246, //<--ADDED by fduenas 20-06-2006
-      FIELD_TYPE_ENUM      = 247,
-      FIELD_TYPE_SET       = 248,
-      FIELD_TYPE_TINY_BLOB,
-      FIELD_TYPE_MEDIUM_BLOB,
-      FIELD_TYPE_LONG_BLOB,
-      FIELD_TYPE_BLOB:      Result := 0;
-      FIELD_TYPE_VAR_STRING = 253,
-      FIELD_TYPE_STRING:    = 254,
-      FIELD_TYPE_GEOMETRY:  = 255*)
-      else Result := 0;
-    end
-  else
-    Case FBindBuffer.GetBufferType(ColumnIndex) of
-      FIELD_TYPE_DECIMAL:   Result := 0;
-      FIELD_TYPE_TINY:      Result := PShortInt(FColumnArray[ColumnIndex-1].buffer)^;
-      FIELD_TYPE_SHORT:     Result := PSmallInt(FColumnArray[ColumnIndex-1].buffer)^;
-      FIELD_TYPE_LONG:      Result := PInteger(FColumnArray[ColumnIndex-1].buffer)^;
-      FIELD_TYPE_FLOAT:     Result := 0;
-      FIELD_TYPE_DOUBLE:    Result := 0;
-      FIELD_TYPE_NULL:      Result := 0;
-      FIELD_TYPE_TIMESTAMP: Result := 0;
-      FIELD_TYPE_LONGLONG:  Result := PInt64(FColumnArray[ColumnIndex-1].buffer)^;
-      FIELD_TYPE_INT24:     Result := PInteger(FColumnArray[ColumnIndex-1].buffer)^;
-      (*FIELD_TYPE_DATE      = 10,
-      FIELD_TYPE_TIME      = 11,
-      FIELD_TYPE_DATETIME  = 12, *)
-      FIELD_TYPE_YEAR:      Result := PSmallInt(FColumnArray[ColumnIndex-1].buffer)^;
-      (*FIELD_TYPE_NEWDATE   = 14,
-      FIELD_TYPE_VARCHAR   = 15, //<--ADDED by fduenas 20-06-2006
-      FIELD_TYPE_BIT: ;
-      FIELD_TYPE_NEWDECIMAL = 246, //<--ADDED by fduenas 20-06-2006
-      FIELD_TYPE_ENUM      = 247,
-      FIELD_TYPE_SET       = 248,
-      FIELD_TYPE_TINY_BLOB,
-      FIELD_TYPE_MEDIUM_BLOB,
-      FIELD_TYPE_LONG_BLOB,
-      FIELD_TYPE_BLOB:      Result := 0;
-      FIELD_TYPE_VAR_STRING = 253,
-      FIELD_TYPE_STRING:    = 254,
-      FIELD_TYPE_GEOMETRY:  = 255*)
-      else Result := 0;
+        begin
+          RawTemp := InternalGetString(ColumnIndex);
+          Result := TZAbstractClob.CreateWithData(PAnsiChar(RawTemp), Length(RawTemp),
+            ConSettings^.ClientCodePage^.CP, ConSettings);
+        end;
     end;
-end;
-
-function TZMySQLPreparedResultSet.bufferasextended(ColumnIndex: Integer): Extended;
-begin
-   Case FBindBuffer.GetBufferType(ColumnIndex) of
-     FIELD_TYPE_FLOAT: Result := psingle(FColumnArray[ColumnIndex-1].buffer)^;
-     FIELD_TYPE_DOUBLE: Result := pdouble(FColumnArray[ColumnIndex-1].buffer)^;
-   else
-      Result := SQLStrToFloatDef(InternalGetString(ColumnIndex), 0);
-   End
 end;
 
 {**
@@ -1538,11 +2785,11 @@ begin
   FStatement := Statement as IZMysqlStatement;
 
   { Defines an index of autoincrement field. }
-  FAutoColumnIndex := 0;
-  for I := 1 to Metadata.GetColumnCount do
+  FAutoColumnIndex := {$IFDEF GENERIC_INDEX}-1{$ELSE}0{$ENDIF};
+  for I := FirstDbcIndex to Metadata.GetColumnCount{$IFDEF GENERIC_INDEX}-1{$ENDIF} do
   begin
     if Metadata.IsAutoIncrement(I) and
-      (Metadata.GetColumnType(I) in [stByte, stShort, stInteger, stLong]) then
+      (Metadata.GetColumnType(I) in [stByte, stShort, stWord, stSmall, stLongWord, stInteger, stULong, stLong]) then
     begin
       FAutoColumnIndex := I;
       Break;
@@ -1628,9 +2875,7 @@ procedure TZMySQLCachedResolver.PostUpdates(Sender: IZCachedResultSet;
 begin
   inherited PostUpdates(Sender, UpdateType, OldRowAccessor, NewRowAccessor);
   if (UpdateType = utInserted) then
-  begin
-   UpdateAutoIncrementFields(Sender, UpdateType, OldRowAccessor, NewRowAccessor, Self);
-  end;
+    UpdateAutoIncrementFields(Sender, UpdateType, OldRowAccessor, NewRowAccessor, Self);
 end;
 
 {**
@@ -1647,7 +2892,7 @@ var
   Plaindriver : IZMysqlPlainDriver;
 begin
   inherited UpdateAutoIncrementFields(Sender, UpdateType, OldRowAccessor, NewRowAccessor, Resolver);
-  if not ((FAutoColumnIndex > 0) and
+  if not ((FAutoColumnIndex {$IFDEF GENERIC_INDEX}>={$ELSE}>{$ENDIF} 0) and
           (OldRowAccessor.IsNull(FAutoColumnIndex) or (OldRowAccessor.GetValue(FAutoColumnIndex).VInteger=0))) then
      exit;
   Plaindriver := (Connection as IZMysqlConnection).GetPlainDriver;
@@ -1656,7 +2901,6 @@ begin
     NewRowAccessor.SetLong(FAutoColumnIndex, PlainDriver.GetPreparedInsertID(FStatement.GetStmtHandle))
   else}
     NewRowAccessor.SetLong(FAutoColumnIndex, PlainDriver.GetLastInsertID(FHandle));
-
 end;
 
 {**

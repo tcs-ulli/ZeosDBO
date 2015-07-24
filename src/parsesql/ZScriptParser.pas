@@ -100,7 +100,7 @@ type
 
 implementation
 
-uses ZMessages, ZSysUtils;
+uses ZMessages, ZSysUtils, ZFastCode;
 
 { TZSQLScriptParser }
 
@@ -201,7 +201,7 @@ var
   Tokens: TStrings;
   TokenType: TZTokenType;
   TokenValue: string;
-  TokenIndex, LastStmtEndingIndex, iPos: Integer;
+  TokenIndex, iPos: Integer;
   SQL, Temp: string;
   EndOfStatement: Boolean;
   Extract: Boolean;
@@ -224,8 +224,6 @@ var
     TokenValue := Tokens[TokenIndex];
     TokenType := TZTokenType({$IFDEF FPC}Pointer({$ENDIF}
       Tokens.Objects[TokenIndex]{$IFDEF FPC}){$ENDIF});
-    if TokenValue = Delimiter  then
-      LastStmtEndingIndex := TokenIndex;
     Inc(TokenIndex);
   end;
 
@@ -350,9 +348,9 @@ begin
           if (DelimiterType = dtSetTerm) and StartsWith(UpperCase(Temp), SetTerm) then
               Delimiter := Copy(Temp, 10, Length(Temp) - 9)
             else
-              if (DelimiterType = dtSetTerm) and ( Pos(SetTerm, UpperCase(Temp)) > 0) then
+              if (DelimiterType = dtSetTerm) and ( ZFastCode.Pos(SetTerm, UpperCase(Temp)) > 0) then
               begin
-                iPos := Pos(SetTerm, UpperCase(Temp))+8;
+                iPos := ZFastCode.Pos(SetTerm, UpperCase(Temp))+8;
                 Delimiter := Copy(Temp, iPos+1, Length(Temp) - iPos);
                 LastComment := TrimRight(Copy(Temp, 1, iPos-9));
               end

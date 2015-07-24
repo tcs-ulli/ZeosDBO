@@ -135,13 +135,13 @@ type
     function SupportsOpenStatementsAcrossCommit: Boolean; override;
     function SupportsOpenStatementsAcrossRollback: Boolean; override;
     function SupportsTransactions: Boolean; override;
-    function SupportsTransactionIsolationLevel(Level: TZTransactIsolationLevel):
+    function SupportsTransactionIsolationLevel(const {%H-}Level: TZTransactIsolationLevel):
       Boolean; override;
     function SupportsDataDefinitionAndDataManipulationTransactions: Boolean; override;
     function SupportsDataManipulationTransactionsOnly: Boolean; override;
-    function SupportsResultSetType(_Type: TZResultSetType): Boolean; override;
-    function SupportsResultSetConcurrency(_Type: TZResultSetType;
-      Concurrency: TZResultSetConcurrency): Boolean; override;
+    function SupportsResultSetType(const {%H-}_Type: TZResultSetType): Boolean; override;
+    function SupportsResultSetConcurrency(const {%H-}_Type: TZResultSetType;
+      const {%H-}Concurrency: TZResultSetConcurrency): Boolean; override;
 //    function SupportsBatchUpdates: Boolean; override; -> Not implemented
 
     // maxima:
@@ -251,7 +251,7 @@ type
 
 implementation
 
-uses ZDbcASAUtils, ZDbcUtils;
+uses ZFastCode, ZDbcASAUtils, ZSysUtils;
 
 { TZASADatabaseInfo }
 
@@ -1127,7 +1127,7 @@ end;
   @see Connection
 }
 function TZASADatabaseInfo.SupportsTransactionIsolationLevel(
-  Level: TZTransactIsolationLevel): Boolean;
+  const Level: TZTransactIsolationLevel): Boolean;
 begin
   Result := True;
 end;
@@ -1179,7 +1179,7 @@ end;
   @return <code>true</code> if so; <code>false</code> otherwise
 }
 function TZASADatabaseInfo.SupportsResultSetType(
-  _Type: TZResultSetType): Boolean;
+  const _Type: TZResultSetType): Boolean;
 begin
   Result := True;
 end;
@@ -1193,7 +1193,7 @@ end;
   @return <code>true</code> if so; <code>false</code> otherwise
 }
 function TZASADatabaseInfo.SupportsResultSetConcurrency(
-  _Type: TZResultSetType; Concurrency: TZResultSetConcurrency): Boolean;
+  const _Type: TZResultSetType; const Concurrency: TZResultSetConcurrency): Boolean;
 begin
   Result := True;
 end;
@@ -1277,30 +1277,26 @@ end;
 }
 function TZASADatabaseMetadata.UncachedGetProcedures(const Catalog: string;
   const SchemaPattern: string; const ProcedureNamePattern: string): IZResultSet;
+var Len: NativeUInt;
 begin
-    Result:=inherited UncachedGetProcedures(Catalog, SchemaPattern, ProcedureNamePattern);
+  Result := inherited UncachedGetProcedures(Catalog, SchemaPattern, ProcedureNamePattern);
 
-    with GetStatement.ExecuteQuery(
-      Format('exec sp_jdbc_stored_procedures %s, %s, %s',
-      [ComposeObjectString(Catalog), ComposeObjectString(SchemaPattern), ComposeObjectString(ProcedureNamePattern)])) do
+  with GetStatement.ExecuteQuery(
+    Format('exec sp_jdbc_stored_procedures %s, %s, %s',
+    [ComposeObjectString(Catalog), ComposeObjectString(SchemaPattern), ComposeObjectString(ProcedureNamePattern)])) do
+  begin
+    while Next do
     begin
-      while Next do
-      begin
-        Result.MoveToInsertRow;
-        Result.UpdateStringByName('PROCEDURE_CAT',
-          '');
-        Result.UpdateStringByName('PROCEDURE_SCHEM',
-          GetStringByName('PROCEDURE_SCHEM'));
-        Result.UpdateStringByName('PROCEDURE_NAME',
-          GetStringByName('PROCEDURE_NAME'));
-        Result.UpdateStringByName('REMARKS',
-          GetStringByName('REMARKS'));
-        Result.UpdateShortByName('PROCEDURE_TYPE',
-          GetShortByName('PROCEDURE_TYPE'));
-        Result.InsertRow;
-      end;
-      Close;
+      Result.MoveToInsertRow;
+      Result.UpdateNull(CatalogNameIndex);
+      Result.UpdatePAnsiChar(SchemaNameIndex, GetPAnsiCharByName('PROCEDURE_SCHEM', Len), @Len);
+      Result.UpdatePAnsiChar(ProcedureNameIndex, GetPAnsiCharByName('PROCEDURE_NAME', Len), @Len);
+      Result.UpdatePAnsiChar(ProcedureRemarksIndex, GetPAnsiCharByName('REMARKS', Len), @Len);
+      Result.UpdateSmall(ProcedureTypeIndex, GetSmallByName('PROCEDURE_TYPE'));
+      Result.InsertRow;
     end;
+    Close;
+  end;
 end;
 
 {**
@@ -1362,54 +1358,44 @@ end;
 function TZASADatabaseMetadata.UncachedGetProcedureColumns(const Catalog: string;
   const SchemaPattern: string; const ProcedureNamePattern: string;
   const ColumnNamePattern: string): IZResultSet;
+var Len: NativeUInt;
 begin
-    Result:=inherited UncachedGetProcedureColumns(Catalog, SchemaPattern, ProcedureNamePattern, ColumnNamePattern);
+  Result := inherited UncachedGetProcedureColumns(Catalog, SchemaPattern,
+    ProcedureNamePattern, ColumnNamePattern);
 
-    with GetStatement.ExecuteQuery(
-      Format('exec sp_jdbc_getprocedurecolumns %s, %s, %s, %s',
-      [ComposeObjectString(Catalog), ComposeObjectString(SchemaPattern), ComposeObjectString(ProcedureNamePattern),
-       ComposeObjectString(ColumnNamePattern)])) do
+  with GetStatement.ExecuteQuery(
+    Format('exec sp_jdbc_getprocedurecolumns %s, %s, %s, %s',
+    [ComposeObjectString(Catalog), ComposeObjectString(SchemaPattern),
+      ComposeObjectString(ProcedureNamePattern), ComposeObjectString(ColumnNamePattern)])) do
+  begin
+    while Next do
     begin
-      while Next do
-      begin
-        Result.MoveToInsertRow;
-        Result.UpdateStringByName('PROCEDURE_CAT',
-          '');
-        Result.UpdateStringByName('PROCEDURE_SCHEM',
-          GetStringByName('PROCEDURE_SCHEM'));
-        Result.UpdateStringByName('PROCEDURE_NAME',
-          GetStringByName('PROCEDURE_NAME'));
-        Result.UpdateStringByName('COLUMN_NAME',
-          GetStringByName('COLUMN_NAME'));
-        case GetShortByName('COLUMN_TYPE') of
-          1: Result.UpdateShortByName('COLUMN_TYPE', Ord(pctIn));
-          2: Result.UpdateShortByName('COLUMN_TYPE', Ord(pctInOut));
-          3: Result.UpdateShortByName('COLUMN_TYPE', Ord(pctOut));
-          5: Result.UpdateShortByName('COLUMN_TYPE', Ord(pctReturn));
-        else
-          Result.UpdateShortByName('COLUMN_TYPE', Ord(pctUnknown));
-        end;
-        Result.UpdateShortByName('DATA_TYPE',
-          Ord(ConvertASAJDBCToSqlType(GetShortByName('DATA_TYPE'),
-            ConSettings.CPType)));
-        Result.UpdateStringByName('TYPE_NAME',
-          GetStringByName('TYPE_NAME'));
-        Result.UpdateIntByName('PRECISION',
-          GetIntByName('PRECISION'));
-        Result.UpdateIntByName('LENGTH',
-          GetIntByName('LENGTH'));
-        Result.UpdateShortByName('SCALE',
-          GetShortByName('SCALE'));
-        Result.UpdateShortByName('RADIX',
-          GetShortByName('RADIX'));
-        Result.UpdateShortByName('NULLABLE', 
-          GetShortByName('NULLABLE'));
-        Result.UpdateStringByName('REMARKS',
-          GetStringByName('REMARKS'));
-        Result.InsertRow;
+      Result.MoveToInsertRow;
+      Result.UpdateNull(CatalogNameIndex);
+      Result.UpdatePAnsiChar(SchemaNameIndex, GetPAnsiCharByName('PROCEDURE_SCHEM', Len), @Len);
+      Result.UpdatePAnsiChar(ProcColProcedureNameIndex, GetPAnsiCharByName('PROCEDURE_NAME', Len), @Len);
+      Result.UpdatePAnsiChar(ProcColColumnNameIndex, GetPAnsiCharByName('COLUMN_NAME', Len), @Len);
+      case GetSmallByName('COLUMN_TYPE') of
+        1: Result.UpdateSmall(ProcColColumnTypeIndex, Ord(pctIn));
+        2: Result.UpdateSmall(ProcColColumnTypeIndex, Ord(pctInOut));
+        3: Result.UpdateSmall(ProcColColumnTypeIndex, Ord(pctOut));
+        5: Result.UpdateSmall(ProcColColumnTypeIndex, Ord(pctReturn));
+      else
+        Result.UpdateSmall(ProcColColumnTypeIndex, Ord(pctUnknown));
       end;
-      Close;
+      Result.UpdateSmall(ProcColDataTypeIndex, Ord(ConvertASAJDBCToSqlType(
+        GetSmallByName('DATA_TYPE'), ConSettings.CPType)));
+      Result.UpdatePAnsiChar(ProcColTypeNameIndex, GetPAnsiCharByName('TYPE_NAME', Len), @Len);
+      Result.UpdateInt(ProcColPrecisionIndex, GetIntByName('PRECISION'));
+      Result.UpdateInt(ProcColLengthIndex, GetIntByName('LENGTH'));
+      Result.UpdateSmall(ProcColScaleIndex, GetSmallByName('SCALE'));
+      Result.UpdateSmall(ProcColRadixIndex, GetSmallByName('RADIX'));
+      Result.UpdateSmall(ProcColNullableIndex, GetSmallByName('NULLABLE'));
+      Result.UpdatePAnsiChar(ProcColRemarksIndex, GetPAnsiCharByName('REMARKS', Len), @Len);
+      Result.InsertRow;
     end;
+    Close;
+  end;
 end;
 
 {**
@@ -1446,41 +1432,36 @@ function TZASADatabaseMetadata.UncachedGetTables(const Catalog: string;
   const SchemaPattern: string; const TableNamePattern: string;
   const Types: TStringDynArray): IZResultSet;
 var
+  Len: NativeUInt;
   I: Integer;
   TableTypes: string;
 begin
-    Result:=inherited UncachedGetTables(Catalog, SchemaPattern, TableNamePattern, Types);
+  Result:=inherited UncachedGetTables(Catalog, SchemaPattern, TableNamePattern, Types);
 
-    TableTypes := '';
-    for I := 0 to Length(Types) - 1 do
-    begin
-      if TableTypes <> '' then
-        TableTypes := TableTypes + ',';
-      TableTypes := TableTypes + AnsiQuotedStr(Types[I], '''');
-    end;
+  TableTypes := '';
+  for I := 0 to Length(Types) - 1 do
+  begin
+    if TableTypes <> '' then
+      TableTypes := TableTypes + ',';
+    TableTypes := TableTypes + AnsiQuotedStr(Types[I], '''');
+  end;
 
-    with GetStatement.ExecuteQuery(
-      Format('exec sp_jdbc_tables %s, %s, %s, %s',
-        [ComposeObjectString(TableNamePattern), ComposeObjectString(SchemaPattern), ComposeObjectString(Catalog),
-         ComposeObjectString(TableTypes, 'null', '"')])) do
+  with GetStatement.ExecuteQuery(
+    Format('exec sp_jdbc_tables %s, %s, %s, %s',
+      [ComposeObjectString(TableNamePattern), ComposeObjectString(SchemaPattern), ComposeObjectString(Catalog),
+       ComposeObjectString(TableTypes, 'null', '"')])) do
+  begin
+    while Next do
     begin
-      while Next do
-      begin
-        Result.MoveToInsertRow;
-        Result.UpdateStringByName('TABLE_CAT',
-          '');
-        Result.UpdateStringByName('TABLE_SCHEM',
-          GetStringByName('TABLE_SCHEM'));
-        Result.UpdateStringByName('TABLE_NAME',
-          GetStringByName('TABLE_NAME'));
-        Result.UpdateStringByName('TABLE_TYPE',
-          GetStringByName('TABLE_TYPE'));
-        Result.UpdateStringByName('REMARKS',
-          GetStringByName('REMARKS'));
-        Result.InsertRow;
-      end;
-      Close;
+      Result.MoveToInsertRow;
+      Result.UpdatePAnsiChar(SchemaNameIndex, GetPAnsiCharByName('TABLE_SCHEM', Len), @Len);
+      Result.UpdatePAnsiChar(TableNameIndex, GetPAnsiCharByName('TABLE_NAME', Len), @Len);
+      Result.UpdatePAnsiChar(TableColumnsSQLType, GetPAnsiCharByName('TABLE_TYPE', Len), @Len);
+      Result.UpdatePAnsiChar(TableColumnsRemarks, GetPAnsiCharByName('REMARKS', Len), @Len);
+      Result.InsertRow;
     end;
+    Close;
+  end;
 end;
 
 {**
@@ -1496,21 +1477,21 @@ end;
   schema name
 }
 function TZASADatabaseMetadata.UncachedGetSchemas: IZResultSet;
+var Len: NativeUInt;
 begin
-    Result:=inherited UncachedGetSchemas;
+  Result:=inherited UncachedGetSchemas;
 
-    with GetStatement.ExecuteQuery('select TABLE_SCHEM=name  from sysusers where suid >= -2 order by name'
- {'exec sp_jdbc_getschemas'}) do
+  with GetStatement.ExecuteQuery('select TABLE_SCHEM=name  from sysusers where suid >= -2 order by name'
+{'exec sp_jdbc_getschemas'}) do
+  begin
+    while Next do
     begin
-      while Next do
-      begin
-        Result.MoveToInsertRow;
-        Result.UpdateStringByName('TABLE_SCHEM',
-          GetStringByName('TABLE_SCHEM'));
-        Result.InsertRow;
-      end;
-      Close;
+      Result.MoveToInsertRow;
+      Result.UpdatePAnsiChar(SchemaColumnsTableSchemaIndex, GetPAnsiCharByName('TABLE_SCHEM', Len), @Len);
+      Result.InsertRow;
     end;
+    Close;
+  end;
 end;
 
 {**
@@ -1534,14 +1515,14 @@ const
 var
   I: Integer;
 begin
-    Result:=inherited UncachedGetTableTypes;
+  Result:=inherited UncachedGetTableTypes;
 
-    for I := 0 to 4 do
-    begin
-      Result.MoveToInsertRow;
-      Result.UpdateString(1, TablesTypes[I]);
-      Result.InsertRow;
-    end;
+  for I := 0 to 4 do
+  begin
+    Result.MoveToInsertRow;
+    Result.UpdateString(TableTypeColumnTableTypeIndex, TablesTypes[I]);
+    Result.InsertRow;
+  end;
 end;
 
 {**
@@ -1598,93 +1579,78 @@ end;
 function TZASADatabaseMetadata.UncachedGetColumns(const Catalog: string;
   const SchemaPattern: string; const TableNamePattern: string;
   const ColumnNamePattern: string): IZResultSet;
+var Len: NativeUInt;
 begin
-    Result:=inherited UncachedGetColumns(Catalog, SchemaPattern, TableNamePattern, ColumnNamePattern);
+  Result:=inherited UncachedGetColumns(Catalog, SchemaPattern, TableNamePattern, ColumnNamePattern);
 
-    with GetStatement.ExecuteQuery(
-      Format('exec sp_jdbc_columns %s, %s, %s, %s',
-      [ComposeObjectString(TableNamePattern), ComposeObjectString(SchemaPattern), ComposeObjectString(Catalog),
-       ComposeObjectString(ColumnNamePattern)])) do
+  with GetStatement.ExecuteQuery(
+    Format('exec sp_jdbc_columns %s, %s, %s, %s',
+    [ComposeObjectString(TableNamePattern), ComposeObjectString(SchemaPattern), ComposeObjectString(Catalog),
+     ComposeObjectString(ColumnNamePattern)])) do
+  begin
+    while Next do
     begin
-      while Next do
-      begin
-        Result.MoveToInsertRow;
-        Result.UpdateStringByName('TABLE_CAT',
-          '');
-        Result.UpdateStringByName('TABLE_SCHEM',
-          GetStringByName('TABLE_SCHEM'));
-        Result.UpdateStringByName('TABLE_NAME',
-          GetStringByName('TABLE_NAME'));
-        Result.UpdateStringByName('COLUMN_NAME',
-          GetStringByName('COLUMN_NAME'));
-  //The value in the resultset will be used
-  //      Result.UpdateShortByName('DATA_TYPE',
-  //        Ord(ConvertASAJDBCToSqlType(GetShortByName('DATA_TYPE'))));
-        Result.UpdateStringByName('TYPE_NAME',
-          GetStringByName('TYPE_NAME'));
-        //Result.UpdateIntByName('COLUMN_SIZE',
-          //GetIntByName('COLUMN_SIZE'));
-        Result.UpdateIntByName('BUFFER_LENGTH',
-          GetIntByName('BUFFER_LENGTH'));
-        Result.UpdateIntByName('DECIMAL_DIGITS',
-          GetIntByName('DECIMAL_DIGITS'));
-        Result.UpdateIntByName('NUM_PREC_RADIX',
-          GetShortByName('NUM_PREC_RADIX'));
-        Result.UpdateStringByName('REMARKS',
-          GetStringByName('REMARKS'));
-        Result.UpdateStringByName('COLUMN_DEF',
-          GetStringByName('COLUMN_DEF'));
-        Result.UpdateShortByName('SQL_DATA_TYPE',
-          GetShortByName('SQL_DATA_TYPE'));
-        Result.UpdateShortByName('SQL_DATETIME_SUB',
-          GetShortByName('SQL_DATETIME_SUB'));
-        Result.UpdateIntByName('CHAR_OCTET_LENGTH',
-          GetIntByName('CHAR_OCTET_LENGTH'));
-        Result.UpdateIntByName('ORDINAL_POSITION',
-          GetIntByName('ORDINAL_POSITION'));
-
-        Result.UpdateBooleanByName('AUTO_INCREMENT',
-          CompareText( Trim( String(GetStringByName('COLUMN_DEF'))), 'autoincrement') = 0 );
-        Result.UpdateNullByName('CASE_SENSITIVE');
-        Result.UpdateBooleanByName('SEARCHABLE', False);
-        Result.UpdateStringByName('IS_NULLABLE', GetStringByName( 'IS_NULLABLE'));
-        Result.UpdateShortByName('NULLABLE', GetShortByName( 'NULLABLE'));
-        Result.UpdateBooleanByName('WRITABLE', True);
-        Result.UpdateBooleanByName('DEFINITELYWRITABLE', True);
-        Result.UpdateBooleanByName('READONLY', False);
-        Result.InsertRow;
-      end;
-      Close;
+      Result.MoveToInsertRow;
+      Result.UpdatePAnsiChar(SchemaNameIndex, GetPAnsiCharByName('TABLE_SCHEM', Len), @Len);
+      Result.UpdatePAnsiChar(TableNameIndex, GetPAnsiCharByName('TABLE_NAME', Len), @Len);
+      Result.UpdatePAnsiChar(ColumnNameIndex, GetPAnsiCharByName('COLUMN_NAME', Len), @Len);
+//The value in the resultset will be used
+//      Result.UpdateSmall(TableColColumnTypeIndex,
+//        Ord(ConvertASAJDBCToSqlType(GetSmallByName('DATA_TYPE'))));
+      Result.UpdatePAnsiChar(TableColColumnTypeNameIndex, GetPAnsiCharByName('TYPE_NAME', Len), @Len);
+      //Result.UpdateInt(TableColColumnSizeIndex, GetIntByName('COLUMN_SIZE'));
+      Result.UpdateInt(TableColColumnBufLengthIndex, GetIntByName('BUFFER_LENGTH'));
+      Result.UpdateInt(TableColColumnDecimalDigitsIndex, GetIntByName('DECIMAL_DIGITS'));
+      Result.UpdateInt(TableColColumnNumPrecRadixIndex, GetSmallByName('NUM_PREC_RADIX'));
+      Result.UpdateSmall(TableColColumnNullableIndex, GetSmallByName( 'NULLABLE'));
+      Result.UpdatePAnsiChar(TableColColumnRemarksIndex, GetPAnsiCharByName('REMARKS', Len), @Len);
+      Result.UpdatePAnsiChar(TableColColumnColDefIndex, GetPAnsiCharByName('COLUMN_DEF', Len), @Len);
+      Result.UpdateSmall(TableColColumnSQLDataTypeIndex, GetSmallByName('SQL_DATA_TYPE'));
+      Result.UpdateSmall(TableColColumnSQLDateTimeSubIndex, GetSmallByName('SQL_DATETIME_SUB'));
+      Result.UpdateInt(TableColColumnCharOctetLengthIndex, GetIntByName('CHAR_OCTET_LENGTH'));
+      Result.UpdateInt(TableColColumnOrdPosIndex, GetIntByName('ORDINAL_POSITION'));
+      Result.UpdatePAnsiChar(TableColColumnIsNullableIndex, GetPAnsiCharByName('IS_NULLABLE', Len), @Len);
+      Result.UpdateBoolean(TableColColumnAutoIncIndex,
+        CompareText( Trim(GetStringByName('COLUMN_DEF')), 'autoincrement') = 0 );
+      //Result.UpdateNull(TableColColumnCaseSensitiveIndex);
+      Result.UpdateBoolean(TableColColumnSearchableIndex, False);
+      Result.UpdateBoolean(TableColColumnWritableIndex, True);
+      Result.UpdateBoolean(TableColColumnDefinitelyWritableIndex, True);
+      Result.UpdateBoolean(TableColColumnReadonlyIndex, False);
+      Result.InsertRow;
     end;
-    Result.First;
-    with GetStatement.ExecuteQuery(
-        Format('select c.column_id,c.nulls '+
-          'from SYS.SYSCOLUMN as c join SYS.SYSTABLE as t on c.table_id=t.table_id '+
-          'where t.table_name like %s escape ''\'' and '+
-          'USER_NAME(t.creator) like %s escape ''\'' and '+
-          'c.column_name like %s escape ''\'' and c.column_type=''C'' '+
-          'order by USER_NAME(t.creator) asc,t.table_name asc,c.column_id asc',
-          [ComposeObjectString(TableNamePattern, '''%'''),
-           ComposeObjectString(SchemaPattern, '''%'''),
-           ComposeObjectString(ColumnNamePattern, '''%''')])) do
+    Close;
+  end;
+  Result.First;
+  with GetStatement.ExecuteQuery(
+      Format('select c.column_id,c.nulls '+
+        'from SYS.SYSCOLUMN as c join SYS.SYSTABLE as t on c.table_id=t.table_id '+
+        'where t.table_name like ''%s'' escape ''\'' and '+
+        //'where t.table_name like %s escape ''\'' and '+
+        'USER_NAME(t.creator) like %s escape ''\'' and '+
+        'c.column_name like %s escape ''\'' and c.column_type=''C'' '+
+        'order by USER_NAME(t.creator) asc,t.table_name asc,c.column_id asc',
+        [DeComposeObjectString(TableNamePattern),//, '''%'''),
+        //[ComposeObjectString(TableNamePattern), '''%'''),
+         ComposeObjectString(SchemaPattern, '''%'''),
+         ComposeObjectString(ColumnNamePattern, '''%''')])) do
+  begin
+    while Next do
     begin
-      while Next do
+      while Result.GetInt(TableColColumnOrdPosIndex) <> GetIntByName( 'column_id') do
+        Result.Next;
+      Result.UpdateBoolean(TableColColumnWritableIndex, False);
+      Result.UpdateBoolean(TableColColumnDefinitelyWritableIndex, False);
+      Result.UpdateBoolean(TableColColumnReadonlyIndex, True);
+      if GetRawByteStringByName( 'nulls') = 'N' then
       begin
-        while Result.GetIntByName( 'ORDINAL_POSITION') <>
-                GetIntByName( 'column_id') do
-          Result.Next;
-        Result.UpdateBooleanByName( 'WRITABLE', False);
-        Result.UpdateBooleanByName( 'DEFINITELYWRITABLE', False);
-        Result.UpdateBooleanByName( 'READONLY', True);
-        if GetStringByName( 'nulls') = 'N' then
-        begin
-          Result.UpdateShortByName( 'NULLABLE', 0);
-          Result.UpdateStringByName( 'IS_NULLABLE', 'NO');
-        end;
-        Result.UpdateRow;
+        Result.UpdateSmall(TableColColumnNullableIndex, 0);
+        Result.UpdateRawByteString(TableColColumnIsNullableIndex, 'NO');
       end;
-      Close;
+      Result.UpdateRow;
     end;
+    Close;
+  end;
 end;
 
 {**
@@ -1717,36 +1683,29 @@ end;
 }
 function TZASADatabaseMetadata.UncachedGetColumnPrivileges(const Catalog: string;
   const Schema: string; const Table: string; const ColumnNamePattern: string): IZResultSet;
+var Len: NativeUInt;
 begin
-    Result:=inherited UncachedGetColumnPrivileges(Catalog, Schema, Table, ColumnNamePattern);
+  Result:=inherited UncachedGetColumnPrivileges(Catalog, Schema, Table, ColumnNamePattern);
 
-    with GetStatement.ExecuteQuery(
-      Format('exec sp_jdbc_getcolumnprivileges %s, %s, %s, %s',
-      [ComposeObjectString(Catalog), ComposeObjectString(Schema), ComposeObjectString(Table), ComposeObjectString(ColumnNamePattern)])) do
+  with GetStatement.ExecuteQuery(
+    Format('exec sp_jdbc_getcolumnprivileges %s, %s, %s, %s',
+    [ComposeObjectString(Catalog), ComposeObjectString(Schema), ComposeObjectString(Table), ComposeObjectString(ColumnNamePattern)])) do
+  begin
+    while Next do
     begin
-      while Next do
-      begin
-        Result.MoveToInsertRow;
-        Result.UpdateStringByName('TABLE_CAT',
-          '');
-        Result.UpdateStringByName('TABLE_SCHEM',
-          GetStringByName('TABLE_SCHEM'));
-        Result.UpdateStringByName('TABLE_NAME',
-          GetStringByName('TABLE_NAME'));
-        Result.UpdateStringByName('COLUMN_NAME',
-          GetStringByName('COLUMN_NAME'));
-        Result.UpdateStringByName('GRANTOR',
-          GetStringByName('GRANTOR'));
-        Result.UpdateStringByName('GRANTEE',
-          GetStringByName('GRANTEE'));
-        Result.UpdateStringByName('PRIVILEGE',
-          GetStringByName('PRIVILEGE'));
-        Result.UpdateStringByName('IS_GRANTABLE',
-          GetStringByName('IS_GRANTABLE'));
-        Result.InsertRow;
-      end;
-      Close;
+      Result.MoveToInsertRow;
+      //Result.UpdateNull(CatalogNameIndex);
+      Result.UpdatePAnsiChar(SchemaNameIndex, GetPAnsiCharByName('TABLE_SCHEM', Len), @Len);
+      Result.UpdatePAnsiChar(TableNameIndex, GetPAnsiCharByName('TABLE_NAME', Len), @Len);
+      Result.UpdatePAnsiChar(ColumnNameIndex, GetPAnsiCharByName('COLUMN_NAME', Len), @Len);
+      Result.UpdatePAnsiChar(TableColPrivGrantorIndex, GetPAnsiCharByName('GRANTOR', Len), @Len);
+      Result.UpdatePAnsiChar(TableColPrivGranteeIndex, GetPAnsiCharByName('GRANTEE', Len), @Len);
+      Result.UpdatePAnsiChar(TableColPrivPrivilegeIndex, GetPAnsiCharByName('PRIVILEGE', Len), @Len);
+      Result.UpdatePAnsiChar(TableColPrivIsGrantableIndex, GetPAnsiCharByName('IS_GRANTABLE', Len), @Len);
+      Result.InsertRow;
     end;
+    Close;
+  end;
 end;
 
 {**
@@ -1783,34 +1742,29 @@ end;
 }
 function TZASADatabaseMetadata.UncachedGetTablePrivileges(const Catalog: string;
   const SchemaPattern: string; const TableNamePattern: string): IZResultSet;
+var Len: NativeUInt;
 begin
-    Result:=inherited UncachedGetTablePrivileges(Catalog, SchemaPattern, TableNamePattern);
+  Result:=inherited UncachedGetTablePrivileges(Catalog, SchemaPattern, TableNamePattern);
 
-    with GetStatement.ExecuteQuery(
-      Format('exec sp_jdbc_gettableprivileges %s, %s, %s',
-      [ComposeObjectString(Catalog), ComposeObjectString(SchemaPattern), ComposeObjectString(TableNamePattern)])) do
+  with GetStatement.ExecuteQuery(
+    Format('exec sp_jdbc_gettableprivileges %s, %s, %s',
+    [ComposeObjectString(Catalog), ComposeObjectString(SchemaPattern),
+    ComposeObjectString(TableNamePattern)])) do
+  begin
+    while Next do
     begin
-      while Next do
-      begin
-        Result.MoveToInsertRow;
-        Result.UpdateStringByName('TABLE_CAT',
-          '');
-        Result.UpdateStringByName('TABLE_SCHEM',
-          GetStringByName('TABLE_SCHEM'));
-        Result.UpdateStringByName('TABLE_NAME',
-          GetStringByName('TABLE_NAME'));
-        Result.UpdateStringByName('GRANTOR',
-          GetStringByName('GRANTOR'));
-        Result.UpdateStringByName('GRANTEE',
-          GetStringByName('GRANTEE'));
-        Result.UpdateStringByName('PRIVILEGE',
-          GetStringByName('PRIVILEGE'));
-        Result.UpdateStringByName('IS_GRANTABLE',
-          GetStringByName('IS_GRANTABLE'));
-        Result.InsertRow;
-      end;
-      Close;
+      Result.MoveToInsertRow;
+      Result.UpdateNull(CatalogNameIndex);
+      Result.UpdatePAnsiChar(SchemaNameIndex, GetPAnsiCharByName('TABLE_SCHEM', Len), @Len);
+      Result.UpdatePAnsiChar(TableNameIndex, GetPAnsiCharByName('TABLE_NAME', Len), @Len);
+      Result.UpdatePAnsiChar(TablePrivGrantorIndex, GetPAnsiCharByName('GRANTOR', Len), @Len);
+      Result.UpdatePAnsiChar(TablePrivGranteeIndex, GetPAnsiCharByName('GRANTEE', Len), @Len);
+      Result.UpdatePAnsiChar(TablePrivPrivilegeIndex, GetPAnsiCharByName('PRIVILEGE', Len), @Len);
+      Result.UpdatePAnsiChar(TablePrivIsGrantableIndex, GetPAnsiCharByName('IS_GRANTABLE', Len), @Len);
+      Result.InsertRow;
     end;
+    Close;
+  end;
 end;
 
 {**
@@ -1845,37 +1799,30 @@ end;
 }
 function TZASADatabaseMetadata.UncachedGetVersionColumns(const Catalog: string;
   const Schema: string; const Table: string): IZResultSet;
+var Len: NativeUInt;
 begin
-    Result:=inherited UncachedGetVersionColumns(Catalog, Schema, Table);
+  Result:=inherited UncachedGetVersionColumns(Catalog, Schema, Table);
 
-    with GetStatement.ExecuteQuery(
-      Format('exec sp_jdbc_getversioncolumns %s, %s, %s',
-      [ComposeObjectString(Catalog), ComposeObjectString(Schema), ComposeObjectString(Table)])) do
+  with GetStatement.ExecuteQuery(
+    Format('exec sp_jdbc_getversioncolumns %s, %s, %s',
+    [ComposeObjectString(Catalog), ComposeObjectString(Schema), ComposeObjectString(Table)])) do
+  begin
+    while Next do
     begin
-      while Next do
-      begin
-        Result.MoveToInsertRow;
-        Result.UpdateShortByName('SCOPE',
-          GetShortByName('SCOPE'));
-        Result.UpdateStringByName('COLUMN_NAME',
-          GetStringByName('COLUMN_NAME'));
-        Result.UpdateShortByName('DATA_TYPE',
-          Ord(ConvertASAJDBCToSqlType(GetShortByName('DATA_TYPE'),
-            ConSettings.CPType)));
-        Result.UpdateStringByName('TYPE_NAME',
-          GetStringByName('TYPE_NAME'));
-        Result.UpdateIntByName('COLUMN_SIZE',
-          GetIntByName('COLUMN_SIZE'));
-        Result.UpdateIntByName('BUFFER_LENGTH',
-          GetIntByName('BUFFER_LENGTH'));
-        Result.UpdateIntByName('DECIMAL_DIGITS',
-          GetIntByName('DECIMAL_DIGITS'));
-        Result.UpdateShortByName('PSEUDO_COLUMN',
-          GetShortByName('PSEUDO_COLUMN'));
-        Result.InsertRow;
-      end;
-      Close;
+      Result.MoveToInsertRow;
+      Result.UpdateSmall(TableColVerScopeIndex, GetSmallByName('SCOPE'));
+      Result.UpdatePAnsiChar(TableColVerColNameIndex, GetPAnsiCharByName('COLUMN_NAME', Len), @Len);
+      Result.UpdateSmall(TableColVerDataTypeIndex, Ord(ConvertASAJDBCToSqlType(
+        GetSmallByName('DATA_TYPE'), ConSettings.CPType)));
+      Result.UpdatePAnsiChar(TableColVerTypeNameIndex, GetPAnsiCharByName('TYPE_NAME', Len), @Len);
+      Result.UpdateInt(TableColVerColSizeIndex, GetIntByName('COLUMN_SIZE'));
+      Result.UpdateInt(TableColVerBufLengthIndex, GetIntByName('BUFFER_LENGTH'));
+      Result.UpdateInt(TableColVerDecimalDigitsIndex, GetIntByName('DECIMAL_DIGITS'));
+      Result.UpdateSmall(TableColVerPseudoColumnIndex, GetSmallByName('PSEUDO_COLUMN'));
+      Result.InsertRow;
     end;
+    Close;
+  end;
 end;
 
 {**
@@ -1902,32 +1849,26 @@ end;
 }
 function TZASADatabaseMetadata.UncachedGetPrimaryKeys(const Catalog: string;
   const Schema: string; const Table: string): IZResultSet;
+var Len: NativeUInt;
 begin
-    Result:=inherited UncachedGetPrimaryKeys(Catalog, Schema, Table);
+  Result:=inherited UncachedGetPrimaryKeys(Catalog, Schema, Table);
 
-    with GetStatement.ExecuteQuery(
-      Format('exec sp_jdbc_primarykey %s, %s, %s',
-      [ComposeObjectString(Catalog), ComposeObjectString(Schema), ComposeObjectString(Table)])) do
+  with GetStatement.ExecuteQuery(
+    Format('exec sp_jdbc_primarykey %s, %s, %s',
+    [ComposeObjectString(Catalog), ComposeObjectString(Schema), ComposeObjectString(Table)])) do
+  begin
+    while Next do
     begin
-      while Next do
-      begin
-        Result.MoveToInsertRow;
-        Result.UpdateStringByName('TABLE_CAT',
-          '');
-        Result.UpdateStringByName('TABLE_SCHEM',
-          GetStringByName('TABLE_SCHEM'));
-        Result.UpdateStringByName('TABLE_NAME',
-          GetStringByName('TABLE_NAME'));
-        Result.UpdateStringByName('COLUMN_NAME',
-          GetStringByName('COLUMN_NAME'));
-        Result.UpdateShortByName('KEY_SEQ',
-          GetShortByName('KEY_SEQ'));
-        Result.UpdateStringByName('PK_NAME',
-          GetStringByName('PK_NAME'));
-        Result.InsertRow;
-      end;
-      Close;
+      Result.MoveToInsertRow;
+      Result.UpdatePAnsiChar(SchemaNameIndex, GetPAnsiCharByName('TABLE_SCHEM', Len), @Len);
+      Result.UpdatePAnsiChar(TableNameIndex, GetPAnsiCharByName('TABLE_NAME', Len), @Len);
+      Result.UpdatePAnsiChar(PrimaryKeyColumnNameIndex, GetPAnsiCharByName('COLUMN_NAME', Len), @Len);
+      Result.UpdateSmall(PrimaryKeyKeySeqIndex, GetSmallByName('KEY_SEQ'));
+      Result.UpdatePAnsiChar(PrimaryKeyPKNameIndex, GetPAnsiCharByName('PK_NAME', Len), @Len);
+      Result.InsertRow;
     end;
+    Close;
+  end;
 end;
 
 {**
@@ -1999,48 +1940,33 @@ end;
 }
 function TZASADatabaseMetadata.UncachedGetImportedKeys(const Catalog: string;
   const Schema: string; const Table: string): IZResultSet;
+var Len: NativeUInt;
 begin
-    Result:=inherited UncachedGetImportedKeys(Catalog, Schema, Table);
+  Result:=inherited UncachedGetImportedKeys(Catalog, Schema, Table);
 
-    with GetStatement.ExecuteQuery(
-      Format('exec sp_jdbc_importkey %s, %s, %s',
-      [ComposeObjectString(Catalog), ComposeObjectString(Schema), ComposeObjectString(Table)])) do
+  with GetStatement.ExecuteQuery(
+    Format('exec sp_jdbc_importkey %s, %s, %s',
+    [ComposeObjectString(Catalog), ComposeObjectString(Schema), ComposeObjectString(Table)])) do
+  begin
+    while Next do
     begin
-      while Next do
-      begin
-        Result.MoveToInsertRow;
-        Result.UpdateStringByName('PKTABLE_CAT',
-          '');
-        Result.UpdateStringByName('PKTABLE_SCHEM',
-          GetStringByName('PKTABLE_SCHEM'));
-        Result.UpdateStringByName('PKTABLE_NAME',
-          GetStringByName('PKTABLE_NAME'));
-        Result.UpdateStringByName('PKCOLUMN_NAME',
-          GetStringByName('PKCOLUMN_NAME'));
-        Result.UpdateStringByName('FKTABLE_CAT',
-          '');
-        Result.UpdateStringByName('FKTABLE_SCHEM',
-          GetStringByName('FKTABLE_SCHEM'));
-        Result.UpdateStringByName('FKTABLE_NAME',
-          GetStringByName('FKTABLE_NAME'));
-        Result.UpdateStringByName('FKCOLUMN_NAME',
-          GetStringByName('FKCOLUMN_NAME'));
-        Result.UpdateShortByName('KEY_SEQ',
-          GetShortByName('KEY_SEQ'));
-        Result.UpdateShortByName('UPDATE_RULE',
-          GetShortByName('UPDATE_RULE'));
-        Result.UpdateShortByName('DELETE_RULE',
-          GetShortByName('DELETE_RULE'));
-        Result.UpdateStringByName('FK_NAME',
-          GetStringByName('FK_NAME'));
-        Result.UpdateStringByName('PK_NAME',
-          GetStringByName('PK_NAME'));
-        Result.UpdateIntByName('DEFERRABILITY',
-          GetIntByName('DEFERRABILITY'));
-        Result.InsertRow;
-      end;
-      Close;
+      Result.MoveToInsertRow;
+      Result.UpdatePAnsiChar(ImportedKeyColPKTableSchemaIndex, GetPAnsiCharByName('PKTABLE_SCHEM', Len), @Len);
+      Result.UpdatePAnsiChar(ImportedKeyColPKTableNameIndex, GetPAnsiCharByName('PKTABLE_NAME', Len), @Len);
+      Result.UpdatePAnsiChar(ImportedKeyColPKColumnNameIndex, GetPAnsiCharByName('PKCOLUMN_NAME', Len), @Len);
+      Result.UpdatePAnsiChar(ImportedKeyColFKTableSchemaIndex, GetPAnsiCharByName('FKTABLE_SCHEM', Len), @Len);
+      Result.UpdatePAnsiChar(ImportedKeyColFKTableNameIndex, GetPAnsiCharByName('FKTABLE_NAME', Len), @Len);
+      Result.UpdatePAnsiChar(ImportedKeyColFKColumnNameIndex, GetPAnsiCharByName('FKCOLUMN_NAME', Len), @Len);
+      Result.UpdateSmall(ImportedKeyColKeySeqIndex, GetSmallByName('KEY_SEQ'));
+      Result.UpdateSmall(ImportedKeyColUpdateRuleIndex, GetSmallByName('UPDATE_RULE'));
+      Result.UpdateSmall(ImportedKeyColDeleteRuleIndex, GetSmallByName('DELETE_RULE'));
+      Result.UpdatePAnsiChar(ImportedKeyColFKNameIndex, GetPAnsiCharByName('FK_NAME', Len), @Len);
+      Result.UpdatePAnsiChar(ImportedKeyColPKNameIndex, GetPAnsiCharByName('PK_NAME', Len), @Len);
+      Result.UpdateInt(ImportedKeyColDeferrabilityIndex, GetIntByName('DEFERRABILITY'));
+      Result.InsertRow;
     end;
+    Close;
+  end;
 end;
 
 {**
@@ -2112,46 +2038,29 @@ end;
 }
 function TZASADatabaseMetadata.UncachedGetExportedKeys(const Catalog: string;
   const Schema: string; const Table: string): IZResultSet;
-var KeySeq: Integer;
+var Len: NativeUInt;
 begin
   Result:=inherited UncachedGetExportedKeys(Catalog, Schema, Table);
 
-  KeySeq := 0;
   with GetStatement.ExecuteQuery(
     Format('exec sp_jdbc_exportkey %s, %s, %s',
     [ComposeObjectString(Catalog), ComposeObjectString(Schema), ComposeObjectString(Table)])) do
   begin
     while Next do
     begin
-      Inc(KeySeq);
       Result.MoveToInsertRow;
-      Result.UpdateStringByName('PKTABLE_CAT',
-        '');
-      Result.UpdateStringByName('PKTABLE_SCHEM',
-        GetStringByName('PKTABLE_SCHEM'));
-      Result.UpdateStringByName('PKTABLE_NAME',
-        GetStringByName('PKTABLE_NAME'));
-      Result.UpdateStringByName('PKCOLUMN_NAME',
-        GetStringByName('PKCOLUMN_NAME'));
-      Result.UpdateStringByName('FKTABLE_CAT',
-        '');
-      Result.UpdateStringByName('FKTABLE_SCHEM',
-        GetStringByName('FKTABLE_SCHEM'));
-      Result.UpdateStringByName('FKTABLE_NAME',
-        GetStringByName('FKTABLE_NAME'));
-      Result.UpdateStringByName('FKCOLUMN_NAME',
-        GetStringByName('FKCOLUMN_NAME'));
-      Result.UpdateShortByName('KEY_SEQ', KeySeq);
-      Result.UpdateShortByName('UPDATE_RULE',
-        GetShortByName('UPDATE_RULE'));
-      Result.UpdateShortByName('DELETE_RULE',
-        GetShortByName('DELETE_RULE'));
-      Result.UpdateStringByName('FK_NAME',
-        GetStringByName('FK_NAME'));
-      Result.UpdateStringByName('PK_NAME',
-        GetStringByName('PK_NAME'));
-      Result.UpdateIntByName('DEFERRABILITY',
-        GetIntByName('DEFERRABILITY'));
+      Result.UpdatePAnsiChar(ExportedKeyColPKTableSchemaIndex, GetPAnsiCharByName('PKTABLE_SCHEM', Len), @Len);
+      Result.UpdatePAnsiChar(ExportedKeyColPKTableNameIndex, GetPAnsiCharByName('PKTABLE_NAME', Len), @Len);
+      Result.UpdatePAnsiChar(ExportedKeyColPKColumnNameIndex, GetPAnsiCharByName('PKCOLUMN_NAME', Len), @Len);
+      Result.UpdatePAnsiChar(ExportedKeyColFKTableSchemaIndex, GetPAnsiCharByName('FKTABLE_SCHEM', Len), @Len);
+      Result.UpdatePAnsiChar(ExportedKeyColFKTableNameIndex, GetPAnsiCharByName('FKTABLE_NAME', Len), @Len);
+      Result.UpdatePAnsiChar(ExportedKeyColFKColumnNameIndex, GetPAnsiCharByName('FKCOLUMN_NAME', Len), @Len);
+      Result.UpdateSmall(ExportedKeyColKeySeqIndex, GetSmallByName('KEY_SEQ'));
+      Result.UpdateSmall(ExportedKeyColUpdateRuleIndex, GetSmallByName('UPDATE_RULE'));
+      Result.UpdateSmall(ExportedKeyColDeleteRuleIndex, GetSmallByName('DELETE_RULE'));
+      Result.UpdatePAnsiChar(ExportedKeyColFKNameIndex, GetPAnsiCharByName('FK_NAME', Len), @Len);
+      Result.UpdatePAnsiChar(ExportedKeyColPKNameIndex, GetPAnsiCharByName('PK_NAME', Len), @Len);
+      Result.UpdateInt(ExportedKeyColDeferrabilityIndex, GetIntByName('DEFERRABILITY'));
       Result.InsertRow;
     end;
     Close;
@@ -2236,50 +2145,36 @@ end;
 function TZASADatabaseMetadata.UncachedGetCrossReference(const PrimaryCatalog: string;
   const PrimarySchema: string; const PrimaryTable: string; const ForeignCatalog: string;
   const ForeignSchema: string; const ForeignTable: string): IZResultSet;
+var Len: NativeUInt;
 begin
-    Result:=inherited UncachedGetCrossReference(PrimaryCatalog, PrimarySchema, PrimaryTable,
-                                                ForeignCatalog, ForeignSchema, ForeignTable);
+  Result:=inherited UncachedGetCrossReference(PrimaryCatalog, PrimarySchema, PrimaryTable,
+                                              ForeignCatalog, ForeignSchema, ForeignTable);
 
-    with GetStatement.ExecuteQuery(
-      Format('exec sp_jdbc_getcrossreferences %s, %s, %s, %s, %s, %s',
-      [ComposeObjectString(PrimaryCatalog), ComposeObjectString(PrimarySchema), ComposeObjectString(PrimaryTable),
-       ComposeObjectString(ForeignCatalog), ComposeObjectString(ForeignSchema), ComposeObjectString(ForeignTable)])) do
+  with GetStatement.ExecuteQuery(
+    Format('exec sp_jdbc_getcrossreferences %s, %s, %s, %s, %s, %s',
+    [ComposeObjectString(PrimaryCatalog), ComposeObjectString(PrimarySchema), ComposeObjectString(PrimaryTable),
+     ComposeObjectString(ForeignCatalog), ComposeObjectString(ForeignSchema), ComposeObjectString(ForeignTable)])) do
+  begin
+    while Next do
     begin
-      while Next do
-      begin
-        Result.MoveToInsertRow;
-        Result.UpdateStringByName('PKTABLE_CAT',
-          '');
-        Result.UpdateStringByName('PKTABLE_SCHEM',
-          GetStringByName('PKTABLE_SCHEM'));
-        Result.UpdateStringByName('PKTABLE_NAME',
-          GetStringByName('PKTABLE_NAME'));
-        Result.UpdateStringByName('PKCOLUMN_NAME',
-          GetStringByName('PKCOLUMN_NAME'));
-        Result.UpdateStringByName('FKTABLE_CAT',
-          '');
-        Result.UpdateStringByName('FKTABLE_SCHEM',
-          GetStringByName('FKTABLE_SCHEM'));
-        Result.UpdateStringByName('FKTABLE_NAME',
-          GetStringByName('FKTABLE_NAME'));
-        Result.UpdateStringByName('FKCOLUMN_NAME',
-          GetStringByName('FKCOLUMN_NAME'));
-        Result.UpdateShortByName('KEY_SEQ',
-          GetShortByName('KEY_SEQ'));
-        Result.UpdateShortByName('UPDATE_RULE',
-          GetShortByName('UPDATE_RULE'));
-        Result.UpdateShortByName('DELETE_RULE',
-          GetShortByName('DELETE_RULE'));
-        Result.UpdateStringByName('FK_NAME',
-          GetStringByName('FK_NAME'));
-        Result.UpdateStringByName('PK_NAME',
-          GetStringByName('PK_NAME'));
-        Result.UpdateIntByName('DEFERRABILITY',
-          GetIntByName('DEFERRABILITY'));
-        Result.InsertRow;
-      end;
-      Close;
+      Result.MoveToInsertRow;
+      //Result.UpdateNull(CrossRefKeyColPKTableCatalogIndex);
+      Result.UpdatePAnsiChar(CrossRefKeyColPKTableSchemaIndex, GetPAnsiCharByName('PKTABLE_SCHEM', Len), @Len);
+      Result.UpdatePAnsiChar(CrossRefKeyColPKTableNameIndex, GetPAnsiCharByName('PKTABLE_NAME', Len), @Len);
+      Result.UpdatePAnsiChar(CrossRefKeyColPKColumnNameIndex, GetPAnsiCharByName('PKCOLUMN_NAME', Len), @Len);
+      Result.UpdatePAnsiChar(CrossRefKeyColFKTableSchemaIndex, GetPAnsiCharByName('FKTABLE_SCHEM', Len), @Len);
+      Result.UpdatePAnsiChar(CrossRefKeyColFKTableNameIndex, GetPAnsiCharByName('FKTABLE_NAME', Len), @Len);
+      Result.UpdatePAnsiChar(CrossRefKeyColFKColumnNameIndex, GetPAnsiCharByName('FKCOLUMN_NAME', Len), @Len);
+      Result.UpdateSmall(CrossRefKeyColKeySeqIndex, GetSmallByName('KEY_SEQ'));
+      Result.UpdateSmall(CrossRefKeyColUpdateRuleIndex, GetSmallByName('UPDATE_RULE'));
+      Result.UpdateSmall(CrossRefKeyColDeleteRuleIndex, GetSmallByName('DELETE_RULE'));
+      Result.UpdatePAnsiChar(CrossRefKeyColFKNameIndex, GetPAnsiCharByName('FK_NAME', Len), @Len);
+      Result.UpdatePAnsiChar(CrossRefKeyColPKNameIndex, GetPAnsiCharByName('PK_NAME', Len), @Len);
+      Result.UpdateInt(CrossRefKeyColDeferrabilityIndex, GetIntByName('DEFERRABILITY'));
+      Result.InsertRow;
     end;
+    Close;
+  end;
 end;
 
 {**
@@ -2328,55 +2223,38 @@ end;
   @return <code>ResultSet</code> - each row is an SQL type description
 }
 function TZASADatabaseMetadata.UncachedGetTypeInfo: IZResultSet;
+var Len: NativeUInt;
 begin
-    Result:=inherited UncachedGetTypeInfo;
+  Result:=inherited UncachedGetTypeInfo;
 
-    with GetStatement.ExecuteQuery('exec sp_jdbc_datatype_info') do
+  with GetStatement.ExecuteQuery('exec sp_jdbc_datatype_info') do
+  begin
+    while Next do
     begin
-      while Next do
-      begin
-        Result.MoveToInsertRow;
-        Result.UpdateStringByName('TYPE_NAME',
-          GetStringByName('TYPE_NAME'));
-        Result.UpdateShortByName('DATA_TYPE',
-          Ord(ConvertASAJDBCToSqlType(GetShortByName('DATA_TYPE'),
-            ConSettings.CPType)));
-        Result.UpdateIntByName('PRECISION',
-          GetIntByName('PRECISION'));
-        Result.UpdateStringByName('LITERAL_PREFIX',
-          GetStringByName('LITERAL_PREFIX'));
-        Result.UpdateStringByName('LITERAL_SUFFIX',
-          GetStringByName('LITERAL_SUFFIX'));
-        Result.UpdateStringByName('CREATE_PARAMS',
-          GetStringByName('CREATE_PARAMS'));
-        Result.UpdateShortByName('NULLABLE',
-          GetShortByName('NULLABLE'));
-        Result.UpdateBooleanByName('CASE_SENSITIVE',
-          GetShortByName('CASE_SENSITIVE') = 1);
-        Result.UpdateShortByName('SEARCHABLE',
-          GetShortByName('SEARCHABLE'));
-        Result.UpdateBooleanByName('UNSIGNED_ATTRIBUTE',
-          GetShortByName('UNSIGNED_ATTRIBUTE') = 1);
-        Result.UpdateBooleanByName('FIXED_PREC_SCALE',
-          GetShortByName('FIXED_PREC_SCALE') = 1);
-        Result.UpdateBooleanByName('AUTO_INCREMENT',
-          GetShortByName('AUTO_INCREMENT') = 1);
-        Result.UpdateStringByName('LOCAL_TYPE_NAME',
-          GetStringByName('LOCAL_TYPE_NAME'));
-        Result.UpdateShortByName('MINIMUM_SCALE',
-          GetShortByName('MINIMUM_SCALE'));
-        Result.UpdateShortByName('MAXIMUM_SCALE',
-          GetShortByName('MAXIMUM_SCALE'));
-        Result.UpdateShortByName('SQL_DATA_TYPE',
-          GetShortByName('SQL_DATA_TYPE'));
-        Result.UpdateShortByName('SQL_DATETIME_SUB',
-          GetShortByName('SQL_DATETIME_SUB'));
-        Result.UpdateShortByName('NUM_PREC_RADIX',
-          GetShortByName('NUM_PREC_RADIX'));
-        Result.InsertRow;
-      end;
-      Close;
+      Result.MoveToInsertRow;
+      Result.UpdatePAnsiChar(TypeInfoTypeNameIndex, GetPAnsiCharByName('TYPE_NAME', Len), @Len);
+      Result.UpdateSmall(TypeInfoDataTypeIndex, Ord(ConvertASAJDBCToSqlType(
+        GetSmallByName('DATA_TYPE'), ConSettings.CPType)));
+      Result.UpdateInt(TypeInfoPecisionIndex, GetIntByName('PRECISION'));
+      Result.UpdatePAnsiChar(TypeInfoLiteralPrefixIndex, GetPAnsiCharByName('LITERAL_PREFIX', Len), @Len);
+      Result.UpdatePAnsiChar(TypeInfoLiteralSuffixIndex, GetPAnsiCharByName('LITERAL_SUFFIX', Len), @Len);
+      Result.UpdatePAnsiChar(TypeInfoCreateParamsIndex, GetPAnsiCharByName('CREATE_PARAMS', Len), @Len);
+      Result.UpdateSmall(TypeInfoNullAbleIndex, GetSmallByName('NULLABLE'));
+      Result.UpdateBoolean(TypeInfoCaseSensitiveIndex, GetSmallByName('CASE_SENSITIVE') = 1);
+      Result.UpdateSmall(TypeInfoSearchableIndex, GetSmallByName('SEARCHABLE'));
+      Result.UpdateBoolean(TypeInfoUnsignedAttributeIndex, GetSmallByName('UNSIGNED_ATTRIBUTE') = 1);
+      Result.UpdateBoolean(TypeInfoFixedPrecScaleIndex, GetSmallByName('FIXED_PREC_SCALE') = 1);
+      Result.UpdateBoolean(TypeInfoAutoIncrementIndex, GetSmallByName('AUTO_INCREMENT') = 1);
+      Result.UpdatePAnsiChar(TypeInfoLocaleTypeNameIndex, GetPAnsiCharByName('LOCAL_TYPE_NAME', Len), @Len);
+      Result.UpdateSmall(TypeInfoMinimumScaleIndex, GetSmallByName('MINIMUM_SCALE'));
+      Result.UpdateSmall(TypeInfoMaximumScaleIndex, GetSmallByName('MAXIMUM_SCALE'));
+      Result.UpdateSmall(TypeInfoSQLDataTypeIndex, GetSmallByName('SQL_DATA_TYPE'));
+      Result.UpdateSmall(TypeInfoSQLDateTimeSubIndex, GetSmallByName('SQL_DATETIME_SUB'));
+      Result.UpdateSmall(TypeInfoNumPrecRadix, GetSmallByName('NUM_PREC_RADIX'));
+      Result.InsertRow;
     end;
+    Close;
+  end;
 end;
 
 {**
@@ -2434,57 +2312,45 @@ function TZASADatabaseMetadata.UncachedGetIndexInfo(const Catalog: string;
   const Schema: string; const Table: string; Unique: Boolean;
   Approximate: Boolean): IZResultSet;
 var
+  Len: NativeUInt;
   Is_Unique, Accuracy: string;
 begin
-    Result:=inherited UncachedGetIndexInfo(Catalog, Schema, Table, Unique, Approximate);
+  Result:=inherited UncachedGetIndexInfo(Catalog, Schema, Table, Unique, Approximate);
 
-    if Unique then
-      Is_Unique := '''1'''
-    else
-      Is_Unique := '''0''';
+  if Unique then
+    Is_Unique := '''1'''
+  else
+    Is_Unique := '''0''';
 
-    if Approximate then
-      Accuracy := '''1'''
-    else
-      Accuracy := '''0''';
+  if Approximate then
+    Accuracy := '''1'''
+  else
+    Accuracy := '''0''';
 
-    with GetStatement.ExecuteQuery(
-      Format('exec sp_jdbc_getindexinfo %s, %s, %s, %s, %s',
-      [ComposeObjectString(Catalog), ComposeObjectString(Schema), ComposeObjectString(Table), Is_Unique, Accuracy])) do
+  with GetStatement.ExecuteQuery(
+    Format('exec sp_jdbc_getindexinfo %s, %s, %s, %s, %s',
+    [ComposeObjectString(Catalog), ComposeObjectString(Schema), ComposeObjectString(Table), Is_Unique, Accuracy])) do
+  begin
+    while Next do
     begin
-      while Next do
-      begin
-        Result.MoveToInsertRow;
-        Result.UpdateStringByName('TABLE_CAT',
-          '');
-        Result.UpdateStringByName('TABLE_SCHEM',
-          GetStringByName('TABLE_SCHEM'));
-        Result.UpdateStringByName('TABLE_NAME',
-          GetStringByName('TABLE_NAME'));
-        Result.UpdateBooleanByName('NON_UNIQUE',
-          GetShortByName('NON_UNIQUE') = 1);
-        Result.UpdateStringByName('INDEX_QUALIFIER',
-          GetStringByName('INDEX_QUALIFIER'));
-        Result.UpdateStringByName('INDEX_NAME',
-          GetStringByName('INDEX_NAME'));
-        Result.UpdateShortByName('TYPE',
-          GetShortByName('TYPE'));
-        Result.UpdateShortByName('ORDINAL_POSITION',
-          GetShortByName('ORDINAL_POSITION'));
-        Result.UpdateStringByName('COLUMN_NAME',
-          GetStringByName('COLUMN_NAME'));
-        Result.UpdateStringByName('ASC_OR_DESC',
-          GetStringByName('ASC_OR_DESC'));
-        Result.UpdateIntByName('CARDINALITY',
-          GetIntByName('CARDINALITY'));
-        Result.UpdateIntByName('PAGES',
-          GetIntByName('PAGES'));
-        Result.UpdateStringByName('FILTER_CONDITION',
-          GetStringByName('FILTER_CONDITION'));
-        Result.InsertRow;
-      end;
-      Close;
+      Result.MoveToInsertRow;
+      //Result.UpdateNull(CatalogNameIndex);
+      Result.UpdatePAnsiChar(SchemaNameIndex, GetPAnsiCharByName('TABLE_SCHEM', Len), @Len);
+      Result.UpdatePAnsiChar(TableNameIndex, GetPAnsiCharByName('TABLE_NAME', Len), @Len);
+      Result.UpdateBoolean(IndexInfoColNonUniqueIndex, GetSmallByName('NON_UNIQUE') = 1);
+      Result.UpdatePAnsiChar(IndexInfoColIndexQualifierIndex, GetPAnsiCharByName('INDEX_QUALIFIER', Len), @Len);
+      Result.UpdatePAnsiChar(IndexInfoColIndexNameIndex, GetPAnsiCharByName('INDEX_NAME', Len), @Len);
+      Result.UpdateSmall(IndexInfoColTypeIndex, GetSmallByName('TYPE'));
+      Result.UpdateSmall(IndexInfoColOrdPositionIndex, GetSmallByName('ORDINAL_POSITION'));
+      Result.UpdatePAnsiChar(IndexInfoColColumnNameIndex, GetPAnsiCharByName('COLUMN_NAME', Len), @Len);
+      Result.UpdatePAnsiChar(IndexInfoColAscOrDescIndex, GetPAnsiCharByName('ASC_OR_DESC', Len), @Len);
+      Result.UpdateInt(IndexInfoColCardinalityIndex, GetIntByName('CARDINALITY'));
+      Result.UpdateInt(IndexInfoColPagesIndex, GetIntByName('PAGES'));
+      Result.UpdatePAnsiChar(IndexInfoColFilterConditionIndex, GetPAnsiCharByName('FILTER_CONDITION', Len), @Len);
+      Result.InsertRow;
     end;
+    Close;
+  end;
 end;
 
 {**
@@ -2525,45 +2391,40 @@ function TZASADatabaseMetadata.UncachedGetUDTs(const Catalog: string;
   const SchemaPattern: string; const TypeNamePattern: string;
   const Types: TIntegerDynArray): IZResultSet;
 var
+  Len: NativeUInt;
   I: Integer;
   UDTypes: string;
 begin
-    Result:=inherited UncachedGetUDTs(Catalog, SchemaPattern, TypeNamePattern, Types);
+  Result:=inherited UncachedGetUDTs(Catalog, SchemaPattern, TypeNamePattern, Types);
 
-    UDTypes := '';
-    for I := 0 to Length(Types) - 1 do
-    begin
-      if Length(UDTypes) > 0 then
-        UDTypes := UDTypes + ',';
-      UDTypes := UDTypes + AnsiQuotedStr(IntToStr(Types[I]), '''');
-    end;
+  UDTypes := '';
+  for I := 0 to Length(Types) - 1 do
+  begin
+    if Length(UDTypes) > 0 then
+      UDTypes := UDTypes + ',';
+    UDTypes := UDTypes + AnsiQuotedStr(ZFastCode.IntToStr(Types[I]), '''');
+  end;
 
-    with GetStatement.ExecuteQuery(
-      Format('exec sp_jdbc_getudts %s, %s, %s, %s',
-      [ComposeObjectString(Catalog), ComposeObjectString(SchemaPattern, '''%'''),
-       ComposeObjectString(TypeNamePattern, '''%'''),
-       ComposeObjectString(UDTypes, 'null', '"')])) do
+  with GetStatement.ExecuteQuery(
+    Format('exec sp_jdbc_getudts %s, %s, %s, %s',
+    [ComposeObjectString(Catalog), ComposeObjectString(SchemaPattern, '''%'''),
+     ComposeObjectString(TypeNamePattern, '''%'''),
+     ComposeObjectString(UDTypes, 'null', '"')])) do
+  begin
+    while Next do
     begin
-      while Next do
-      begin
-        Result.MoveToInsertRow;
-        Result.UpdateStringByName('TYPE_CAT',
-          GetStringByName('TYPE_CAT'));
-        Result.UpdateStringByName('TYPE_SCHEM',
-          GetStringByName('TYPE_SCHEM'));
-        Result.UpdateStringByName('TYPE_NAME',
-          GetStringByName('TYPE_NAME'));
-        Result.UpdateStringByName('JAVA_CLASS',
-          GetStringByName('JAVA_CLASS'));
-        Result.UpdateShortByName('DATA_TYPE',
-          Ord(ConvertASAJDBCToSqlType(GetShortByName('DATA_TYPE'),
-            ConSettings.CPType)));
-        Result.UpdateStringByName('REMARKS',
-          GetStringByName('REMARKS'));
-        Result.InsertRow;
-      end;
-      Close;
+      Result.MoveToInsertRow;
+      Result.UpdatePAnsiChar(CatalogNameIndex, GetPAnsiCharByName('TYPE_CAT', Len), @Len);
+      Result.UpdatePAnsiChar(SchemaNameIndex, GetPAnsiCharByName('TYPE_SCHEM', Len), @Len);
+      Result.UpdatePAnsiChar(UDTColTypeNameIndex, GetPAnsiCharByName('TYPE_NAME', Len), @Len);
+      Result.UpdatePAnsiChar(UDTColClassNameIndex, GetPAnsiCharByName('JAVA_CLASS', Len), @Len);
+      Result.UpdateSmall(UDTColDataTypeIndex, Ord(ConvertASAJDBCToSqlType(
+        GetSmallByName('DATA_TYPE'), ConSettings.CPType)));
+      Result.UpdatePAnsiChar(UDTColRemarksIndex, GetPAnsiCharByName('REMARKS', Len), @Len);
+      Result.InsertRow;
     end;
+    Close;
+  end;
 end;
 
 end.

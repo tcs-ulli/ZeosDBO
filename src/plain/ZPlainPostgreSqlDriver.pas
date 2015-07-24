@@ -55,7 +55,7 @@ interface
 
 {$I ZPlain.inc}
 
-uses ZClasses, ZCompatibility, ZPlainDriver;
+uses {$IFDEF OLDFPC}ZClasses, {$ENDIF}ZCompatibility, ZPlainDriver;
 
 const
   WINDOWS_DLL_LOCATION   = 'libpq.dll';
@@ -89,7 +89,7 @@ type
 
   TZPostgreSQLFieldCode=( // FirmOS
             PG_DIAG_SEVERITY=ord('S'),
-            PG_DIAG_SQLSTATE=ord('C'),
+            PG_DIAG_SQLSTATE=ord('C'){%H-},
             PG_DIAG_MESSAGE_PRIMARY=ord('M'),
             PG_DIAG_MESSAGE_DETAIL=ord('D'),
             PG_DIAG_MESSAGE_HINT=ord('H'),
@@ -365,25 +365,25 @@ type
 //* Simple synchronous query */
   TPQexec          = function(Handle: PPGconn; Query: PAnsiChar): PPGresult; cdecl;
   TPQexecParams    = function(Handle: PPGconn; command: PAnsichar;
-        nParams: Integer; paramTypes: TPQparamTypes; paramValues: TPQparamValues;
-        paramLengths: TPQparamLengths; paramFormats: TPQparamFormats;
+        nParams: Integer; paramTypes: TPQparamTypes; {%H-}paramValues: TPQparamValues;
+        {%H-}paramLengths: TPQparamLengths; {%H-}paramFormats: TPQparamFormats;
         resultFormat: Integer): PPGresult; cdecl;
   TPQprepare        = function(Handle: PPGconn; stmtName: PAnsichar;
         query: PAnsiChar; nParams: Integer; paramTypes: TPQparamTypes): PPGresult; cdecl;
   TPQexecPrepared   = function(Handle: PPGconn; stmtName: PAnsichar;
-        nParams: Integer; paramValues: TPQparamValues; paramLengths: TPQparamLengths;
-        paramFormats: TPQparamFormats; resultFormat: Integer): PPGresult; cdecl;
+        nParams: Integer; {%H-}paramValues: TPQparamValues; {%H-}paramLengths: TPQparamLengths;
+        {%H-}paramFormats: TPQparamFormats; resultFormat: Integer): PPGresult; cdecl;
 //* Interface for multiple-result or asynchronous queries */
   TPQsendQuery      = function(Handle: PPGconn; query: PAnsiChar): Integer; cdecl;
   TPQsendQueryParams= function(Handle: PPGconn; command: PAnsichar;
-        nParams: Integer; paramTypes: TPQparamTypes; paramValues: TPQparamValues;
-        paramLengths: TPQparamLengths; paramFormats: TPQparamFormats;
+        nParams: Integer; paramTypes: TPQparamTypes; {%H-}paramValues: TPQparamValues;
+        {%H-}paramLengths: TPQparamLengths; {%H-}paramFormats: TPQparamFormats;
         resultFormat: Integer): Integer; cdecl;
   TPQsendPrepare    = function(Handle: PPGconn; stmtName: PAnsichar;
         query: PAnsiChar; nParams: Integer; paramTypes: TPQparamTypes): Integer; cdecl;
   TPQsendQueryPrepared = function(Handle: PPGconn; stmtName: PAnsichar;
-         nParams: Integer; paramValues: TPQparamValues;
-         paramLengths: TPQparamLengths; paramFormats: TPQparamFormats;
+         nParams: Integer; {%H-}paramValues: TPQparamValues;
+         {%H-}paramLengths: TPQparamLengths; {%H-}paramFormats: TPQparamFormats;
          resultFormat: Integer): Integer; cdecl;
   TPQgetResult     = function(Handle: PPGconn): PPGresult;  cdecl;
 //* Describe prepared statements and portals */
@@ -564,7 +564,10 @@ type
     function EncodeBYTEA(const Value: RawByteString; Handle: PZPostgreSQLConnect;
       Quoted: Boolean = True): RawByteString;
     function DecodeBYTEA(const value: RawByteString; const Is_bytea_output_hex: Boolean;
-      Handle: PZPostgreSQLConnect): RawByteString;
+      Handle: PZPostgreSQLConnect): RawByteString; overload;
+    function DecodeBYTEA(const RowNo, ColumnIndex: Integer; const Is_bytea_output_hex: Boolean;
+      const Handle: PZPostgreSQLConnect; const QueryHandle: PZPostgreSQLResult;
+      Var Buffer: Pointer): Cardinal; overload;
     function SupportsEncodeBYTEA: Boolean;
     function SupportsDecodeBYTEA(const Handle: PZPostgreSQLConnect): Boolean;
     function SupportsStringEscaping(const ClientDependend: Boolean): Boolean;
@@ -707,7 +710,10 @@ type
     function EncodeBYTEA(const Value: RawByteString; Handle: PZPostgreSQLConnect;
       Quoted: Boolean = True): RawByteString;
     function DecodeBYTEA(const value: RawByteString; const Is_bytea_output_hex: Boolean;
-      Handle: PZPostgreSQLConnect): RawByteString;
+      {%H-}Handle: PZPostgreSQLConnect): RawByteString; overload;
+    function DecodeBYTEA(const RowNo, ColumnIndex: Integer;
+      const Is_bytea_output_hex: Boolean; const {%H-}Handle: PZPostgreSQLConnect;
+      const QueryHandle: PZPostgreSQLResult; Var Buffer: Pointer): Cardinal; overload;
 
     function SupportsEncodeBYTEA: Boolean;
     function SupportsDecodeBYTEA(const Handle: PZPostgreSQLConnect): Boolean;
@@ -935,7 +941,7 @@ begin
   AddCodePage('ALT', Ord(csALT), ceAnsi, zCP_DOS866); { Windows CP866 }
   AddCodePage('WIN1256', Ord(csWIN1256), ceAnsi, cCP_WIN1256);  { Windows CP1256 	Arabic }
   AddCodePage('TCVN', Ord(csTCVN), ceAnsi, zCP_WIN1258); { TCVN-5712/Windows CP1258 (Vietnamese) }
-  AddCodePage('WIN874', Ord(csWIN874), ceAnsi, zCP_DOS874); { Windows CP874 (Thai) }
+  AddCodePage('WIN874', Ord(csWIN874), ceAnsi, zCP_WIN874); { Windows CP874 (Thai) }
 end;
 
 procedure TZPostgreSQLBaseDriver.LoadApi;
@@ -1105,15 +1111,16 @@ function TZPostgreSQLBaseDriver.DecodeBYTEA(const value: RawByteString;
   const Is_bytea_output_hex: Boolean; Handle: PZPostgreSQLConnect): RawByteString;
 var
   decoded: PAnsiChar;
-  Ansi: AnsiString;
   len: Longword;
+  L, Xpos: Integer;
 begin
+  Result := ''; //speeds up SetLength *2
   if ( Is_bytea_output_hex ) then
   begin
-    Len := (Length(value)-{$IFDEF WITH_UNITANSISTRINGS}AnsiStrings.AnsiPos{$ELSE}Pos{$ENDIF}('x', value)) div 2; //GetLength of binary result
-    Ansi := AnsiString(Copy(value, {$IFDEF WITH_UNITANSISTRINGS}AnsiStrings.AnsiPos{$ELSE}Pos{$ENDIF}('x', value)+1, Length(value))); //remove the first 'x'sign-byte
-    SetLength(Result, Len); //Set length of binary-result
-    HexToBin(PAnsiChar(Ansi), PAnsichar(Result), Len); //convert hex to binary
+    Xpos := {$IFDEF WITH_UNITANSISTRINGS}AnsiStrings.{$ENDIF}AnsiPos('x', Value); //get pos of 'x'
+    L := (Length(value)-Xpos) div 2;
+    SetLength(Result, L); //Set length of binary-result
+    HexToBin(PAnsiChar(Value)+Xpos{inc pointer ove '\x'}, PAnsichar(Result), L); //convert hex to binary
   end
   else
     if Assigned(POSTGRESQL_API.PQUnescapeBytea) then
@@ -1127,6 +1134,41 @@ begin
     end
     else
       Result := Value;
+
+end;
+
+function TZPostgreSQLBaseDriver.DecodeBYTEA(const RowNo, ColumnIndex: Integer;
+  const Is_bytea_output_hex: Boolean; const Handle: PZPostgreSQLConnect;
+  const QueryHandle: PZPostgreSQLResult; Var Buffer: Pointer): Cardinal;
+var
+  decoded: PAnsiChar;
+  //Xpos: Integer;
+  ColBuffer: PAnsiChar;
+begin
+  Buffer := nil;
+  Result := 0;
+  ColBuffer := GetValue(QueryHandle, RowNo, ColumnIndex);
+  if ( Is_bytea_output_hex ) then
+  begin
+    {if ColBuffer^ = 'x' then
+      xPos := 1
+    else
+      xPos := 2;}
+    Result := GetLength(QueryHandle, Rowno, ColumnIndex);
+    Result := (Result-2) div 2;
+    ReallocMem(Buffer, Result);
+    HexToBin(ColBuffer+2{Xpos{inc pointer over '\x'}, Buffer, Result); //convert hex to binary
+  end
+  else
+    if Assigned(POSTGRESQL_API.PQUnescapeBytea) then
+    begin
+      decoded := POSTGRESQL_API.PQUnescapeBytea(ColBuffer, @Result);
+      ReallocMem(Buffer, Result);
+      if (Result > 0) then
+         Move(decoded^, Buffer^, Result);
+      if Assigned(POSTGRESQL_API.PQFreemem) then
+        POSTGRESQL_API.PQFreemem(decoded);
+    end;
 end;
 
 function TZPostgreSQLBaseDriver.SupportsEncodeBYTEA: Boolean;
@@ -1675,21 +1717,19 @@ begin
     if WasEncoded then
       SourceTemp := Value
     else
-      SourceTemp := ZPlainString(Value, ConSettings); //check encoding too
+      SourceTemp := ConSettings^.ConvFuncs.ZStringToRaw(Value, ConSettings^.CTRL_CP, ConSettings^.ClientCodePage^.CP); //check encoding too
     {$ENDIF}
     GetMem(Temp, Length(SourceTemp)*2);
     if Assigned(POSTGRESQL_API.PQescapeStringConn) then
       ResLen := POSTGRESQL_API.PQescapeStringConn(Handle, Temp,
-
-
-      PAnsiChar(SourceTemp), {$IFDEF WITH_STRLEN_DEPRECATED}AnsiStrings.{$ENDIF}StrLen(PAnsiChar(SourceTemp)), @IError)
+      PAnsiChar(SourceTemp), Length(SourceTemp), @IError)
     else
-      ResLen := POSTGRESQL_API.PQescapeString(Temp, PAnsiChar(SourceTemp),
-       {$IFDEF WITH_STRLEN_DEPRECATED}AnsiStrings.{$ENDIF}StrLen(PAnsiChar(SourceTemp)));
+      ResLen := POSTGRESQL_API.PQescapeString(Temp, PAnsiChar(SourceTemp), Length(SourceTemp));
     if not (IError = 0) then
       raise Exception.Create('Wrong escape behavior!');
+    Result := ''; //speeds up setlength x2
     SetLength(Result, ResLen);
-    Move(Temp^, PAnsiChar(Result)^, ResLen);
+    Move(Temp^, Pointer(Result)^, ResLen);
     FreeMem(Temp);
   end
   else
@@ -1743,10 +1783,10 @@ begin
   AddCodePage('GB18030', Ord(csGB18030), ceAnsi, zCP_GB18030, '', 2); { National Standard 	Chinese }
   AddCodePage('GBK', Ord(csGBK), ceAnsi, zCP_GB2312, '', 2); { Extended National Standard 	Simplified Chinese }
   AddCodePage('SJIS', Ord(csSJIS), ceAnsi, zCP_SHIFTJS, '', 2); { Shift JIS 	Japanese }
-  AddCodePage('UHC', Ord(csUHC), ceAnsi, zCP_EUCKR, '', 2); { Unified Hangul Code 	Korean }
+  AddCodePage('UHC', Ord(csUHC), ceAnsi, zCP_EUCKR, '', 2); { Unified Hangul Code Korean }
   {SingleByte}
   ResetCodePage(Ord(csALT), 'WIN866', Ord(csWIN866), ceAnsi, zCP_DOS866); { Windows CP866 	Cyrillic } //No longer in use
-  AddCodePage('WIN874', Ord(csWIN874), ceAnsi, zCP_DOS874); { Windows CP874 	Thai }
+  AddCodePage('WIN874', Ord(csWIN874), ceAnsi, zCP_WIN874); { Windows CP874 	Thai }
   AddCodePage('WIN1250', Ord(csWIN1250), ceAnsi, zCP_WIN1250); { Windows CP1250 	Central European }
   ResetCodePage(Ord(csWIN), 'WIN1251', Ord(csWIN1251), ceAnsi, zCP_WIN1251); { Windows CP1251 	Cyrillic } //No longer in use
   AddCodePage('WIN1252', Ord(csWIN1252), ceAnsi, zCP_WIN1252); { Windows CP1252 	Western European }
@@ -1829,4 +1869,5 @@ begin
 end;
 
 end.
+
 

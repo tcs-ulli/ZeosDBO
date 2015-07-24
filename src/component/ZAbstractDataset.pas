@@ -131,6 +131,9 @@ type
       IZPreparedStatement; override;
     function CreateResultSet(const SQL: string; MaxRows: Integer):
       IZResultSet; override;
+    {$IFDEF HAVE_UNKNOWN_CIRCULAR_REFERENCE_ISSUES}
+    function GetUpdatable: Boolean; override;
+    {$ENDIF}
     procedure Notification(AComponent: TComponent; Operation: TOperation);
       override;
 
@@ -342,6 +345,13 @@ begin
   end;
 end;
 
+{$IFDEF HAVE_UNKNOWN_CIRCULAR_REFERENCE_ISSUES}
+function TZAbstractDataset.GetUpdatable: Boolean;
+begin
+  Result := False;
+end;
+{$ENDIF}
+
 {**
   Performs internal query closing.
 }
@@ -466,7 +476,7 @@ var
   {$IFDEF WITH_TBOOKMARK}
   BM: TBookMark;
   {$ELSE}
-  BM:TBookMarkStr;
+  BM:TBookMarkStr{%H-};
   {$ENDIF}
   I: Integer;
 begin
@@ -692,7 +702,7 @@ end;
 }
 procedure TZAbstractDataset.RefreshCurrentRow(const RefreshDetails:Boolean);
 var
-    RowNo: integer;
+    RowNo: NativeInt;
     i: Integer;
     ostate:TDataSetState;
 begin
@@ -701,7 +711,7 @@ begin
     if CachedResultSet <> nil then
     begin
       UpdateCursorPos;
-      RowNo := Integer(CurrentRows[CurrentRow - 1]);
+      RowNo := {%H-}NativeInt(CurrentRows[CurrentRow - 1]);
       CachedResultSet.MoveAbsolute(RowNo);
       CachedResultSet.RefreshRow;
       if not (State in [dsInactive]) then

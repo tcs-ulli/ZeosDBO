@@ -61,7 +61,9 @@ interface
 {$ENDIF}
 {$ENDIF}
 
-uses ZClasses, ZCompatibility, ZPlainDriver, ZPlainLoader, ZPlainFirebirdInterbaseConstants;
+uses Types,
+  {$IFDEF OLDFPC}ZClasses,{$ENDIF} ZCompatibility, ZPlainDriver, ZPlainLoader,
+  ZPlainFirebirdInterbaseConstants;
 
 const
 
@@ -111,9 +113,7 @@ type
     ['{AE2C4379-4E47-4752-BC01-D405ACC337F5}']
 
     function GetFirebirdAPI: TZFirebird_API;
-
-    function ZPlainString(const AStr: String; ConSettings: PZConSettings; const ToCP: Word): RawByteString; overload;
-    function ZPlainString(const AStr: WideString; ConSettings: PZConSettings; const ToCP: Word): RawByteString; overload;
+    function GetCodePageArray: TWordDynArray;
 
     function isc_attach_database (status_vector: PISC_STATUS;
       db_name_length: Short; db_name: PAnsiChar; db_handle: PISC_DB_HANDLE;
@@ -249,8 +249,12 @@ type
   TZFirebirdBaseDriver = class (TZAbstractPlainDriver, IZPlainDriver,
     IZInterbasePlainDriver)
     FIREBIRD_API : TZFIREBIRD_API;
+  private
+    FCodePageArray: TWordDynArray;
   protected
+
     FPreLoader : TZNativeLibraryLoader;
+    procedure FillCodePageArray;
     procedure LoadCodePages; override;
     function GetUnicodeCodePageName: String; override;
     {$IFDEF ENABLE_INTERBASE_CRYPT}
@@ -264,6 +268,7 @@ type
     {$ENDIF}
 
     function GetFirebirdAPI: TZFirebird_API;
+    function GetCodePageArray: TWordDynArray;
     function isc_attach_database (status_vector: PISC_STATUS;
       db_name_length: Short; db_name: PAnsiChar; db_handle: PISC_DB_HANDLE;
       parm_buffer_length: Short; parm_buffer: PAnsiChar): ISC_STATUS;
@@ -569,7 +574,7 @@ procedure AddFireBird21CodePages(PlainDriver: TZAbstractPlainDriver);
 begin
   PlainDriver.AddCodePage('CP943C', CS_CP943C, ceAnsi, 943, '', 2); {Japanese}
   PlainDriver.AddCodePage('GBK', CS_GBK, ceAnsi, zCP_GB2312, '', 2); {Chinese}
-  PlainDriver.AddCodePage('TIS620', CS_TIS620, ceAnsi, zCP_IBM_Thai); {Thai}
+  PlainDriver.AddCodePage('TIS620', CS_TIS620, ceAnsi, zCP_WIN874); {Thai}
 end;
 
 { IZFirebirdPlainDriver }
@@ -579,6 +584,14 @@ begin
   Result := 'UNICODE_FSS';
 end;
 
+procedure TZFirebirdBaseDriver.FillCodePageArray;
+var I: Integer;
+begin
+  SetLength(FCodePageArray, 70);
+  for i := 0 to High(FCodePages) do
+    FCodePageArray[FCodePages[i].ID] := FCodePages[i].CP;
+end;
+
 procedure TZFirebirdBaseDriver.LoadCodePages;
 begin
   Self.AddCodePage('ASCII', CS_ASCII, ceAnsi, zCP_WIN1252); {English}
@@ -586,7 +599,7 @@ begin
   Self.AddCodePage('CYRL', CS_CYRL, ceAnsi, zCP_WIN1251, '', 2);  {Russian}
   Self.AddCodePage('DOS437', CS_DOS437, ceAnsi, zCP_DOS437); {English (USA)}
   Self.AddCodePage('DOS850', CS_DOS850, ceAnsi, zCP_DOS850); {Latin I (no Euro symbol)}
-  Self.AddCodePage('DOS852', CS_DOS852, ceAnsi, zCP_DOS852); {Latin II}
+  Self.AddCodePage('DOS852', CS_DOS852, ceAnsi, {$IFDEF MSWINDOWS}zCP_L2_ISO_8859_2{$ELSE}zCP_DOS852{$ENDIF}); {Latin II} //need a crack for windows. Don't know why but it seems Win converts cp852 false see: http://zeoslib.sourceforge.net/viewtopic.php?f=38&t=4779&sid=a143d302f1f967b844bea2bee9eb39b8
   Self.AddCodePage('DOS857', CS_DOS857, ceAnsi, zCP_DOS857); {Turkish}
   Self.AddCodePage('DOS860', CS_DOS860, ceAnsi, zCP_DOS860); {Portuguese}
   Self.AddCodePage('DOS861', CS_DOS861, ceAnsi, zCP_DOS861); {Icelandic}
@@ -596,9 +609,9 @@ begin
   Self.AddCodePage('GB_2312', CS_GB_2312, ceAnsi, zCP_GB2312, '', 2); {Simplified Chinese (Hong Kong, PRC)}
   Self.AddCodePage('ISO8859_1', CS_ISO8859_1, ceAnsi, zCP_L1_ISO_8859_1); {Latin 1}
   Self.AddCodePage('KSC_5601', CS_KSC_5601, ceAnsi, zCP_EUCKR, '', 2); {Korean (Unified Hangeul)}
-  Self.AddCodePage('NEXT', CS_NEXT);  {NeXTSTEP encoding}
+  Self.AddCodePage('NEXT', CS_NEXT);  {apple NeXTSTEP encoding}
   Self.AddCodePage('NONE', CS_NONE, ceAnsi, ZDefaultSystemCodePage, '', 1, False); {Codepage-neutral. Uppercasing limited to ASCII codes 97-122}
-  Self.AddCodePage('OCTETS', CS_BINARY); {Binary character}
+  Self.AddCodePage('OCTETS', CS_BINARY, ceAnsi, $fffd); {Binary character}
   Self.AddCodePage('SJIS_0208', CS_SJIS_0208, ceAnsi, zCP_EUC_JP, '', 2); {Japanese}
   Self.AddCodePage('UNICODE_FSS', CS_UNICODE_FSS, ceUTF8, zCP_UTF8, '', 3); {UNICODE}
   Self.AddCodePage('WIN1250', CS_WIN1250, ceAnsi, zCP_WIN1250); {ANSI — Central European}
@@ -704,6 +717,11 @@ begin
   result := FIREBIRD_API;
 end;
 
+function TZFirebirdBaseDriver.GetCodePageArray: TWordDynArray;
+begin
+  Result := FCodePageArray;
+end;
+
 function TZFirebirdBaseDriver.isc_array_gen_sdl(status_vector: PISC_STATUS;
   isc_array_desc: PISC_ARRAY_DESC; isc_arg3: PShort;
   isc_arg4: PAnsiChar; isc_arg5: PShort): ISC_STATUS;
@@ -760,10 +778,8 @@ function TZFirebirdBaseDriver.isc_attach_database(status_vector: PISC_STATUS;
   db_name_length: Short; db_name: PAnsiChar; db_handle: PISC_DB_HANDLE;
   parm_buffer_length: Short; parm_buffer: PAnsiChar): ISC_STATUS;
 begin
-
-    Result := FIREBIRD_API.isc_attach_database(status_vector, db_name_length,
+  Result := FIREBIRD_API.isc_attach_database(status_vector, db_name_length,
     db_name, db_handle, parm_buffer_length, parm_buffer);
-
 end;
 
 function TZFirebirdBaseDriver.isc_blob_info(status_vector: PISC_STATUS;
@@ -1118,6 +1134,7 @@ begin
     {$ENDIF}
   {$ENDIF}
   Self.LoadCodePages;
+  FillCodePageArray;
 end;
 
 function TZInterbase6PlainDriver.GetDescription: string;
@@ -1147,6 +1164,7 @@ begin
     {$ENDIF}
   {$ENDIF}
   Self.LoadCodePages;
+  FillCodePageArray;
 end;
 
 function TZFirebird10PlainDriver.GetDescription: string;
@@ -1193,6 +1211,7 @@ begin
     {$ENDIF}
   {$ENDIF}
   Self.LoadCodePages;
+  FillCodePageArray;
 end;
 
 function TZFirebird15PlainDriver.GetDescription: string;
@@ -1279,6 +1298,7 @@ begin
     {$ENDIF}
   {$ENDIF}
   Self.LoadCodePages;
+  FillCodePageArray;
 end;
 
 function TZFirebird20PlainDriver.GetDescription: string;
@@ -1375,6 +1395,7 @@ begin
     {$ENDIF}
   {$ENDIF}
   Self.LoadCodePages;
+  FillCodePageArray;
 end;
 
 
@@ -1482,6 +1503,7 @@ begin
     {$ENDIF}
   {$ENDIF}
   Self.LoadCodePages;
+  FillCodePageArray;
 end;
 
 function TZFirebird25PlainDriver.GetProtocol: string;

@@ -56,7 +56,7 @@ interface
 {$I ZDbc.inc}
 
 uses
-  Types, Classes, {$IFDEF MSEgui}mclasses,{$ENDIF} SysUtils,
+  Classes, {$IFDEF MSEgui}mclasses,{$ENDIF} SysUtils,
   {$IF defined(DELPHI) and defined(MSWINDOWS)}Windows,{$IFEND}
   ZDbcIntfs, ZDbcConnection, ZPlainPostgreSqlDriver, ZDbcLogging, ZTokenizer,
   ZGenericSqlAnalyser, ZURL, ZCompatibility;
@@ -89,9 +89,10 @@ type
 
   { TZPGTableInfoCache }
 
-  TZPGTableInfoCache = class(TZCodePagedObject)
+  TZPGTableInfoCache = class(TObject)
     protected
       FTblInfo: Array of TZPGTableInfo;
+      FConSettings: PZconSettings;
       FPlainDriver: Pointer;
       FHandle: PZPostgreSQLConnect;
       function LoadTblInfo(const TblOid: Oid; out Index: Integer; ZPGTableInfo: PZPGTableInfo): Boolean;
@@ -116,7 +117,7 @@ type
     function GetServerMajorVersion: Integer;
     function GetServerMinorVersion: Integer;
     function EncodeBinary(const Value: RawByteString): RawByteString; overload;
-    function EncodeBinary(const Value: TByteDynArray): RawByteString; overload;
+    function EncodeBinary(const Value: TBytes): RawByteString; overload;
     procedure RegisterPreparedStmtName(const value: String);
     procedure UnregisterPreparedStmtName(const value: String);
     function ClientSettingsChanged: Boolean;
@@ -155,7 +156,7 @@ type
     procedure OnPropertiesChange(Sender: TObject); override;
     procedure SetStandardConformingStrings(const Value: Boolean);
     function EncodeBinary(const Value: RawByteString): RawByteString; overload;
-    function EncodeBinary(const Value: TByteDynArray): RawByteString; overload;
+    function EncodeBinary(const Value: TBytes): RawByteString; overload;
     procedure RegisterPreparedStmtName(const value: String);
     procedure UnregisterPreparedStmtName(const value: String);
     function ClientSettingsChanged: Boolean;
@@ -198,11 +199,11 @@ type
     function PingServer: Integer; override;
     function EscapeString(Value: RawByteString): RawByteString; override;
     function GetBinaryEscapeString(const Value: RawByteString): String; overload; override;
-    function GetBinaryEscapeString(const Value: TByteDynArray): String; overload; override;
+    function GetBinaryEscapeString(const Value: TBytes): String; overload; override;
     function GetEscapeString(const Value: ZWideString): ZWideString; overload; override;
     function GetEscapeString(const Value: RawByteString): RawByteString; overload; override;
-    function GetServerSetting(const AName: string): string;
-    procedure SetServerSetting(const AName, AValue: string);
+    function GetServerSetting(const AName: RawByteString): string;
+    procedure SetServerSetting(const AName, AValue: RawbyteString);
     {$IFDEF ZEOS_TEST_ONLY}
     constructor Create(const ZUrl: TZURL);
     {$ENDIF}
@@ -225,50 +226,45 @@ var
 implementation
 
 uses
-  ZMessages, ZSysUtils, ZDbcUtils, ZDbcPostgreSqlStatement,
+  ZFastCode, ZMessages, ZSysUtils, ZDbcPostgreSqlStatement,
   ZDbcPostgreSqlUtils, ZDbcPostgreSqlMetadata, ZPostgreSqlToken,
   ZPostgreSqlAnalyser, ZEncoding;
 
 const
   FON = String('ON');
-  standard_conforming_strings = String('standard_conforming_strings');
+  standard_conforming_strings = 'standard_conforming_strings';
 
-procedure DefaultNoticeProcessor(arg: Pointer; message: PAnsiChar); cdecl;
+procedure DefaultNoticeProcessor({%H-}arg: Pointer; message: PAnsiChar); cdecl;
 begin
-DriverManager.LogMessage(lcOther,'Postgres NOTICE',String(message));
+  DriverManager.LogMessage(lcOther,'Postgres NOTICE', message);
 end;
 
 { TZPGTableInfoCache }
 function TZPGTableInfoCache.LoadTblInfo(const TblOid: Oid; 
   out Index: Integer; ZPGTableInfo: PZPGTableInfo): Boolean;
 var
-  SQL: String;
+  SQL: RawByteString;
   TblInfo: PZPGTableInfo;
-  RawOid: String;
+  RawOid: RawByteString;
   QueryHandle: PZPostgreSQLResult;
   I: Integer;
   function GetInt(const Row, Col: Integer): Integer;
   begin
-    Result := StrToInt(String(IZPostgreSQLPlainDriver(FPlainDriver).GetValue(QueryHandle, Row, Col)));
+    Result := RawToInt(IZPostgreSQLPlainDriver(FPlainDriver).GetValue(QueryHandle, Row, Col));
   end;
 
   function GetString(const Row, Col: Integer): String;
- {$IFDEF UNICODE}
-  var
-    RawTemp: RawByteString;
- {$ENDIF}
   begin
     {$IFDEF UNICODE}
-    ZSetString(IZPostgreSQLPlainDriver(FPlainDriver).GetValue(QueryHandle, Row, Col),
-      IZPostgreSQLPlainDriver(FPlainDriver).GetLength(QueryHandle, Row, Col), RawTemp);
-    Result := ZDbcUnicodeString(RawTemp);
+    Result := PRawToUnicode(IZPostgreSQLPlainDriver(FPlainDriver).GetValue(QueryHandle, Row, Col),
+      IZPostgreSQLPlainDriver(FPlainDriver).GetLength(QueryHandle, Row, Col), FConSettings^.ClientCodePage^.CP);
     {$ELSE}
     SetString(Result, IZPostgreSQLPlainDriver(FPlainDriver).GetValue(QueryHandle, Row, Col),
       IZPostgreSQLPlainDriver(FPlainDriver).GetLength(QueryHandle, Row, Col));
     {$ENDIF}
   end;
 begin
-  RawOID := IntToStr(TblOid);
+  RawOID := IntToRaw(TblOid);
 
   SQL := 'select pc.relname, pns.nspname, pa.attnum, pa.attname from ' +
     'pg_catalog.pg_class pc ' +
@@ -276,9 +272,9 @@ begin
     'join pg_catalog.pg_attribute pa on pa.attrelid = pc.oid ' +
     'where pc.oid = ' + RawOID + ' and pa.attnum > 0';
 
-  QueryHandle := IZPostgreSQLPlainDriver(FPlainDriver).ExecuteQuery(FHandle, PAnsichar(ZPlainString(SQL)));
+  QueryHandle := IZPostgreSQLPlainDriver(FPlainDriver).ExecuteQuery(FHandle, PAnsichar(SQL));
   CheckPostgreSQLError(nil, IZPostgreSQLPlainDriver(FPlainDriver), FHandle, lcExecute, SQL, QueryHandle);
-  DriverManager.LogMessage(lcExecute, IZPostgreSQLPlainDriver(FPlainDriver).GetProtocol, SQL);
+  DriverManager.LogMessage(lcExecute, FConSettings^.Protocol, SQL);
 
   Result := IZPostgreSQLPlainDriver(FPlainDriver).GetRowCount(QueryHandle) > 0;
   if Result then
@@ -322,7 +318,7 @@ end;
 constructor TZPGTableInfoCache.Create(const ConSettings: PZConSettings;
   const Handle: PZPostgreSQLConnect; const PlainDriver: IZPostgreSQLPlainDriver);
 begin
-  Self.ConSettings := ConSettings;
+  FConSettings := ConSettings;
   FPlainDriver := Pointer(PlainDriver);
   FHandle := Handle;
 
@@ -464,7 +460,6 @@ begin
     FOidAsBlob := StrToBoolEx(Info.Values['oidasblob'])
   else
     FOidAsBlob := False;
-
   FUndefinedVarcharAsStringLength := StrToIntDef(Info.Values['Undefined_Varchar_AsString_Length'], 0);
   FCheckFieldVisibility := StrToBoolEx(Info.Values['CheckFieldVisibility']);
 
@@ -526,7 +521,7 @@ begin
   else
     AddParamToResult('host', HostName);
 
-  AddParamToResult('port', IntToStr(Port));
+  AddParamToResult('port', ZFastCode.IntToStr(Port));
   AddParamToResult('dbname', Database);
   AddParamToResult('user', User);
   AddParamToResult('password', Password);
@@ -553,12 +548,11 @@ begin
   { Sets a connection timeout. }
   ConnectTimeout := StrToIntDef(Info.Values['timeout'], -1);
   if ConnectTimeout >= 0 then
-    AddParamToResult('connect_timeout', IntToStr(ConnectTimeout));
+    AddParamToResult('connect_timeout', ZFastCode.IntToStr(ConnectTimeout));
 
   { Sets the application name }
   if Info.Values['application_name'] <> '' then
     AddParamToResult('application_name', Info.Values['application_name']);
-
 end;
 
 {**
@@ -594,34 +588,34 @@ end;
 procedure TZPostgreSQLConnection.StartTransactionSupport;
 var
   QueryHandle: PZPostgreSQLResult;
-  SQL: String;
+  SQL: RawByteString;
 begin
   if TransactIsolationLevel <> tiNone then
   begin
     if FBeginRequired then
     begin
       SQL := 'BEGIN';
-      QueryHandle := GetPlainDriver.ExecuteQuery(FHandle, PAnsiChar(AnsiString(SQL)));
+      QueryHandle := GetPlainDriver.ExecuteQuery(FHandle, Pointer(SQL));
       CheckPostgreSQLError(nil, GetPlainDriver, FHandle, lcExecute, SQL,QueryHandle);
       GetPlainDriver.Clear(QueryHandle);
-      DriverManager.LogMessage(lcExecute, PlainDriver.GetProtocol, SQL);
+      DriverManager.LogMessage(lcExecute, ConSettings^.Protocol, SQL);
     end;
 
     if TransactIsolationLevel = tiReadCommitted then
     begin
       SQL := 'SET TRANSACTION ISOLATION LEVEL READ COMMITTED';
-      QueryHandle := GetPlainDriver.ExecuteQuery(FHandle, PAnsiChar(AnsiString(SQL)));
+      QueryHandle := GetPlainDriver.ExecuteQuery(FHandle, Pointer(SQL));
       CheckPostgreSQLError(nil, GetPlainDriver, FHandle, lcExecute, SQL,QueryHandle);
       GetPlainDriver.Clear(QueryHandle);
-      DriverManager.LogMessage(lcExecute, PlainDriver.GetProtocol, SQL);
+      DriverManager.LogMessage(lcExecute, ConSettings^.Protocol, SQL);
     end
     else if TransactIsolationLevel = tiSerializable then
     begin
       SQL := 'SET TRANSACTION ISOLATION LEVEL SERIALIZABLE';
-      QueryHandle := GetPlainDriver.ExecuteQuery(FHandle, PAnsiChar(AnsiString(SQL)));
+      QueryHandle := GetPlainDriver.ExecuteQuery(FHandle, Pointer(SQL));
       CheckPostgreSQLError(nil, GetPlainDriver, FHandle, lcExecute, SQL,QueryHandle);
       GetPlainDriver.Clear(QueryHandle);
-      DriverManager.LogMessage(lcExecute, PlainDriver.GetProtocol, SQL);
+      DriverManager.LogMessage(lcExecute, ConSettings^.Protocol, SQL);
     end
     else
       raise EZSQLException.Create(SIsolationIsNotSupported);
@@ -633,10 +627,10 @@ end;
   @param Value the Binary String
   @result the encoded String
 }
-function TZPostgreSQLConnection.EncodeBinary(const Value: TByteDynArray): RawByteString;
+function TZPostgreSQLConnection.EncodeBinary(const Value: TBytes): RawByteString;
 var Temp: RawByteString;
 begin
-  ZSetString(PAnsiChar(Value), Length(Value), Temp);
+  ZSetString(PAnsiChar(Value), Length(Value), Temp{%H-});
   Result := EncodeBinary(Temp);
 end;
 {**
@@ -676,12 +670,13 @@ end;
 procedure TZPostgreSQLConnection.Open;
 
 var
-  SCS, LogMessage, TempClientCodePage: string;
+  SCS, Temp: string;
+  LogMessage: RawByteString;
 begin
   if not Closed then
     Exit;
 
-  LogMessage := Format('CONNECT TO "%s" AS USER "%s"', [Database, User]);
+  LogMessage := 'CONNECT TO "'+ConSettings^.Database+'" AS USER "'+ConSettings^.User+'"';
 
   { Connect to PostgreSQL database. }
   FHandle := GetPlainDriver.ConnectDatabase(PAnsiChar(BuildConnectStr));
@@ -692,17 +687,17 @@ begin
                             lcConnect, LogMessage,nil)
     end
     else
-      DriverManager.LogMessage(lcConnect, PlainDriver.GetProtocol, LogMessage);
+      DriverManager.LogMessage(lcConnect, ConSettings^.Protocol, LogMessage);
 
     { Set the notice processor (default = nil)}
     GetPlainDriver.SetNoticeProcessor(FHandle,FNoticeProcessor,nil);
 
     { Gets the current codepage }
-    TempClientCodePage := GetPlainDriver.ValidateCharEncoding(GetPlainDriver.GetClientEncoding(FHandle)).Name;
+    Temp := GetPlainDriver.ValidateCharEncoding(GetPlainDriver.GetClientEncoding(FHandle)).Name;
 
     { Sets a client codepage if necessary }
-    if ( FClientCodePage <> '' ) and (TempClientCodePage <> FClientCodePage) then
-      SetServerSetting('CLIENT_ENCODING', FClientCodePage);
+    if ( FClientCodePage <> '' ) and (Temp <> FClientCodePage) then
+      SetServerSetting('CLIENT_ENCODING', {$IFDEF UNICODE}UnicodeStringToASCII7{$ENDIF}(FClientCodePage));
 
     { Turn on transaction mode }
     StartTransactionSupport;
@@ -710,7 +705,7 @@ begin
 
     { Gets the current codepage if it wasn't set..}
     if ( FClientCodePage = '') then
-      CheckCharEncoding(TempClientCodePage)
+      CheckCharEncoding(Temp)
     else
     begin
       CheckCharEncoding(FClientCodePage);
@@ -726,11 +721,10 @@ begin
     SCS := Info.Values[standard_conforming_strings];
     if SCS <> '' then
     begin
-      SetServerSetting(standard_conforming_strings, SCS);
+      SetServerSetting(standard_conforming_strings, {$IFDEF UNICODE}UnicodeStringToASCII7{$ENDIF}(SCS));
       FClientSettingsChanged := True;
     end;
     FIs_bytea_output_hex := UpperCase(GetServerSetting('''bytea_output''')) = 'HEX';
-
   finally
     if self.IsClosed and (Self.FHandle <> nil) then
     begin
@@ -743,15 +737,16 @@ end;
 procedure TZPostgreSQLConnection.PrepareTransaction(const transactionid: string);
 var
    QueryHandle: PZPostgreSQLResult;
-   SQL: String;
+   SQL: RawByteString;
 begin
   if (TransactIsolationLevel <> tiNone) and not Closed then
   begin
-    SQL:='PREPARE TRANSACTION '''+copy(transactionid,1,200)+'''';
-    QueryHandle := GetPlainDriver.ExecuteQuery(FHandle, PAnsiChar(ZPlainString(SQL)));
-    CheckPostgreSQLError(nil, GetPlainDriver, FHandle, lcExecute, SQL,QueryHandle);
+    SQL:='PREPARE TRANSACTION '''+copy(ConSettings^.ConvFuncs.ZStringToRaw(transactionid,
+      ConSettings^.CTRL_CP, ConSettings^.ClientCodePage^.CP),1,200)+'''';
+    QueryHandle := GetPlainDriver.ExecuteQuery(FHandle, PAnsiChar(SQL));
+    CheckPostgreSQLError(nil, GetPlainDriver, FHandle, lcExecute, SQL, QueryHandle);
     GetPlainDriver.Clear(QueryHandle);
-    DriverManager.LogMessage(lcExecute, PlainDriver.GetProtocol, SQL);
+    DriverManager.LogMessage(lcExecute, ConSettings^.Protocol, SQL);
     StartTransactionSupport;
   end;
 end;
@@ -775,7 +770,18 @@ function TZPostgreSQLConnection.CreateRegularStatement(Info: TStrings):
 begin
   if IsClosed then
     Open;
-  Result := TZPostgreSQLStatement.Create(GetPlainDriver, Self, Info);
+  {$IFDEF ZEOS_TEST_ONLY}
+  Case GetTestMode of
+    0:
+  {$ENDIF}
+      if GetServerMajorVersion >= 8 then
+        Result := TZPostgreSQLCAPIPreparedStatement.Create(GetPlainDriver, Self, '', Info)
+      else
+        Result := TZPostgreSQLClassicPreparedStatement.Create(GetPlainDriver, Self, '', Info);
+  {$IFDEF ZEOS_TEST_ONLY}
+    1: Result := TZPostgreSQLClassicPreparedStatement.Create(GetPlainDriver, Self, '', Info);
+  end;
+  {$ENDIF}
 end;
 
 {**
@@ -822,7 +828,6 @@ begin
         Result := TZPostgreSQLClassicPreparedStatement.Create(GetPlainDriver, Self, SQL, Info);
   {$IFDEF ZEOS_TEST_ONLY}
     1: Result := TZPostgreSQLClassicPreparedStatement.Create(GetPlainDriver, Self, SQL, Info);
-    2: Result := TZPostgreSQLEmulatedPreparedStatement.Create(GetPlainDriver, Self, SQL, Info);
   end;
   {$ENDIF}
 end;
@@ -872,7 +877,7 @@ end;
 procedure TZPostgreSQLConnection.Commit;
 var
   QueryHandle: PZPostgreSQLResult;
-  SQL: String;
+  SQL: RawByteString;
 begin
   if (TransactIsolationLevel <> tiNone) and not Closed then
   begin
@@ -880,7 +885,7 @@ begin
     QueryHandle := GetPlainDriver.ExecuteQuery(FHandle, PAnsiChar(AnsiString(SQL)));
     CheckPostgreSQLError(nil, GetPlainDriver, FHandle, lcExecute, SQL,QueryHandle);
     GetPlainDriver.Clear(QueryHandle);
-    DriverManager.LogMessage(lcExecute, PlainDriver.GetProtocol, SQL);
+    DriverManager.LogMessage(lcExecute, ConSettings^.Protocol, SQL);
 
     StartTransactionSupport;
   end;
@@ -889,15 +894,15 @@ end;
 procedure TZPostgreSQLConnection.CommitPrepared(const transactionid: string);
 var
   QueryHandle: PZPostgreSQLResult;
-  SQL: String;
+  SQL: RawByteString;
 begin
   if (TransactIsolationLevel = tiNone) and not Closed then
   begin
-    SQL := 'COMMIT PREPARED '''+copy(transactionid,1,200)+'''';
+    SQL := 'COMMIT PREPARED '''+copy(RawByteString(transactionid),1,200)+'''';
     QueryHandle := GetPlainDriver.ExecuteQuery(FHandle, PAnsiChar(AnsiString(SQL)));
     CheckPostgreSQLError(nil, GetPlainDriver, FHandle, lcExecute, SQL,QueryHandle);
     GetPlainDriver.Clear(QueryHandle);
-    DriverManager.LogMessage(lcExecute, PlainDriver.GetProtocol, SQL);
+    DriverManager.LogMessage(lcExecute, ConSettings^.Protocol, SQL);
     StartTransactionSupport;
   end;
 end;
@@ -912,15 +917,15 @@ end;
 procedure TZPostgreSQLConnection.Rollback;
 var
   QueryHandle: PZPostgreSQLResult;
-  SQL: String;
+  SQL: RawByteString;
 begin
   if (TransactIsolationLevel <> tiNone) and not Closed then
   begin
     SQL := 'ROLLBACK';
-    QueryHandle := GetPlainDriver.ExecuteQuery(FHandle, PAnsiChar(AnsiString(SQL)));
+    QueryHandle := GetPlainDriver.ExecuteQuery(FHandle, PAnsiChar(SQL));
     CheckPostgreSQLError(nil, GetPlainDriver, FHandle, lcExecute, SQL,QueryHandle);
     GetPlainDriver.Clear(QueryHandle);
-    DriverManager.LogMessage(lcExecute, PlainDriver.GetProtocol, SQL);
+    DriverManager.LogMessage(lcExecute, ConSettings^.Protocol, SQL);
 
     StartTransactionSupport;
   end;
@@ -929,15 +934,15 @@ end;
 procedure TZPostgreSQLConnection.RollbackPrepared(const transactionid: string);
 var
    QueryHandle: PZPostgreSQLResult;
-   SQL: string;
+   SQL: RawByteString;
 begin
   if (TransactIsolationLevel = tiNone) and not Closed then
   begin
-    SQL := 'ROLLBACK PREPARED '''+copy(transactionid,1,200)+'''';
-    QueryHandle := GetPlainDriver.ExecuteQuery(FHandle, PAnsiChar(AnsiString(SQL)));
+    SQL := 'ROLLBACK PREPARED '''+copy(RawByteString(transactionid),1,200)+'''';
+    QueryHandle := GetPlainDriver.ExecuteQuery(FHandle, Pointer(SQL));
     CheckPostgreSQLError(nil, GetPlainDriver, FHandle, lcExecute, SQL,QueryHandle);
     GetPlainDriver.Clear(QueryHandle);
-    DriverManager.LogMessage(lcExecute, PlainDriver.GetProtocol, SQL);
+    DriverManager.LogMessage(lcExecute, ConSettings^.Protocol, SQL);
     StartTransactionSupport;
   end;
 end;
@@ -953,7 +958,7 @@ end;
 }
 procedure TZPostgreSQLConnection.Close;
 var
-  LogMessage: string;
+  LogMessage: RawbyteString;
   I: Integer;
 begin
   if ( Closed ) or (not Assigned(PlainDriver)) then
@@ -961,7 +966,7 @@ begin
 
   for i := 0 to FPreparedStmts.Count -1 do
   begin
-    LogMessage := 'DEALLOCATE "'+FPreparedStmts[i]+'";';
+    LogMessage := 'DEALLOCATE "'+{$IFDEF UNICODE}UnicodeStringToASCII7{$ENDIF}(FPreparedStmts[i])+'";';
     GetPlainDriver.ExecuteQuery(FHandle, Pointer(LogMessage));
   end;
   FPreparedStmts.Clear;
@@ -969,8 +974,8 @@ begin
 
   GetPlainDriver.Finish(FHandle);
   FHandle := nil;
-  LogMessage := Format('DISCONNECT FROM "%s"', [Database]);
-  DriverManager.LogMessage(lcDisconnect, PlainDriver.GetProtocol, LogMessage);
+  LogMessage := 'DISCONNECT FROM "'+ConSettings^.Database+'"';
+  DriverManager.LogMessage(lcDisconnect, ConSettings^.Protocol, LogMessage);
   inherited Close;
 end;
 
@@ -982,7 +987,7 @@ procedure TZPostgreSQLConnection.SetTransactionIsolation(
   Level: TZTransactIsolationLevel);
 var
   QueryHandle: PZPostgreSQLResult;
-  SQL: String;
+  SQL: RawByteString;
 begin
   if not (Level in [tiNone, tiReadCommitted, tiSerializable]) then
     raise EZSQLException.Create(SIsolationIsNotSupported);
@@ -990,10 +995,10 @@ begin
   if (TransactIsolationLevel <> tiNone) and not Closed then
   begin
     SQL := 'END';
-    QueryHandle := GetPlainDriver.ExecuteQuery(FHandle, PAnsiChar(AnsiString(SQL)));
-    CheckPostgreSQLError(nil, GetPlainDriver, FHandle, lcExecute, SQL,QueryHandle);
+    QueryHandle := GetPlainDriver.ExecuteQuery(FHandle, PAnsiChar(SQL));
+    CheckPostgreSQLError(nil, GetPlainDriver, FHandle, lcExecute, SQL ,QueryHandle);
     GetPlainDriver.Clear(QueryHandle);
-    DriverManager.LogMessage(lcExecute, PlainDriver.GetProtocol, SQL);
+    DriverManager.LogMessage(lcExecute, ConSettings^.Protocol, SQL);
   end;
 
   inherited SetTransactionIsolation(Level);
@@ -1029,7 +1034,7 @@ function TZPostgreSQLConnection.GetTypeNameByOid(Id: Oid): string;
 var
   I, Index: Integer;
   QueryHandle: PZPostgreSQLResult;
-  SQL: PAnsiChar;
+  SQL: RawByteString;
   TypeCode, BaseTypeCode: Integer;
   TypeName: string;
   LastVersion, IsEnum: boolean;
@@ -1052,15 +1057,15 @@ begin
       SQL := 'SELECT oid, typname, typbasetype,typtype FROM pg_type' +
              ' WHERE (typtype = ''b'' and oid < 10000) OR typtype = ''p'' OR typtype = ''e'' OR typbasetype<>0 ORDER BY oid';
 
-    QueryHandle := GetPlainDriver.ExecuteQuery(FHandle, SQL);
-    CheckPostgreSQLError(Self, GetPlainDriver, FHandle, lcExecute, String(SQL),QueryHandle);
-    DriverManager.LogMessage(lcExecute, PlainDriver.GetProtocol, String(SQL));
+    QueryHandle := GetPlainDriver.ExecuteQuery(FHandle, Pointer(SQL));
+    CheckPostgreSQLError(Self, GetPlainDriver, FHandle, lcExecute, SQL, QueryHandle);
+    DriverManager.LogMessage(lcExecute, ConSettings^.Protocol, SQL);
 
     FTypeList := TStringList.Create;
     for I := 0 to GetPlainDriver.GetRowCount(QueryHandle)-1 do
     begin
-      TypeCode := StrToIntDef(String(
-        GetPlainDriver.GetValue(QueryHandle, I, 0)), 0);
+      TypeCode := RawToIntDef(
+        GetPlainDriver.GetValue(QueryHandle, I, 0), 0);
       isEnum := LowerCase(String(GetPlainDriver.GetValue(QueryHandle, I, 3))) = 'e';
       if isEnum then
         TypeName := 'enum'
@@ -1070,8 +1075,8 @@ begin
       if LastVersion then
         BaseTypeCode := 0
       else
-        BaseTypeCode := StrToIntDef(String(
-          GetPlainDriver.GetValue(QueryHandle, I, 2)), 0);
+        BaseTypeCode := RawToIntDef(
+          GetPlainDriver.GetValue(QueryHandle, I, 2), 0);
 
       if BaseTypeCode <> 0 then
       begin
@@ -1147,14 +1152,14 @@ var
   Temp: string;
   List: TStrings;
   QueryHandle: PZPostgreSQLResult;
-  SQL: PAnsiChar;
+  SQL: RawByteString;
 begin
   if Closed then
     Open;
   SQL := 'SELECT version()';
-  QueryHandle := GetPlainDriver.ExecuteQuery(FHandle, SQL);
-  CheckPostgreSQLError(Self, GetPlainDriver, FHandle, lcExecute, String(SQL),QueryHandle);
-  DriverManager.LogMessage(lcExecute, PlainDriver.GetProtocol, String(SQL));
+  QueryHandle := GetPlainDriver.ExecuteQuery(FHandle, Pointer(SQL));
+  CheckPostgreSQLError(Self, GetPlainDriver, FHandle, lcExecute, SQL,QueryHandle);
+  DriverManager.LogMessage(lcExecute, ConSettings^.Protocol, SQL);
 
   Temp := String(GetPlainDriver.GetValue(QueryHandle, 0, 0));
   GetPlainDriver.Clear(QueryHandle);
@@ -1257,11 +1262,11 @@ end;
   @param EscapeMarkSequence represents a Tokenizer detectable EscapeSequence (Len >= 3)
   @result the detectable Binary String
 }
-function TZPostgreSQLConnection.GetBinaryEscapeString(const Value: TByteDynArray): String;
+function TZPostgreSQLConnection.GetBinaryEscapeString(const Value: TBytes): String;
 var Tmp: RawByteString;
 begin
-  ZSetString(PAnsiChar(Value), Length(Value), Tmp);
-  Result := String(EncodeBinary(Tmp));
+  ZSetString(PAnsiChar(Value), Length(Value), Tmp{%H-});
+  Result := {$IFDEF UNICODE}ASCII7ToUnicodeString{$ENDIF}(EncodeBinary(Tmp));
   if GetAutoEncodeStrings then
     Result := GetDriver.GetTokenizer.GetEscapeString(Result);
 end;
@@ -1276,9 +1281,11 @@ end;
 }
 function TZPostgreSQLConnection.GetEscapeString(const Value: ZWideString): ZWideString;
 begin
-  Result := GetPlainDriver.EscapeString(FHandle, Value, ConSettings);
+  Result := ConSettings^.ConvFuncs.ZRawToUnicode(GetPlainDriver.EscapeString(FHandle, ConSettings.ConvFuncs.ZUnicodeToRaw(Value, ConSettings^.ClientCodePage^.CP), ConSettings), ConSettings^.ClientCodePage^.CP);
+  {$IFDEF UNICODE}
   if GetAutoEncodeStrings then
     Result := GetDriver.GetTokenizer.GetEscapeString(Result);
+  {$ENDIF}
 end;
 
 function TZPostgreSQLConnection.GetEscapeString(const Value: RawByteString): RawByteString;
@@ -1295,15 +1302,15 @@ end;
   @param AName a parameter name.
   @result a parmeter value retrieved from server.
 }
-function TZPostgreSQLConnection.GetServerSetting(const AName: string): string;
+function TZPostgreSQLConnection.GetServerSetting(const AName: RawByteString): string;
 var
-  SQL: string;
+  SQL: RawByteString;
   QueryHandle: PZPostgreSQLResult;
 begin
-  SQL := Format('select setting from pg_settings where name = %s', [AName]);
-  QueryHandle := GetPlainDriver.ExecuteQuery(FHandle, PAnsiChar({$IFDEF UNICODE}AnsiString{$ENDIF}(SQL)));
+  SQL := 'select setting from pg_settings where name = '+AName;
+  QueryHandle := GetPlainDriver.ExecuteQuery(FHandle, PAnsiChar(SQL));
   CheckPostgreSQLError(Self, GetPlainDriver, FHandle, lcExecute, SQL, QueryHandle);
-  DriverManager.LogMessage(lcExecute, PlainDriver.GetProtocol, SQL);
+  DriverManager.LogMessage(lcExecute, ConSettings^.Protocol, SQL);
 
   Result := String(GetPlainDriver.GetValue(QueryHandle, 0, 0));
   GetPlainDriver.Clear(QueryHandle);
@@ -1329,15 +1336,16 @@ end;
   @param AName a parameter name.
   @param AValue a new parameter value.
 }
-procedure TZPostgreSQLConnection.SetServerSetting(const AName, AValue: string);
+procedure TZPostgreSQLConnection.SetServerSetting(const AName,
+  AValue: RawbyteString);
 var
-  SQL: string;
+  SQL: RawByteString;
   QueryHandle: PZPostgreSQLResult;
 begin
-  SQL := Format('SET %s = %s', [AName, AValue]);
-  QueryHandle := GetPlainDriver.ExecuteQuery(FHandle, PAnsiChar(AnsiString(SQL)));
+  SQL := 'SET '+AName+' = '+AValue;
+  QueryHandle := GetPlainDriver.ExecuteQuery(FHandle, Pointer(SQL));
   CheckPostgreSQLError(Self, GetPlainDriver, FHandle, lcExecute, SQL, QueryHandle);
-  DriverManager.LogMessage(lcExecute, PlainDriver.GetProtocol, SQL);
+  DriverManager.LogMessage(lcExecute, ConSettings^.Protocol, SQL);
 
   GetPlainDriver.Clear(QueryHandle);
 end;

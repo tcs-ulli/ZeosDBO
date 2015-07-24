@@ -55,9 +55,16 @@ interface
 
 {$I ZPlain.inc}
 
-uses Types, ZCompatibility;
+uses Types,
+{$IFDEF FPC}
+  dynlibs,
+{$ENDIF}
+  ZCompatibility;
 
 type
+  {$IFDEF FPC}
+  THandle = TLibHandle;
+  {$ENDIF}
   {** Implements a loader for native library. }
 
   { TZNativeLibraryLoader }
@@ -65,11 +72,7 @@ type
   TZNativeLibraryLoader = class (TObject)
   private
     FLocations: TStringDynArray;
-  {$IFDEF FPC}
-    FHandle: PtrInt;
-  {$ELSE}
     FHandle: THandle;  //M.A. LongWord;
-  {$ENDIF}
     FLoaded: Boolean;
     FCurrentLocation: String;
     function ZLoadLibrary(Location: String): Boolean;
@@ -87,11 +90,7 @@ type
     procedure LoadIfNeeded; virtual;
 
     property Loaded: Boolean read FLoaded write FLoaded;
-  {$IFDEF FPC}
-    property Handle: PtrInt read FHandle write FHandle;
-  {$ELSE}
     property Handle: THandle { M.A. LongWord} read FHandle write FHandle;
-  {$ENDIF}
     property CurrentLocation: String read FCurrentLocation write FCurrentLocation;
     function GetAddress(ProcName: PAnsiChar): Pointer;
   end;

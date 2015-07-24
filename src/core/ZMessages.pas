@@ -59,10 +59,58 @@ interface
 
 {$I ZCore.inc}
 
+uses ZCompatibility;
+
 procedure loadmessages();
+
+const
+{$IFDEF FRENCH}
+  cCodePage = 1252; {Microsoft Windows Codepage 1252 (ANSI), USASCCI}
+{$ELSE !FRENCH}
+{$IFDEF PORTUGUESE}
+  cCodePage = 1252; {Microsoft Windows Codepage 1252 (ANSI), USASCCI}
+{$ELSE !PORTUGUESE}
+{$IFDEF DUTCH}
+  cCodePage = 1252; {Microsoft Windows Codepage 1252 (ANSI), USASCCI}
+{$ELSE !DUTCH}
+{$IFDEF GERMAN}
+  cCodePage = 1252; {Microsoft Windows Codepage 1252 (ANSI), USASCCI}
+{$ELSE !GERMAN}
+{$IFDEF SPANISH}
+  cCodePage = 1252; {Microsoft Windows Codepage 1252 (ANSI), USASCCI}
+{$ELSE !SPANISH}
+{$IFDEF ROMANA}
+  cCodePage = 1252; {Microsoft Windows Codepage 1252 (ANSI), USASCCI}
+{$ELSE !ROMANA}
+{$IFDEF INDONESIAN}
+  cCodePage = 20127; {US-ASCII (7-bit)}
+{$ELSE !INDONESIAN}
+{$IFDEF RUSSIAN}
+  cCodePage = 1251; {Microsoft Windows Codepage 1251 (Cyrl)}
+{$ELSE !RUSSIAN}
+{$IFDEF CZECH}
+  cCodePage = 1250; {Microsoft Windows Codepage 1250 (East European)}
+{$ELSE !CZECH}
+{$IFDEF POLISH}
+  cCodePage = 1250; {Microsoft Windows Codepage 1250 (East European)}
+{$ELSE !POLISH}
+cCodePage = 20127; {US-ASCII (7-bit)}
+{$ENDIF POLISH} // POLISH
+{$ENDIF CZECH} // CZECH
+{$ENDIF RUSSIAN}
+{$ENDIF INDONESIAN}
+{$ENDIF ROMANA}
+{$ENDIF SPANISH}
+{$ENDIF GERMAN}
+{$ENDIF DUTCH}
+{$ENDIF PORTUGUESE}
+{$ENDIF FRENCH}
 
 resourcestring
 
+  {$IFNDEF WITH_RTLCONSTS_SInvalidGuidArray}
+    SInvalidGuidArray = 'Byte-Array or Buffer for GUID must have exact %s Bytes';
+  {$ENDIF}
   cSLibraryNotCompatible = 'Client-Library %s found but could not be loaded. Check compile-target and library compatibility!';
 //--- added by Serge Girard --------------------------------------------------------
 {$IFDEF FRENCH}
@@ -383,7 +431,7 @@ resourcestring
   cSBoundVarStrIndexMissing = 'Нndice de texto "%s" da variбvel de limite nгo existe';
   cSBindVarOutOfRange      = 'Нndice da variбvel de limite fora de alcance: %d';
   cSFailedToBindResults    = 'A Aplicaзгo falhou ao tratar o result set';
-  
+  cSPreviousResultStillOpen = 'Previous resultset of this statement is still open';
 
   cSRefreshRowOnlySupportedWithUpdateObject = 'O mйtodo RefreshRow somente й suportado com um update object';
   cSMustBeInBrowseMode = 'A Operaзгo й permitida somente no modo dsBrowse';
@@ -548,6 +596,7 @@ resourcestring
   cSBoundVarStrIndexMissing = 'Tekst index van bound variable bestaat niet: "%s"';
   cSBindVarOutOfRange      = 'Bound variable index buiten bereik: %d';
   cSFailedToBindResults    = 'Binding van resultaat mislukt';
+  cSPreviousResultStillOpen = 'Previous resultset of this statement is still open';
 
   cSRefreshRowOnlySupportedWithUpdateObject = 'De refreshrow methode is enkel ondersteund vooreen update object';
   cSMustBeInBrowseMode = 'Bewerking is enkel toegestaan in dsBROWSE status';
@@ -714,6 +763,7 @@ resourcestring
   cSBoundVarStrIndexMissing = 'Translate: Bound variable text index "%s" does not exist';
   cSBindVarOutOfRange      = 'Translate: Bound variable index out of range: %d';
   cSFailedToBindResults    = 'Translate: Application failed to bind to the result set';
+  cSPreviousResultStillOpen = 'Previous resultset of this statement is still open';
 
   cSRefreshRowOnlySupportedWithUpdateObject = 'TRANSLATE: The refreshrow method is only supported with an update object';
   cSMustBeInBrowseMode = 'TRANSLATE: Operation is only allowed in dsBROWSE state';
@@ -879,6 +929,7 @@ resourcestring
   cSBoundVarStrIndexMissing = 'Translate: Bound variable text index "%s" does not exist';
   cSBindVarOutOfRange      = 'Translate: Bound variable index out of range: %d';
   cSFailedToBindResults    = 'Translate: Application failed to bind to the result set';
+  cSPreviousResultStillOpen = 'Previous resultset of this statement is still open';
 
   cSRefreshRowOnlySupportedWithUpdateObject = 'TRANSLATE: The refreshrow method is only supported with an update object';
   cSMustBeInBrowseMode = 'TRANSLATE: Operation is only allowed in dsBROWSE state';
@@ -892,8 +943,7 @@ resourcestring
 
 {$IFDEF ROMANA}
 
-
- SSQLError1 = 'SQL Eroare: %s';
+  SSQLError1 = 'SQL Eroare: %s';
   cSSQLError2 = 'SQL Eroare: %s Cod: %d';
   cSSQLError3 = 'SQL Eroare: %s Cod: %d SQL: %s';
   cSSQLError4 = 'SQL Eroare: %s Cod: %d Mesaj: %s';
@@ -1045,6 +1095,7 @@ resourcestring
   cSBoundVarStrIndexMissing = 'Translate: Bound variable text index "%s" does not exist';
   cSBindVarOutOfRange      = 'Translate: Bound variable index out of range: %d';
   cSFailedToBindResults    = 'Translate: Application failed to bind to the result set';
+  cSPreviousResultStillOpen = 'Previous resultset of this statement is still open';
 
   cSRefreshRowOnlySupportedWithUpdateObject = 'TRANSLATE: The refreshrow method is only supported with an update object';
   cSMustBeInBrowseMode = 'TRANSLATE: Operation is only allowed in dsBROWSE state';
@@ -1207,6 +1258,7 @@ resourcestring
   cSBoundVarStrIndexMissing = 'Teks variabel indeks "%s" tidak ada';
   cSBindVarOutOfRange      = 'Variabel indeks diluar jangkauan: %d';
   cSFailedToBindResults    = 'Aplikasi gagal pada penggabungan ke Resultset';
+  cSPreviousResultStillOpen = 'Previous resultset of this statement is still open';
 
   cSRefreshRowOnlySupportedWithUpdateObject = 'Metode RefreshRow hanya didukung oleh obyek Update';
   cSMustBeInBrowseMode = 'Operasi hanya diperbolehkan pada status dsBrowse';
@@ -1372,6 +1424,7 @@ resourcestring
   cSBoundVarStrIndexMissing                 = 'Ограничение на текст с индексом "%s" не существует';
   cSBindVarOutOfRange                       = 'Индекс ограничения вышел за границы : %d';
   cSFailedToBindResults                     = 'Неудалось связать(bind) результат выполнения';
+  cSPreviousResultStillOpen = 'Previous resultset of this statement is still open';
 
   cSRefreshRowOnlySupportedWithUpdateObject = 'Метод обновления строки (RefreshRow) поддерживается только при обновлении объекта';
   cSMustBeInBrowseMode                      = 'Операция поддерживает только в режиме просмотра (dsBROWSE)';
@@ -1538,6 +1591,7 @@ resourcestring
   cSBoundVarStrIndexMissing = 'Index textovй promмnй "%s" neexistuje';
   cSBindVarOutOfRange      = 'Index promenй je mimo rozsah: %d';
   cSFailedToBindResults    = 'Aplikace selhala pшi zнskбvбnн vэsledkщ dotazu';
+  cSPreviousResultStillOpen = 'Previous resultset of this statement is still open';
 
 //FOS+ 07112006
   cSRefreshRowOnlySupportedWithUpdateObject = 'Metoda "refreshrow" je podporovбna pouze v "update object"';
@@ -1554,7 +1608,6 @@ resourcestring
 
 //--- added by pawelsel --------------------------------------------------------
 {$IFDEF POLISH}
-
   cSSQLError1 = 'Bі№d SQL: %s';
   cSSQLError2 = 'Bі№d SQL: %s Kod: %d';
   cSSQLError3 = 'Bі№d SQL: %s Kod: %d SQL: %s';
@@ -1707,6 +1760,7 @@ resourcestring
   cSBoundVarStrIndexMissing = 'Nie istnieje zmienna licznikowa "%s"';
   cSBindVarOutOfRange      = 'Wartoњж zmiennej licznikowej poza zakresem: %d';
   cSFailedToBindResults    = 'Bі№d aplikacji podczas і№czenia do wynikуw zapytania';
+  cSPreviousResultStillOpen = 'Previous resultset of this statement is still open';
 
 //FOS+ 07112006
   cSRefreshRowOnlySupportedWithUpdateObject = 'Metoda refreshrow jest obsіugiwana tylko przez obiekt typu "update"';
@@ -1719,7 +1773,6 @@ resourcestring
   cSRowBufferWidthExceeded ='Translate: Row buffer width exceeded. Try using fewer or longer columns in SQL query.';
 
 {$ELSE} // default: ENGLISH
-
 
   cSSQLError1 = 'SQL Error: %s';
   cSSQLError2 = 'SQL Error: %s Code: %d';
@@ -1873,6 +1926,7 @@ resourcestring
   cSBoundVarStrIndexMissing = 'Bound variable text index "%s" does not exist';
   cSBindVarOutOfRange      = 'Bound variable index out of range: %d';
   cSFailedToBindResults    = 'Application failed to bind to the result set';
+  cSPreviousResultStillOpen = 'Previous resultset of this statement is still open';
 
 //FOS+ 07112006
   cSRefreshRowOnlySupportedWithUpdateObject = 'The refreshrow method is only supported with an update object';
@@ -1901,10 +1955,12 @@ resourcestring
 {$ENDIF} // DUTCH
 
 {$ENDIF} // PORTUGUESE
-
 {$ENDIF FRENCH}
+type
+  TMessageToRaw = function(const AMessage: String; Const RawCP: Word): RawByteString;
 
 var
+  MessageCodePage: Word;
   SSQLError1: String;
   SSQLError2: String;
   SSQLError3: String;
@@ -2057,6 +2113,7 @@ var
   SBoundVarStrIndexMissing: String;
   SBindVarOutOfRange: String;
   SFailedToBindResults: String;
+  SPreviousResultStillOpen: String;
 
 
   SRefreshRowOnlySupportedWithUpdateObject: String;
@@ -2070,8 +2127,10 @@ var
 
 implementation
 
-procedure loadmessages();
+procedure loadmessages;
 begin
+  MessageCodePage := cCodePage;
+
   SSQLError1 := cSSQLError1;
   SSQLError2 := cSSQLError2;
   SSQLError3 := cSSQLError3;
@@ -2224,7 +2283,7 @@ begin
   SBoundVarStrIndexMissing := cSBoundVarStrIndexMissing;
   SBindVarOutOfRange := cSBindVarOutOfRange;
   SFailedToBindResults := cSFailedToBindResults;
-
+  SPreviousResultStillOpen := cSPreviousResultStillOpen;
 
   SRefreshRowOnlySupportedWithUpdateObject := cSRefreshRowOnlySupportedWithUpdateObject;
   SMustBeInBrowseMode := cSMustBeInBrowseMode;

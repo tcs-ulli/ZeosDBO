@@ -57,7 +57,14 @@ interface
 
 uses
   Types, Classes, {$IFDEF MSEgui}mclasses,{$ENDIF} SysUtils, Contnrs,
-  ZCompatibility, ZDbcIntfs, ZDbcResultSetMetadata;
+  ZCompatibility, ZDbcIntfs, ZDbcResultSetMetadata, ZTokenizer, ZVariant;
+
+type
+  TPreparablePrefixToken = Record
+    MatchingGroup: String;
+    ChildMatches: TStringDynArray;
+  end;
+  TPreparablePrefixTokens = array of TPreparablePrefixToken;
 
 {**
   Resolves a connection protocol and raises an exception with protocol
@@ -155,9 +162,52 @@ function GetFieldSize(const SQLType: TZSQLType;ConSettings: PZConSettings;
 
 function WideStringStream(const AString: WideString): TStream;
 
+function TokenizeSQLQueryRaw(var SQL: {$IF defined(FPC) and defined(WITH_RAWBYTESTRING)}RawByteString{$ELSE}String{$IFEND}; Const ConSettings: PZConSettings;
+  const Tokenizer: IZTokenizer; var IsParamIndex, IsNCharIndex: TBooleanDynArray;
+  ComparePrefixTokens: TPreparablePrefixTokens; const CompareSuccess: PBoolean;
+  const NeedNCharDetection: Boolean = False): TRawByteStringDynArray;
+
+function TokenizeSQLQueryUni(var SQL: {$IF defined(FPC) and defined(WITH_RAWBYTESTRING)}RawByteString{$ELSE}String{$IFEND}; Const ConSettings: PZConSettings;
+  const Tokenizer: IZTokenizer; var IsParamIndex, IsNCharIndex: TBooleanDynArray;
+  ComparePrefixTokens: TPreparablePrefixTokens; const CompareSuccess: PBoolean;
+  const NeedNCharDetection: Boolean = False): TUnicodeStringDynArray;
+
+{$IF defined(ENABLE_MYSQL) or defined(ENABLE_POSTGRESQL) or defined(ENABLE_INTERBASE)}
+procedure AssignOutParamValuesFromResultSet(const ResultSet: IZResultSet;
+  OutParamValues: TZVariantDynArray; const OutParamCount: Integer;
+  const PAramTypes: array of ShortInt);
+{$IFEND}
+
+{**
+  GetValidatedTextStream the incoming Stream for his given Memory and
+  returns a valid UTF8/Ansi StringStream
+  @param Stream the Stream with the unknown format and data
+  @return a valid utf8 encoded stringstram
+}
+function GetValidatedAnsiStringFromBuffer(const Buffer: Pointer; Size: Cardinal;
+  ConSettings: PZConSettings): RawByteString; overload;
+
+function GetValidatedAnsiStringFromBuffer(const Buffer: Pointer; Size: Cardinal;
+  ConSettings: PZConSettings; ToCP: Word): RawByteString; overload;
+
+function GetValidatedAnsiString(const Ansi: RawByteString;
+  ConSettings: PZConSettings; const FromDB: Boolean): RawByteString; overload;
+
+{**
+  GetValidatedUnicodeStream the incoming Stream for his given Memory and
+  returns a valid Unicode/Widestring Stream
+  @param Buffer the pointer to the Data
+  @return a valid Unicode encoded stringstram
+}
+function GetValidatedUnicodeStream(const Buffer: Pointer; Size: Cardinal;
+  ConSettings: PZConSettings; FromDB: Boolean): TStream; overload;
+
+function GetValidatedUnicodeStream(const Ansi: RawByteString;
+  ConSettings: PZConSettings; FromDB: Boolean): TStream; overload;
+
 implementation
 
-uses ZMessages, ZSysUtils, ZEncoding;
+uses ZMessages, ZSysUtils, ZEncoding, ZFastCode;
 
 {**
   Resolves a connection protocol and raises an exception with protocol
@@ -259,21 +309,32 @@ end;
 function CheckConvertion(InitialType: TZSQLType; ResultType: TZSQLType): Boolean;
 begin
   case ResultType of
-    stBoolean, stByte, stShort, stInteger,
-    stLong, stFloat, stDouble, stBigDecimal:
-      Result := InitialType in [stBoolean, stByte, stShort, stInteger,
-        stLong, stFloat, stDouble, stBigDecimal, stString, stUnicodeString];
+    stBoolean,
+    stByte, stShort, stWord, stSmall, stLongWord, stInteger, stULong, stLong,
+    stFloat, stCurrency, stBigDecimal:
+      Result := InitialType in [stBoolean,
+        stByte, stShort, stWord, stSmall, stLongWord, stInteger, stUlong, stLong,
+        stFloat, stDouble, stCurrency, stBigDecimal,
+        stString, stUnicodeString];
+    stDouble:
+      Result := InitialType in [stBoolean,
+        stByte, stShort, stWord, stSmall, stLongWord, stInteger, stUlong, stLong,
+        stFloat, stDouble, stCurrency, stBigDecimal,
+        stString, stUnicodeString,
+        stTime, stDate, stTimeStamp];
     stString, stUnicodeString:
       Result := True;
     stBytes:
       Result := InitialType in [stString, stUnicodeString, stBytes, stGUID,
         stAsciiStream, stUnicodeStream, stBinaryStream];
     stTimestamp:
-      Result := InitialType in [stString, stUnicodeString, stDate, stTime, stTimestamp];
+      Result := InitialType in [stString, stUnicodeString, stDate, stTime, stTimestamp, stDouble];
     stDate:
-      Result := InitialType in [stString, stUnicodeString, stDate, stTimestamp];
+      Result := InitialType in [stString, stUnicodeString, stDate, stTimestamp, stDouble];
     stTime:
-      Result := InitialType in [stString, stUnicodeString, stTime, stTimestamp];
+      Result := InitialType in [stString, stUnicodeString, stTime, stTimestamp, stDouble];
+    stBinaryStream:
+      Result := (InitialType in [stBinaryStream, stBytes]) and (InitialType <> stUnknown);
     else
       Result := (ResultType = InitialType) and (InitialType <> stUnknown);
   end;
@@ -287,42 +348,31 @@ end;
 function DefineColumnTypeName(ColumnType: TZSQLType): string;
 begin
   case ColumnType of
-    stBoolean:
-      Result := 'Boolean';
-    stByte:
-      Result := 'Byte';
-    stShort:
-      Result := 'Short';
-    stInteger:
-      Result := 'Integer';
-    stLong:
-      Result := 'Long';
-    stFloat:
-      Result := 'Float';
-    stDouble:
-      Result := 'Double';
-    stBigDecimal:
-      Result := 'BigDecimal';
-    stString:
-      Result := 'String';
-    stUnicodeString:
-      Result := 'UnicodeString';
-    stBytes:
-      Result := 'Bytes';
-    stGUID:
-      Result := 'GUID';
-    stDate:
-      Result := 'Date';
-    stTime:
-      Result := 'Time';
-    stTimestamp:
-      Result := 'Timestamp';
-    stAsciiStream:
-      Result := 'AsciiStream';
-    stUnicodeStream:
-      Result := 'UnicodeStream';
-    stBinaryStream:
-      Result := 'BinaryStream';
+    stBoolean:        Result := 'Boolean';
+    stByte:           Result := 'Byte';
+    stShort:          Result := 'Short';
+    stWord:           Result := 'Word';
+    stSmall:          Result := 'Small';
+    stLongWord:       Result := 'LongWord';
+    stInteger:        Result := 'Integer';
+    stULong:          Result := 'ULong';
+    stLong:           Result := 'Long';
+    stFloat:          Result := 'Float';
+    stDouble:         Result := 'Double';
+    stCurrency:       Result := 'Currency';
+    stBigDecimal:     Result := 'BigDecimal';
+    stString:         Result := 'String';
+    stUnicodeString:  Result := 'UnicodeString';
+    stBytes:          Result := 'Bytes';
+    stGUID:           Result := 'GUID';
+    stDate:           Result := 'Date';
+    stTime:           Result := 'Time';
+    stTimestamp:      Result := 'Timestamp';
+    stAsciiStream:    Result := 'AsciiStream';
+    stUnicodeStream:  Result := 'UnicodeStream';
+    stBinaryStream:   Result := 'BinaryStream';
+    stArray:          Result := 'Array';
+    stDataSet:        Result := 'DataSet';
     else
       Result := 'Unknown';
   end;
@@ -378,6 +428,7 @@ begin
     ColumnInfo.ReadOnly := Current.ReadOnly;
     ColumnInfo.Writable := Current.Writable;
     ColumnInfo.DefinitelyWritable := Current.DefinitelyWritable;
+    ColumnInfo.ColumnCodePage := Current.ColumnCodePage;
 
     ToList.Add(ColumnInfo);
   end;
@@ -423,29 +474,59 @@ end;
 }
 
 function GetSQLHexWideString(Value: PAnsiChar; Len: Integer; ODBC: Boolean = False): ZWideString;
-var
-  HexVal: AnsiString;
+var P: PWideChar;
 begin
-  SetLength(HexVal,Len * 2 );
-  BinToHex(Value, PAnsiChar(HexVal), Len);
-
+  Result := ''; //init speeds setlength x2
   if ODBC then
-    Result := '0x'+ZWideString(HexVal)
+  begin
+    SetLength(Result,(Len shl 1)+2); //shl 1 = * 2 but faster
+    P := Pointer(Result);
+    P^ := '0';
+    Inc(P);
+    P^ := 'x';
+    Inc(P);
+    ZBinToHex(Value, P, Len);
+  end
   else
-    Result := 'x'#39+ZWideString(HexVal)+#39;
+  begin
+    SetLength(Result, (Len shl 1)+3); //shl 1 = * 2 but faster
+    P := Pointer(Result);
+    P^ := 'x';
+    Inc(P);
+    P^ := #39;
+    Inc(P);
+    ZBinToHex(Value, P, Len);
+    Inc(P, Len shl 1); //shl 1 = * 2 but faster
+    P^ := #39;
+  end;
 end;
 
 function GetSQLHexAnsiString(Value: PAnsiChar; Len: Integer; ODBC: Boolean = False): RawByteString;
-var
-  HexVal: RawByteString;
+var P: PAnsiChar;
 begin
-  SetLength(HexVal,Len * 2 );
-  BinToHex(Value, PAnsiChar(HexVal), Len);
-
+  Result := ''; //init speeds setlength x2
   if ODBC then
-    Result := '0x'+HexVal
+  begin
+    System.SetLength(Result,(Len shl 1)+2);//shl 1 = * 2 but faster
+    P := Pointer(Result);
+    P^ := '0';
+    Inc(P);
+    P^ := 'x';
+    Inc(P);
+    ZBinToHex(Value, P, Len);
+  end
   else
-    Result := 'x'#39+HexVal+#39;
+  begin
+    SetLength(Result, (Len shl 1)+3); //shl 1 = * 2 but faster
+    P := Pointer(Result);
+    P^ := 'x';
+    Inc(P);
+    P^ := #39;
+    Inc(P);
+    ZBinToHex(Value, P, Len);
+    Inc(P, Len shl 1); //shl 1 = * 2 but faster
+    P^ := #39;
+  end;
 end;
 
 function GetSQLHexString(Value: PAnsiChar; Len: Integer; ODBC: Boolean = False): String;
@@ -485,13 +566,13 @@ begin
       //the RowAccessor assumes SizeOf(Char)*Precision+SizeOf(Char)
       //the Field assumes Precision*SizeOf(Char)
       {$IFDEF UNICODE}
-      if ConSettings.ClientCodePage.CharWidth >= 2 then //All others > 3 are UTF8
-        Result := TempPrecision * 2 //add more mem for a reserved thirt byte
+      if ConSettings^.ClientCodePage^.CharWidth >= 2 then //All others > 3 are UTF8
+        Result := TempPrecision shl 1 //add more mem for a reserved thirt byte
       else //two and one byte AnsiChars are one WideChar
         Result := TempPrecision
       {$ELSE}
-        if ( ConSettings.CPType = cCP_UTF8 ) or (ConSettings.CTRL_CP = zCP_UTF8) then
-          Result := TempPrecision * 4
+        if ( ConSettings^.CPType = cCP_UTF8 ) or (ConSettings^.CTRL_CP = zCP_UTF8) then
+          Result := TempPrecision shl 2 // = *4
         else
           Result := TempPrecision * CharWidth
       {$ENDIF}
@@ -500,7 +581,7 @@ begin
       //the RowAccessor assumes 2*Precision+2!
       //the Field assumes 2*Precision ??Does it?
       if CharWidth > 2 then
-        Result := TempPrecision * 2
+        Result := TempPrecision shl 1
       else
         Result := TempPrecision;
   end
@@ -515,6 +596,515 @@ begin
   Result.Position := 0;
 end;
 
+{**
+  Splits a SQL query into a list of sections.
+  @returns a list of splitted sections.
+}
+function TokenizeSQLQueryRaw(var SQL: {$IF defined(FPC) and defined(WITH_RAWBYTESTRING)}RawByteString{$ELSE}String{$IFEND}; Const ConSettings: PZConSettings;
+  const Tokenizer: IZTokenizer; var IsParamIndex, IsNCharIndex: TBooleanDynArray;
+  ComparePrefixTokens: TPreparablePrefixTokens; const CompareSuccess: PBoolean;
+  const NeedNCharDetection: Boolean = False): TRawByteStringDynArray;
+var
+  I, C, N: Integer;
+  Temp: RawByteString;
+  NextIsNChar, ParamFound: Boolean;
+  Tokens: TZTokenDynArray;
+
+  procedure Add(const Value: RawByteString; const Param: Boolean = False);
+  begin
+    SetLength(Result, Length(Result)+1);
+    Result[High(Result)] := Value;
+    SetLength(IsParamIndex, Length(Result));
+    IsParamIndex[High(IsParamIndex)] := Param;
+    SetLength(IsNCharIndex, Length(Result));
+    if Param and NextIsNChar then
+    begin
+      IsNCharIndex[High(IsNCharIndex)] := True;
+      NextIsNChar := False;
+    end
+    else
+      IsNCharIndex[High(IsNCharIndex)] := False;
+  end;
+begin
+  ParamFound := (ZFastCode.{$IFDEF USE_FAST_CHARPOS}CharPos{$ELSE}Pos{$ENDIF}('?', SQL) > 0);
+  if ParamFound or ConSettings^.AutoEncode or Assigned(ComparePrefixTokens) then
+  begin
+    Tokens := Tokenizer.TokenizeBuffer(SQL, [toSkipEOF]);
+    Temp := '';
+    SQL := '';
+    NextIsNChar := False;
+    N := -1;
+    CompareSuccess^ := False;
+    for I := 0 to High(Tokens) do
+    begin
+      {check if we've a preparable statement. If ComparePrefixTokens = nil then
+        comparing is not required or already done }
+      if (Tokens[I].TokenType = ttWord) and Assigned(ComparePrefixTokens) then
+        if N = -1 then
+        begin
+          for C := 0 to high(ComparePrefixTokens) do
+            if ComparePrefixTokens[C].MatchingGroup = UpperCase(Tokens[I].Value) then
+            begin
+              if Length(ComparePrefixTokens[C].ChildMatches) = 0 then
+                CompareSuccess^ := True
+              else
+                N := C; //save group
+              Break;
+            end;
+          if N = -1 then //no sub-tokens ?
+            ComparePrefixTokens := nil; //stop compare sequence
+        end
+        else
+        begin //we already got a group
+          for C := 0 to high(ComparePrefixTokens[N].ChildMatches) do
+            if ComparePrefixTokens[N].ChildMatches[C] = UpperCase(Tokens[I].Value) then
+            begin
+              CompareSuccess^ := True;
+              Break;
+            end;
+          ComparePrefixTokens := nil; //stop compare sequence
+        end;
+      SQL := SQL + Tokens[I].Value;
+      if ParamFound and (Tokens[I].Value = '?') then
+      begin
+        Add(Temp);
+        Add('?', True);
+        Temp := '';
+      end
+      else
+        if ParamFound and NeedNCharDetection and (Tokens[I].Value = 'N') and
+          (Length(Tokens) > i) and (Tokens[i+1].Value = '?') then
+        begin
+          Add(Temp);
+          Add('N');
+          Temp := '';
+          NextIsNChar := True;
+        end
+        else
+          case (Tokens[i].TokenType) of
+            ttEscape:
+              Temp := Temp +
+                {$IFDEF UNICODE}
+                ConSettings^.ConvFuncs.ZStringToRaw(Tokens[i].Value,
+                  ConSettings^.CTRL_CP, ConSettings^.ClientCodePage^.CP);
+                {$ELSE}
+                Tokens[i].Value;
+                {$ENDIF}
+            ttQuoted, ttComment,
+            ttWord, ttQuotedIdentifier, ttKeyword:
+              Temp := Temp + ConSettings^.ConvFuncs.ZStringToRaw(Tokens[i].Value, ConSettings^.CTRL_CP, ConSettings^.ClientCodePage^.CP)
+            else
+              Temp := Temp + {$IFDEF UNICODE}UnicodeStringToASCII7{$ENDIF}(Tokens[i].Value);
+          end;
+    end;
+    if (Temp <> '') then
+      Add(Temp);
+  end
+  else
+    Add(ConSettings^.ConvFuncs.ZStringToRaw(SQL, ConSettings^.CTRL_CP, ConSettings^.ClientCodePage^.CP));
+end;
+
+{**
+  Splits a SQL query into a list of sections.
+  @returns a list of splitted sections.
+}
+function TokenizeSQLQueryUni(var SQL: {$IF defined(FPC) and defined(WITH_RAWBYTESTRING)}RawByteString{$ELSE}String{$IFEND}; Const ConSettings: PZConSettings;
+  const Tokenizer: IZTokenizer; var IsParamIndex, IsNCharIndex: TBooleanDynArray;
+  ComparePrefixTokens: TPreparablePrefixTokens; const CompareSuccess: PBoolean;
+  const NeedNCharDetection: Boolean = False): TUnicodeStringDynArray;
+var
+  I, C, N: Integer;
+  Tokens: TZTokenDynArray;
+  Temp: ZWideString;
+  NextIsNChar, ParamFound: Boolean;
+  procedure Add(const Value: ZWideString; Const Param: Boolean = False);
+  begin
+    SetLength(Result, Length(Result)+1);
+    Result[High(Result)] := Value;
+    SetLength(IsParamIndex, Length(Result));
+    IsParamIndex[High(IsParamIndex)] := Param;
+    SetLength(IsNCharIndex, Length(Result));
+    if Param and NextIsNChar then
+    begin
+      IsNCharIndex[High(IsNCharIndex)] := True;
+      NextIsNChar := False;
+    end
+    else
+      IsNCharIndex[High(IsNCharIndex)] := False;
+  end;
+begin
+  ParamFound := (ZFastCode.{$IFDEF USE_FAST_CHARPOS}CharPos{$ELSe}Pos{$ENDIF}('?', SQL) > 0);
+  if ParamFound or ConSettings^.AutoEncode or Assigned(ComparePrefixTokens) then
+  begin
+    Tokens := Tokenizer.TokenizeBuffer(SQL, [toSkipEOF]);
+
+    Temp := '';
+    SQL := '';
+    NextIsNChar := False;
+    N := -1;
+    for I := 0 to High(Tokens) do
+    begin
+      {check if we've a preparable statement. If ComparePrefixTokens = nil then
+        comparing is not required or already done }
+      if (Tokens[I].TokenType = ttWord) and Assigned(ComparePrefixTokens) then
+        if N = -1 then
+        begin
+          for C := 0 to high(ComparePrefixTokens) do
+            if ComparePrefixTokens[C].MatchingGroup = UpperCase(Tokens[I].Value) then
+            begin
+              if Length(ComparePrefixTokens[C].ChildMatches) = 0 then
+                CompareSuccess^ := True
+              else
+                N := C; //save group
+              Break;
+            end;
+          if N = -1 then //no sub-tokens ?
+            ComparePrefixTokens := nil; //stop compare sequence
+        end
+        else
+        begin //we already got a group
+          for C := 0 to high(ComparePrefixTokens[N].ChildMatches) do
+            if ComparePrefixTokens[N].ChildMatches[C] = UpperCase(Tokens[I].Value) then
+            begin
+              CompareSuccess^ := True;
+              Break;
+            end;
+          ComparePrefixTokens := nil; //stop compare sequence
+        end;
+      SQL := SQL + Tokens[I].Value;
+      if ParamFound and (Tokens[I].Value = '?') then
+      begin
+        Add(Temp);
+        Add('?', True);
+        Temp := '';
+      end
+      else
+        if ParamFound and NeedNCharDetection and (Tokens[I].Value = 'N') and
+          (Length(Tokens) > i) and (Tokens[i+1].Value = '?') then
+        begin
+          Add(Temp);
+          Add('N');
+          Temp := '';
+          NextIsNChar := True;
+        end
+        else
+          {$IFDEF UNICODE}
+          Temp := Temp + Tokens[i].Value;
+          {$ELSE}
+          case (Tokens[i].TokenType) of
+            ttEscape, ttQuoted, ttComment,
+            ttWord, ttQuotedIdentifier, ttKeyword:
+              Temp := Temp + ConSettings^.ConvFuncs.ZStringToUnicode(Tokens[i].Value, ConSettings^.CTRL_CP)
+            else
+              Temp := Temp + ASCII7ToUnicodeString(Tokens[i].Value);
+          end;
+          {$ENDIF}
+    end;
+    if (Temp <> '') then
+      Add(Temp);
+  end
+  else
+    {$IFDEF UNICODE}
+    Add(SQL);
+    {$ELSE}
+    Add(ConSettings^.ConvFuncs.ZStringToUnicode(SQL, ConSettings^.CTRL_CP));
+    {$ENDIF}
+end;
+
+{$IF defined(ENABLE_MYSQL) or defined(ENABLE_POSTGRESQL) or defined(ENABLE_INTERBASE)}
+procedure AssignOutParamValuesFromResultSet(const ResultSet: IZResultSet;
+  OutParamValues: TZVariantDynArray; const OutParamCount: Integer;
+  const ParamTypes: array of ShortInt);
+var
+  ParamIndex, I: Integer;
+  HasRows: Boolean;
+  SupportsMoveAbsolute: Boolean;
+  Meta: IZResultSetMetadata;
+begin
+  SupportsMoveAbsolute := ResultSet.GetType <> rtForwardOnly;
+  if SupportsMoveAbsolute then ResultSet.BeforeFirst;
+  HasRows := ResultSet.Next;
+
+  I := FirstDbcIndex;
+  Meta := ResultSet.GetMetadata;
+  for ParamIndex := 0 to OutParamCount - 1 do
+  begin
+    if not (ParamTypes[ParamIndex] in [2, 3, 4]) then // ptOutput, ptInputOutput, ptResult
+      Continue;
+    if I > Meta.GetColumnCount {$IFDEF GENERIC_INDEX}-1{$ENDIF} then
+      Break;
+
+    if (not HasRows) or (ResultSet.IsNull(I)) then
+      OutParamValues[ParamIndex] := NullVariant
+    else
+      case Meta.GetColumnType(I) of
+        stBoolean:
+          OutParamValues[ParamIndex] := EncodeBoolean(ResultSet.GetBoolean(I));
+        stByte:
+          OutParamValues[ParamIndex] := EncodeInteger(ResultSet.GetByte(I));
+        stShort:
+          OutParamValues[ParamIndex] := EncodeInteger(ResultSet.GetShort(I));
+        stWord:
+          OutParamValues[ParamIndex] := EncodeInteger(ResultSet.GetWord(I));
+        stSmall:
+          OutParamValues[ParamIndex] := EncodeInteger(ResultSet.GetSmall(I));
+        stLongword:
+          OutParamValues[ParamIndex] := EncodeInteger(ResultSet.GetUInt(I));
+        stInteger:
+          OutParamValues[ParamIndex] := EncodeInteger(ResultSet.GetInt(I));
+        stULong:
+          OutParamValues[ParamIndex] := EncodeUInteger(ResultSet.GetULong(I));
+        stLong:
+          OutParamValues[ParamIndex] := EncodeInteger(ResultSet.GetLong(I));
+        stBytes:
+          OutParamValues[ParamIndex] := EncodeBytes(ResultSet.GetBytes(I));
+        stFloat:
+          OutParamValues[ParamIndex] := EncodeFloat(ResultSet.GetFloat(I));
+        stDouble:
+          OutParamValues[ParamIndex] := EncodeFloat(ResultSet.GetDouble(I));
+        stCurrency:
+          OutParamValues[ParamIndex] := EncodeFloat(ResultSet.GetCurrency(I));
+        stBigDecimal:
+          OutParamValues[ParamIndex] := EncodeFloat(ResultSet.GetBigDecimal(I));
+        stString, stAsciiStream:
+          OutParamValues[ParamIndex] := EncodeString(ResultSet.GetString(I));
+        stUnicodeString, stUnicodeStream:
+          OutParamValues[ParamIndex] := EncodeUnicodeString(ResultSet.GetUnicodeString(I));
+        stDate:
+          OutParamValues[ParamIndex] := EncodeDateTime(ResultSet.GetDate(I));
+        stTime:
+          OutParamValues[ParamIndex] := EncodeDateTime(ResultSet.GetTime(I));
+        stTimestamp:
+          OutParamValues[ParamIndex] := EncodeDateTime(ResultSet.GetTimestamp(I));
+        stBinaryStream:
+          OutParamValues[ParamIndex] := EncodeInterface(ResultSet.GetBlob(I));
+        else
+          OutParamValues[ParamIndex] := EncodeString(ResultSet.GetString(I));
+      end;
+    Inc(I);
+  end;
+  if SupportsMoveAbsolute then ResultSet.BeforeFirst;
+end;
+{$IFEND}
+
+function TestEncoding(const Bytes: TByteDynArray; const Size: Cardinal;
+  const ConSettings: PZConSettings): TZCharEncoding;
+begin
+  Result := ceDefault;
+  {EgonHugeist:
+    Step one: Findout, wh at's comming in! To avoid User-Bugs as good as possible
+      it is possible that a PAnsiChar OR a PWideChar was written into
+      the Stream!!!  And these chars could be trunced with changing the
+      Stream.Size.
+      I know this can lead to pain with two byte ansi chars, but what else can i do?
+    step two: detect the encoding }
+
+  if (Size mod 2 = 0) and ( ZFastCode.StrLen(PAnsiChar(Bytes)) {%H-}< Size ) then //Sure PWideChar written!! A #0 was in the byte-sequence!
+    result := ceUTF16
+  else
+    if ConSettings.AutoEncode then
+      case ZDetectUTF8Encoding(Pointer(Bytes), Size) of
+        etUSASCII: Result := ceDefault; //Exact!
+        etAnsi:
+          { Sure this isn't right in all cases!
+            Two/four byte WideChars causing the same result!
+            Leads to pain! Is there a way to get a better test?
+            I've to start from the premise the function which calls this func
+            should decide wether ansi or unicode}
+          Result := ceAnsi;
+        etUTF8: Result := ceUTF8; //Exact!
+      end
+    else
+      Result := ceDefault
+end;
+
+{**
+  GetValidatedTextStream the incoming Stream for his given Memory and
+  returns a valid UTF8/Ansi StringStream
+  @param Stream the Stream with the unknown format and data
+  @return a valid utf8 encoded stringstram
+}
+{$WARNINGS OFF}
+function GetValidatedAnsiStringFromBuffer(const Buffer: Pointer; Size: Cardinal;
+  ConSettings: PZConSettings): RawByteString;
+var
+  US: ZWideString; //possible com base widestring -> prevent overflow
+  Bytes: TByteDynArray;
+begin
+  if Size = 0 then
+    Result := ''
+  else
+  begin
+    SetLength(Bytes, Size +2);
+    System.move(Buffer^, Pointer(Bytes)^, Size);
+    case TestEncoding(Bytes, Size, ConSettings) of
+      ceDefault: ZSetString(Buffer, Size, Result);
+      ceAnsi:
+        if ConSettings.ClientCodePage.Encoding = ceAnsi then
+          if ( ConSettings.CTRL_CP = zCP_UTF8) or (ConSettings.CTRL_CP = ConSettings.ClientCodePage.CP) then //second test avoids encode the string twice
+            ZSetString(Buffer, Size, Result)  //should be exact
+          else
+          begin
+            US := PRawToUnicode(Pointer(Bytes), Size, ConSettings.CTRL_CP);
+            Result := ZUnicodeToRaw(US, ConSettings.ClientCodePage.CP)
+          end
+        else  //Database expects UTF8
+          if ( ConSettings.CTRL_CP = zCP_UTF8) then
+            if ZDefaultSystemCodePage = zCP_UTF8 then
+              Result := AnsiToUTF8(String(PAnsiChar(Bytes))) //Can't localize the ansi CP
+            else
+            begin
+              US := PRawToUnicode(Pointer(Bytes), Size, ZDefaultSystemCodePage);
+              Result := ZUnicodeToRaw(US, ConSettings.ClientCodePage.CP);
+            end
+          else
+          begin
+            US := PRawToUnicode(Pointer(Bytes), Size, ConSettings.CTRL_CP);
+            Result := UTF8Encode(US);
+          end;
+      ceUTF8:
+        if ConSettings.ClientCodePage.Encoding = ceAnsi then //ansi expected
+          {$IFDEF WITH_LCONVENCODING}
+          Result := Consettings.PlainConvertFunc(String(PAnsiChar(Bytes)))
+          {$ELSE}
+          Result := ZUnicodeToRaw(UTF8ToString(PAnsiChar(Bytes)), ConSettings.ClientCodePage.CP)
+          {$ENDIF}
+         else //UTF8 Expected
+           ZSetString(Buffer, Size, Result);  //should be exact
+      ceUTF16:
+        begin
+          SetLength(US, Size shr 1);
+          System.Move(Bytes[0], US[1], Size);
+          if ConSettings.ClientCodePage.Encoding = ceAnsi then
+            {$IFDEF WITH_LCONVENCODING}
+            Result := Consettings.PlainConvertFunc(UTF8Encode(US))
+            {$ELSE}
+            Result := ZUnicodeToRaw(US, ConSettings.ClientCodePage.CP)
+            {$ENDIF}
+          else
+            Result := UTF8Encode(US);
+        end;
+      else
+        Result := '';
+    end;
+  end;
+end;
+{$WARNINGS ON}
+
+function GetValidatedAnsiStringFromBuffer(const Buffer: Pointer; Size: Cardinal;
+  ConSettings: PZConSettings; ToCP: Word): RawByteString;
+var DB_CP: Word;
+begin
+  DB_CP := ConSettings.ClientCodePage.CP;
+  ConSettings.ClientCodePage.CP := ToCP;
+  Result := GetValidatedAnsiStringFromBuffer(Buffer, Size, ConSettings);
+  ConSettings.ClientCodePage.CP := DB_CP;
+end;
+
+function GetValidatedAnsiString(const Ansi: RawByteString;
+  ConSettings: PZConSettings; const FromDB: Boolean): RawByteString;
+begin
+  if FromDB then
+    if ( ConSettings.CTRL_CP = ConSettings.ClientCodePage.CP ) or not ConSettings.AutoEncode then
+      Result := Ansi
+    else
+      {$IFDEF WITH_LCONVENCODING}
+      Result := Consettings.DbcConvertFunc(Ansi)
+      {$ELSE}
+      Result := ZUnicodeToRaw(ZRawToUnicode(Ansi, ConSettings^.ClientCodePage^.CP), ConSettings^.CTRL_CP)
+      {$ENDIF}
+  else
+    Result := ''; // not done yet  and not needed. Makes the compiler happy
+end;
+
+{**
+  GetValidatedUnicodeStream the incoming Stream for his given Memory and
+  returns a valid Unicode/Widestring Stream
+  @param Stream the Stream with the unknown format and data
+  @return a valid Unicode encoded stringstram
+}
+function GetValidatedUnicodeStream(const Buffer: Pointer; Size: Cardinal;
+  ConSettings: PZConSettings; FromDB: Boolean): TStream;
+var
+  Len: Integer;
+  US: ZWideString;
+  Bytes: TByteDynArray;
+begin
+  Result := nil;
+  US := '';
+  if Assigned(Buffer) and ( Size > 0 ) then
+  begin
+    SetLength(Bytes, Size +2);
+    System.move(Buffer^, Pointer(Bytes)^, Size);
+    if FromDB then //do not check encoding twice
+      Result := GetValidatedUnicodeStream(PAnsiChar(Bytes), ConSettings, FromDB)
+    else
+      case TestEncoding(Bytes, Size, ConSettings) of
+        ceDefault: US := USASCII7ToUnicodeString(Buffer, Size);
+        ceAnsi: //We've to start from the premisse we've got a Unicode string in here ):
+          begin
+            SetLength(US, Size shr 1);
+            System.Move(Pointer(Bytes)^, Pointer(US)^, Size);
+          end;
+        ceUTF8: US := PRawToUnicode(Buffer, size, zCP_UTF8);
+        ceUTF16:
+          begin
+            SetLength(US, Size shr 1);
+            System.Move(Pointer(Bytes)^, Pointer(US)^, Size);
+          end;
+      end;
+
+    Len := Length(US) shl 1;
+    if not Assigned(Result) and (Len > 0) then
+    begin
+      Result := TMemoryStream.Create;
+      Result.Size := Len;
+      System.Move(Pointer(US)^, TMemoryStream(Result).Memory^, Len);
+      Result.Position := 0;
+    end;
+  end;
+end;
+
+function GetValidatedUnicodeStream(const Ansi: RawByteString;
+  ConSettings: PZConSettings; FromDB: Boolean): TStream;
+var
+  Len: Integer;
+  US: ZWideString;
+begin
+  Result := nil;
+  if Ansi <> '' then
+  begin
+    if FromDB then
+      {$IFDEF WITH_LCONVENCODING}
+      US := UTF8ToString(Consettings.DbcConvertFunc(Ansi))
+      {$ELSE}
+      US := ZRawToUnicode(Ansi, ConSettings.ClientCodePage.CP)
+      {$ENDIF}
+    else
+      case ZDetectUTF8Encoding(Ansi) of
+        etUSASCII: US := USASCII7ToUnicodeString(Ansi);
+        etUTF8: US := PRawToUnicode(Pointer(Ansi), Length(Ansi), zCP_UTF8);
+        etAnsi:
+          {$IFDEF WITH_LCONVENCODING}
+          US := ZWideString(Ansi); //random success
+          {$ELSE}
+          if ( ConSettings.CTRL_CP = zCP_UTF8) then
+            US := ZWideString(Ansi) //random success
+          else
+            US := ZRawToUnicode(Ansi, ConSettings.CTRL_CP);
+         {$ENDIF}
+      end;
+
+    Len := Length(US)*2;
+    if Len > 0 then
+    begin
+      Result := TMemoryStream.Create;
+      Result.Size := Len;
+      System.Move(Pointer(US)^, TMemoryStream(Result).Memory^, Len);
+      Result.Position := 0;
+    end;
+  end;
+end;
 
 end.
 

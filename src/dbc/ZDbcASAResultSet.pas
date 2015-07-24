@@ -56,9 +56,9 @@ interface
 {$I ZDbc.inc}
 
 uses
-  {$IFDEF WITH_TOBJECTLIST_INLINE}System.Types, System.Contnrs{$ELSE}Types{$ENDIF},
-  Classes, {$IFDEF MSEgui}mclasses,{$ENDIF}
-  ZSysUtils, ZDbcIntfs, ZDbcResultSet, ZDbcASA, ZPlainASADriver, ZCompatibility,
+  {$IFDEF WITH_TOBJECTLIST_INLINE}System.Types, System.Contnrs,{$ENDIF}
+  Classes, {$IFDEF MSEgui}mclasses,{$ENDIF} SysUtils,
+  ZSysUtils, ZDbcIntfs, ZDbcResultSet, ZDbcASA, ZCompatibility,
   ZDbcResultSetMetadata, ZDbcASAUtils, ZMessages, ZVariant;
 
 type
@@ -80,7 +80,6 @@ type
   protected
     procedure Open; override;
     procedure PrepareUpdateSQLData; virtual;
-    function GetFieldValue(ColumnIndex: Integer): Variant;
     function InternalGetString(ColumnIndex: Integer): RawByteString; override;
   public
     constructor Create(Statement: IZStatement; SQL: string;
@@ -94,16 +93,18 @@ type
     function IsNull(ColumnIndex: Integer): Boolean; override;
     function GetBoolean(ColumnIndex: Integer): Boolean; override;
     function GetByte(ColumnIndex: Integer): Byte; override;
-    function GetShort(ColumnIndex: Integer): SmallInt; override;
+    function GetShort(ColumnIndex: Integer): ShortInt; override;
+    function GetSmall(ColumnIndex: Integer): SmallInt; override;
     function GetInt(ColumnIndex: Integer): Integer; override;
     function GetLong(ColumnIndex: Integer): Int64; override;
     function GetFloat(ColumnIndex: Integer): Single; override;
     function GetDouble(ColumnIndex: Integer): Double; override;
     function GetBigDecimal(ColumnIndex: Integer): Extended; override;
-    function GetBytes(ColumnIndex: Integer): TByteDynArray; override;
+    function GetBytes(ColumnIndex: Integer): TBytes; override;
     function GetDate(ColumnIndex: Integer): TDateTime; override;
     function GetTime(ColumnIndex: Integer): TDateTime; override;
     function GetTimestamp(ColumnIndex: Integer): TDateTime; override;
+    function GetPAnsiChar(ColumnIndex: Integer; out Len: NativeUInt): PAnsiChar; override;
     function GetBlob(ColumnIndex: Integer): IZBlob; override;
 
     function Last: Boolean; override;
@@ -117,25 +118,24 @@ type
     function RowDeleted: Boolean; override;
 
     procedure UpdateNull(ColumnIndex: Integer); override;
-    procedure UpdateBoolean(ColumnIndex: Integer; Value: Boolean); override;
-    procedure UpdateByte(ColumnIndex: Integer; Value: ShortInt); override;
-    procedure UpdateShort(ColumnIndex: Integer; Value: SmallInt); override;
-    procedure UpdateInt(ColumnIndex: Integer; Value: Integer); override;
-    procedure UpdateLong(ColumnIndex: Integer; Value: Int64); override;
-    procedure UpdateFloat(ColumnIndex: Integer; Value: Single); override;
-    procedure UpdateDouble(ColumnIndex: Integer; Value: Double); override;
-    procedure UpdateBigDecimal(ColumnIndex: Integer; Value: Extended); override;
-    procedure UpdatePChar(ColumnIndex: Integer; Value: PChar); override;
+    procedure UpdateBoolean(ColumnIndex: Integer; const Value: Boolean); override;
+    procedure UpdateByte(ColumnIndex: Integer; const Value: Byte); override;
+    procedure UpdateShort(ColumnIndex: Integer; const Value: ShortInt); override;
+    procedure UpdateSmall(ColumnIndex: Integer; const Value: SmallInt); override;
+    procedure UpdateInt(ColumnIndex: Integer; const Value: Integer); override;
+    procedure UpdateLong(ColumnIndex: Integer; const Value: Int64); override;
+    procedure UpdateFloat(ColumnIndex: Integer; const Value: Single); override;
+    procedure UpdateDouble(ColumnIndex: Integer; const Value: Double); override;
+    procedure UpdateBigDecimal(ColumnIndex: Integer; const Value: Extended); override;
     procedure UpdateString(ColumnIndex: Integer; const Value: String); override;
-    procedure UpdateUnicodeString(ColumnIndex: Integer; const Value: WideString); override;
-    procedure UpdateBytes(ColumnIndex: Integer; const Value: TByteDynArray); override;
-    procedure UpdateDate(ColumnIndex: Integer; Value: TDateTime); override;
-    procedure UpdateTime(ColumnIndex: Integer; Value: TDateTime); override;
-    procedure UpdateTimestamp(ColumnIndex: Integer; Value: TDateTime); override;
-    procedure UpdateAsciiStream(ColumnIndex: Integer; Value: TStream); override;
-    procedure UpdateUnicodeStream(ColumnIndex: Integer; Value: TStream); override;
-    procedure UpdateBinaryStream(ColumnIndex: Integer; Value: TStream); override;
-    procedure UpdateValue(ColumnIndex: Integer; const Value: TZVariant); override;
+    procedure UpdateUnicodeString(ColumnIndex: Integer; const Value: ZWideString); override;
+    procedure UpdateBytes(ColumnIndex: Integer; const Value: TBytes); override;
+    procedure UpdateDate(ColumnIndex: Integer; const Value: TDateTime); override;
+    procedure UpdateTime(ColumnIndex: Integer; const Value: TDateTime); override;
+    procedure UpdateTimestamp(ColumnIndex: Integer; const Value: TDateTime); override;
+    procedure UpdateAsciiStream(ColumnIndex: Integer; const Value: TStream); override;
+    procedure UpdateUnicodeStream(ColumnIndex: Integer; const Value: TStream); override;
+    procedure UpdateBinaryStream(ColumnIndex: Integer; const Value: TStream); override;
 
     procedure InsertRow; override;
     procedure UpdateRow; override;
@@ -148,32 +148,17 @@ type
     property SQLData: IZASASQLDA read FSQLData;
   end;
 
-  IZASABlob = interface(IZBlob)
-    ['{1E043426-5856-4953-88B8-F6FB276B7B61}']
-    procedure ReadBlob;
+  {** Implements external blob wrapper object for ASA. }
+  TZASABlob = class(TZAbstractBlob)
+  public
+    constructor Create(const SqlData: IZASASQLDA; const ColID: Integer);
   end;
 
-  {** Implements external blob wrapper object for PostgreSQL. }
-  TZASABlob = class(TZAbstractBlob, IZASABlob)
-  private
-    FBlobRead: Boolean;
-    FResultSet: TZASAResultSet;
-    FColID: Integer;
-  protected
-    procedure ReadBlob;
+  {** Implements external clob wrapper object for ASA. }
+  TZASAClob = class(TZAbstractClob)
   public
-    constructor Create( ResultSet: TZASAResultSet; ColID: Integer);
-    constructor CreateWithStream(Stream: TStream; Connection: IZConnection);
-    constructor CreateWithData(Data: Pointer; Size: Integer; Connection: IZConnection);
-
-    function IsEmpty: Boolean; override;
-    function Clone: IZBlob; override;
-    function GetStream: TStream; override;
-    function GetString: RawByteString; override;
-    function GetUnicodeString: WideString; override;
-    function GetBytes: TByteDynArray; override;
-    property BlobSize;
-    property BlobData;
+    constructor Create(const SqlData: IZASASQLDA; const ColID: Integer;
+      Const ConSettings: PZConSettings);
   end;
 
 implementation
@@ -182,7 +167,7 @@ uses
 {$IFNDEF FPC}
   Variants,
 {$ENDIF}
-  SysUtils, Math, ZdbcLogging, ZPlainASAConstants, ZDbcUtils, ZEncoding;
+ Math, ZFastCode, ZDbcLogging, ZPlainASAConstants, ZDbcUtils, ZEncoding;
 
 { TZASAResultSet }
 
@@ -220,18 +205,299 @@ begin
 end;
 
 {**
-   Return field value by it index
-   @param the index column 0 first, 1 second ...
-   @return the field value as variant type
+  Gets the value of the designated column in the current row
+  of this <code>ResultSet</code> object as
+  a <code>String</code> in the Java programming language.
+
+  @param columnIndex the first column is 1, the second is 2, ...
+  @return the column value; if the value is SQL <code>NULL</code>, the
+    value returned is <code>null</code>
 }
-function TZASAResultSet.GetFieldValue(ColumnIndex: Integer): Variant;
+function TZASAResultSet.InternalGetString(ColumnIndex: Integer): RawByteString;
+var Len: NativeUInt;
+ P: PAnsiChar;
+begin
+  LastWasNull := IsNull(ColumnIndex);
+  CheckColumnConvertion(ColumnIndex, stString);
+  if LastWasNull then
+    Result := ''
+  else
+  begin
+    {$IFNDEF GENERIC_INDEX}
+    ColumnIndex := ColumnIndex -1;
+    {$ENDIF}
+    if FInsert or FUpdate then
+      P := FUpdateSqlData.GetPRaw(ColumnIndex, Len)
+    else
+      P := FSqlData.GetPRaw(ColumnIndex, Len);
+    ZSetString(P, Len, Result);
+  end;
+end;
+
+{**
+  Indicates if the value of the designated column in the current row
+  of this <code>ResultSet</code> object is Null.
+
+  @param columnIndex the first column is 1, the second is 2, ...
+  @return if the value is SQL <code>NULL</code>, the
+    value returned is <code>true</code>. <code>false</code> otherwise.
+}
+function TZASAResultSet.IsNull(ColumnIndex: Integer): Boolean;
 begin
   CheckClosed;
-  if FInsert or ( FUpdate and FUpdateSQLData.IsAssigned( ColumnIndex - 1)) then
-    Result := FUpdateSqlData.GetValue( ColumnIndex - 1)
+  {$IFNDEF GENERIC_INDEX}
+  ColumnIndex := ColumnIndex -1;
+  {$ENDIF}
+  if FInsert or ( FUpdate and FUpdateSQLData.IsAssigned(ColumnIndex)) then
+    Result := FUpdateSqlData.IsNull(ColumnIndex)
   else
-    Result := FSqlData.GetValue( ColumnIndex - 1);
+    Result := FSqlData.IsNull(ColumnIndex);
+end;
+
+{**
+  Gets the value of the designated column in the current row
+  of this <code>ResultSet</code> object as
+  a <code>TZAnsiRec</code> in the Delphi programming language.
+
+  @param columnIndex the first column is 1, the second is 2, ...
+  @param Len the Length of the PAnsiChar String
+  @return the column value; if the value is SQL <code>NULL</code>, the
+    value returned is <code>null</code>
+}
+function TZASAResultSet.GetPAnsiChar(ColumnIndex: Integer; out Len: NativeUInt): PAnsiChar;
+begin
+  CheckColumnConvertion(ColumnIndex, stBoolean);
   LastWasNull := IsNull( ColumnIndex);
+  if LastWasNull then
+  begin
+    Result := nil;
+    Len := 0;
+  end
+  else
+  begin
+    {$IFNDEF GENERIC_INDEX}
+    ColumnIndex := ColumnIndex -1;
+    {$ENDIF}
+    if FInsert or FUpdate then
+      Result := FUpdateSqlData.GetPRaw(ColumnIndex, Len)
+    else
+      Result := FSqlData.GetPRaw(ColumnIndex, Len);
+  end;
+end;
+{**
+  Gets the value of the designated column in the current row
+  of this <code>ResultSet</code> object as
+  a <code>boolean</code> in the Java programming language.
+
+  @param columnIndex the first column is 1, the second is 2, ...
+  @return the column value; if the value is SQL <code>NULL</code>, the
+    value returned is <code>false</code>
+}
+function TZASAResultSet.GetBoolean(ColumnIndex: Integer): Boolean;
+begin
+  CheckColumnConvertion(ColumnIndex, stBoolean);
+  LastWasNull := IsNull( ColumnIndex);
+  if LastWasNull then
+    Result := False
+  else
+  begin
+    {$IFNDEF GENERIC_INDEX}
+    ColumnIndex := ColumnIndex -1;
+    {$ENDIF}
+    if FInsert or FUpdate then
+      Result := FUpdateSqlData.GetBoolean(ColumnIndex)
+    else
+      Result := FSqlData.GetBoolean(ColumnIndex);
+  end;
+end;
+
+{**
+  Gets the value of the designated column in the current row
+  of this <code>ResultSet</code> object as
+  a <code>byte</code> in the Java programming language.
+
+  @param columnIndex the first column is 1, the second is 2, ...
+  @return the column value; if the value is SQL <code>NULL</code>, the
+    value returned is <code>0</code>
+}
+function TZASAResultSet.GetByte(ColumnIndex: Integer): Byte;
+begin
+  CheckColumnConvertion(ColumnIndex, stByte);
+  LastWasNull := IsNull(ColumnIndex);
+  if LastWasNull then
+    Result := 0
+  else
+  begin
+    {$IFNDEF GENERIC_INDEX}
+    ColumnIndex := ColumnIndex -1;
+    {$ENDIF}
+    if FInsert or FUpdate then
+      Result := FUpdateSqlData.GetByte(ColumnIndex)
+    else
+      Result := FSqlData.GetByte(ColumnIndex);
+    end;
+end;
+
+{**
+  Gets the value of the designated column in the current row
+  of this <code>ResultSet</code> object as
+  a <code>shortint</code> in the Java programming language.
+
+  @param columnIndex the first column is 1, the second is 2, ...
+  @return the column value; if the value is SQL <code>NULL</code>, the
+    value returned is <code>0</code>
+}
+function TZASAResultSet.GetShort(ColumnIndex: Integer): ShortInt;
+begin
+  CheckColumnConvertion(ColumnIndex, stShort);
+  LastWasNull := IsNull(ColumnIndex);
+  if LastWasNull then
+    Result := 0
+  else
+  begin
+    {$IFNDEF GENERIC_INDEX}
+    ColumnIndex := ColumnIndex -1;
+    {$ENDIF}
+    if FInsert or FUpdate then
+      Result := FUpdateSqlData.GetSmall(ColumnIndex)
+    else
+      Result := FSqlData.GetSmall(ColumnIndex);
+  end;
+end;
+
+{**
+  Gets the value of the designated column in the current row
+  of this <code>ResultSet</code> object as
+  a <code>short</code> in the Java programming language.
+
+  @param columnIndex the first column is 1, the second is 2, ...
+  @return the column value; if the value is SQL <code>NULL</code>, the
+    value returned is <code>0</code>
+}
+function TZASAResultSet.GetSmall(ColumnIndex: Integer): SmallInt;
+begin
+  CheckColumnConvertion(ColumnIndex, stSmall);
+  LastWasNull := IsNull( ColumnIndex);
+  if LastWasNull then
+    Result := 0
+  else
+  begin
+    {$IFNDEF GENERIC_INDEX}
+    ColumnIndex := ColumnIndex -1;
+    {$ENDIF}
+    if FInsert or FUpdate then
+      Result := FUpdateSqlData.GetSmall(ColumnIndex)
+    else
+      Result := FSqlData.GetSmall(ColumnIndex);
+  end;
+end;
+
+{**
+  Gets the value of the designated column in the current row
+  of this <code>ResultSet</code> object as
+  an <code>int</code> in the Java programming language.
+
+  @param columnIndex the first column is 1, the second is 2, ...
+  @return the column value; if the value is SQL <code>NULL</code>, the
+    value returned is <code>0</code>
+}
+function TZASAResultSet.GetInt(ColumnIndex: Integer): Integer;
+begin
+  CheckColumnConvertion(ColumnIndex, stInteger);
+  LastWasNull := IsNull(ColumnIndex);
+  if LastWasNull then
+    Result := 0
+  else
+  begin
+    {$IFNDEF GENERIC_INDEX}
+    ColumnIndex := ColumnIndex -1;
+    {$ENDIF}
+    if FInsert or FUpdate then
+      Result := FUpdateSqlData.GetInt(ColumnIndex)
+    else
+      Result := FSqlData.GetInt(ColumnIndex);
+  end;
+end;
+
+{**
+  Gets the value of the designated column in the current row
+  of this <code>ResultSet</code> object as
+  a <code>long</code> in the Java programming language.
+
+  @param columnIndex the first column is 1, the second is 2, ...
+  @return the column value; if the value is SQL <code>NULL</code>, the
+    value returned is <code>0</code>
+}
+function TZASAResultSet.GetLong(ColumnIndex: Integer): Int64;
+begin
+  CheckColumnConvertion(ColumnIndex, stLong);
+  LastWasNull := IsNull( ColumnIndex);
+  if LastWasNull then
+    Result := 0
+  else
+  begin
+    {$IFNDEF GENERIC_INDEX}
+    ColumnIndex := ColumnIndex -1;
+    {$ENDIF}
+    if FInsert or FUpdate then
+      Result := FUpdateSqlData.GetLong(ColumnIndex)
+    else
+      Result := FSqlData.GetLong(ColumnIndex);
+  end;
+end;
+
+{**
+  Gets the value of the designated column in the current row
+  of this <code>ResultSet</code> object as
+  a <code>float</code> in the Java programming language.
+
+  @param columnIndex the first column is 1, the second is 2, ...
+  @return the column value; if the value is SQL <code>NULL</code>, the
+    value returned is <code>0</code>
+}
+function TZASAResultSet.GetFloat(ColumnIndex: Integer): Single;
+begin
+  CheckColumnConvertion(ColumnIndex, stFloat);
+  LastWasNull := IsNull( ColumnIndex);
+  if LastWasNull then
+    Result := 0
+  else
+  begin
+    {$IFNDEF GENERIC_INDEX}
+    ColumnIndex := ColumnIndex -1;
+    {$ENDIF}
+    if FInsert or FUpdate then
+      Result := FUpdateSqlData.GetFloat(ColumnIndex)
+    else
+      Result := FSqlData.GetFloat(ColumnIndex);
+  end;
+end;
+
+{**
+  Gets the value of the designated column in the current row
+  of this <code>ResultSet</code> object as
+  a <code>double</code> in the Java programming language.
+
+  @param columnIndex the first column is 1, the second is 2, ...
+  @return the column value; if the value is SQL <code>NULL</code>, the
+    value returned is <code>0</code>
+}
+function TZASAResultSet.GetDouble(ColumnIndex: Integer): Double;
+begin
+  CheckColumnConvertion(ColumnIndex, stDouble);
+  LastWasNull := IsNull( ColumnIndex);
+  if LastWasNull then
+    Result := 0
+  else
+  begin
+    {$IFNDEF GENERIC_INDEX}
+    ColumnIndex := ColumnIndex -1;
+    {$ENDIF}
+    if FInsert or FUpdate then
+      Result := FUpdateSqlData.GetDouble(ColumnIndex)
+    else
+      Result := FSqlData.GetDouble(ColumnIndex);
+  end;
 end;
 
 {**
@@ -246,94 +512,20 @@ end;
 }
 function TZASAResultSet.GetBigDecimal(ColumnIndex: Integer): Extended;
 begin
-  CheckClosed;
   CheckColumnConvertion(ColumnIndex, stBigDecimal);
-  if FInsert or ( FUpdate and FUpdateSQLData.IsAssigned( ColumnIndex - 1)) then
-    Result := FUpdateSqlData.GetBigDecimal( ColumnIndex - 1)
-  else
-    Result := FSqlData.GetBigDecimal( ColumnIndex - 1);
-  LastWasNull := IsNull( ColumnIndex);
-end;
-
-{**
-  Returns the value of the designated column in the current row
-  of this <code>ResultSet</code> object as a <code>Blob</code> object
-  in the Java programming language.
-
-  @param ColumnIndex the first column is 1, the second is 2, ...
-  @return a <code>Blob</code> object representing the SQL <code>BLOB</code> value in
-    the specified column
-}
-function TZASAResultSet.GetBlob(ColumnIndex: Integer): IZBlob;
-var
-  Blob: IZASABlob;
-  TempStream: TStream;
-begin
-  Result := nil;
-  CheckClosed;
-  CheckBlobColumn(ColumnIndex);
-
   LastWasNull := IsNull(ColumnIndex);
   if LastWasNull then
-     Exit;
-
-  Blob := TZASABlob.Create( Self, ColumnIndex - 1);
-  if FCachedBlob then
-    Blob.ReadBlob;
-  if ( GetMetadata.GetColumnType(ColumnIndex) in [stUnicodeStream, stAsciiStream] ) then
+    Result := 0
+  else
   begin
-    case GetMetaData.GetColumnType(ColumnIndex) of
-      stAsciiStream:
-        Blob.SetString(GetValidatedAnsiString(Blob.GetString, ConSettings, True));
-      else
-      begin
-        TempStream := GetValidatedUnicodeStream(Blob.GetBuffer, Blob.Length, ConSettings, True);
-        Blob.SetStream(TempStream, True);
-        TempStream.Free;
-      end;
-    end;
+    {$IFNDEF GENERIC_INDEX}
+    ColumnIndex := ColumnIndex -1;
+    {$ENDIF}
+    if FInsert or FUpdate then
+      Result := FUpdateSqlData.GetBigDecimal(ColumnIndex)
+    else
+      Result := FSqlData.GetBigDecimal(ColumnIndex);
   end;
-  Result := Blob;
-end;
-
-{**
-  Gets the value of the designated column in the current row
-  of this <code>ResultSet</code> object as
-  a <code>boolean</code> in the Java programming language.
-
-  @param columnIndex the first column is 1, the second is 2, ...
-  @return the column value; if the value is SQL <code>NULL</code>, the
-    value returned is <code>false</code>
-}
-function TZASAResultSet.GetBoolean(ColumnIndex: Integer): Boolean;
-begin
-  CheckClosed;
-  CheckColumnConvertion(ColumnIndex, stBoolean);
-  if FInsert or ( FUpdate and FUpdateSQLData.IsAssigned( ColumnIndex - 1)) then
-    Result := FUpdateSqlData.GetBoolean( ColumnIndex - 1)
-  else
-    Result := FSqlData.GetBoolean( ColumnIndex - 1);
-  LastWasNull := IsNull( ColumnIndex);
-end;
-
-{**
-  Gets the value of the designated column in the current row
-  of this <code>ResultSet</code> object as
-  a <code>byte</code> in the Java programming language.
-
-  @param columnIndex the first column is 1, the second is 2, ...
-  @return the column value; if the value is SQL <code>NULL</code>, the
-    value returned is <code>0</code>
-}
-function TZASAResultSet.GetByte(ColumnIndex: Integer): Byte;
-begin
-  CheckClosed;
-  CheckColumnConvertion(ColumnIndex, stByte);
-  if FInsert or ( FUpdate and FUpdateSQLData.IsAssigned( ColumnIndex - 1)) then
-    Result := FUpdateSqlData.GetByte( ColumnIndex - 1)
-  else
-    Result := FSqlData.GetByte( ColumnIndex - 1);
-  LastWasNull := IsNull( ColumnIndex);
 end;
 
 {**
@@ -346,16 +538,22 @@ end;
   @return the column value; if the value is SQL <code>NULL</code>, the
     value returned is <code>null</code>
 }
-function TZASAResultSet.GetBytes(
-  ColumnIndex: Integer): TByteDynArray;
+function TZASAResultSet.GetBytes(ColumnIndex: Integer): TBytes;
 begin
-  CheckClosed;
   CheckColumnConvertion(ColumnIndex, stBytes);
-  if FInsert or ( FUpdate and FUpdateSQLData.IsAssigned( ColumnIndex - 1)) then
-    Result := FUpdateSqlData.GetBytes( ColumnIndex - 1)
+  LastWasNull := IsNull(ColumnIndex);
+  if LastWasNull then
+    Result := nil
   else
-    Result := FSqlData.GetBytes( ColumnIndex - 1);
-  LastWasNull := IsNull( ColumnIndex);
+  begin
+    {$IFNDEF GENERIC_INDEX}
+    ColumnIndex := ColumnIndex -1;
+    {$ENDIF}
+    if FInsert or FUpdate then
+      Result := FUpdateSqlData.GetBytes(ColumnIndex)
+    else
+      Result := FSqlData.GetBytes(ColumnIndex);
+  end;
 end;
 
 {**
@@ -369,133 +567,20 @@ end;
 }
 function TZASAResultSet.GetDate(ColumnIndex: Integer): TDateTime;
 begin
-  CheckClosed;
   CheckColumnConvertion(ColumnIndex, stDate);
-  if FInsert or ( FUpdate and FUpdateSQLData.IsAssigned( ColumnIndex - 1)) then
-    Result := FUpdateSqlData.GetDate( ColumnIndex - 1)
+  LastWasNull := IsNull(ColumnIndex);
+  if LastWasNull then
+    Result := 0
   else
-    Result := FSqlData.GetDate( ColumnIndex - 1);
-  LastWasNull := IsNull( ColumnIndex);
-end;
-
-{**
-  Gets the value of the designated column in the current row
-  of this <code>ResultSet</code> object as
-  a <code>double</code> in the Java programming language.
-
-  @param columnIndex the first column is 1, the second is 2, ...
-  @return the column value; if the value is SQL <code>NULL</code>, the
-    value returned is <code>0</code>
-}
-function TZASAResultSet.GetDouble(ColumnIndex: Integer): Double;
-begin
-  CheckClosed;
-  CheckColumnConvertion(ColumnIndex, stDouble);
-  if FInsert or ( FUpdate and FUpdateSQLData.IsAssigned( ColumnIndex - 1)) then
-    Result := FUpdateSqlData.GetDouble( ColumnIndex - 1)
-  else
-    Result := FSqlData.GetDouble( ColumnIndex - 1);
-  LastWasNull := IsNull( ColumnIndex);
-end;
-
-{**
-  Gets the value of the designated column in the current row
-  of this <code>ResultSet</code> object as
-  a <code>float</code> in the Java programming language.
-
-  @param columnIndex the first column is 1, the second is 2, ...
-  @return the column value; if the value is SQL <code>NULL</code>, the
-    value returned is <code>0</code>
-}
-function TZASAResultSet.GetFloat(ColumnIndex: Integer): Single;
-begin
-  CheckClosed;
-  CheckColumnConvertion(ColumnIndex, stFloat);
-  if FInsert or ( FUpdate and FUpdateSQLData.IsAssigned( ColumnIndex - 1)) then
-    Result := FUpdateSqlData.GetFloat( ColumnIndex - 1)
-  else
-    Result := FSqlData.GetFloat( ColumnIndex - 1);
-  LastWasNull := IsNull( ColumnIndex);
-end;
-
-{**
-  Gets the value of the designated column in the current row
-  of this <code>ResultSet</code> object as
-  an <code>int</code> in the Java programming language.
-
-  @param columnIndex the first column is 1, the second is 2, ...
-  @return the column value; if the value is SQL <code>NULL</code>, the
-    value returned is <code>0</code>
-}
-function TZASAResultSet.GetInt(ColumnIndex: Integer): Integer;
-begin
-  CheckClosed;
-  CheckColumnConvertion(ColumnIndex, stInteger);
-  if FInsert or ( FUpdate and FUpdateSQLData.IsAssigned( ColumnIndex - 1)) then
-    Result := FUpdateSqlData.GetInt( ColumnIndex - 1)
-  else
-    Result := FSqlData.GetInt( ColumnIndex - 1);
-  LastWasNull := IsNull( ColumnIndex);
-end;
-
-{**
-  Gets the value of the designated column in the current row
-  of this <code>ResultSet</code> object as
-  a <code>long</code> in the Java programming language.
-
-  @param columnIndex the first column is 1, the second is 2, ...
-  @return the column value; if the value is SQL <code>NULL</code>, the
-    value returned is <code>0</code>
-}
-function TZASAResultSet.GetLong(ColumnIndex: Integer): Int64;
-begin
-  CheckClosed;
-  CheckColumnConvertion(ColumnIndex, stLong);
-  if FInsert or ( FUpdate and FUpdateSQLData.IsAssigned( ColumnIndex - 1)) then
-    Result := FUpdateSqlData.GetLong( ColumnIndex - 1)
-  else
-    Result := FSqlData.GetLong( ColumnIndex - 1);
-  LastWasNull := IsNull( ColumnIndex);
-end;
-
-{**
-  Gets the value of the designated column in the current row
-  of this <code>ResultSet</code> object as
-  a <code>short</code> in the Java programming language.
-
-  @param columnIndex the first column is 1, the second is 2, ...
-  @return the column value; if the value is SQL <code>NULL</code>, the
-    value returned is <code>0</code>
-}
-function TZASAResultSet.GetShort(ColumnIndex: Integer): SmallInt;
-begin
-  CheckClosed;
-  CheckColumnConvertion(ColumnIndex, stShort);
-  if FInsert or ( FUpdate and FUpdateSQLData.IsAssigned( ColumnIndex - 1)) then
-    Result := FUpdateSqlData.GetShort( ColumnIndex - 1)
-  else
-    Result := FSqlData.GetShort( ColumnIndex - 1);
-  LastWasNull := IsNull( ColumnIndex);
-end;
-
-{**
-  Gets the value of the designated column in the current row
-  of this <code>ResultSet</code> object as
-  a <code>String</code> in the Java programming language.
-
-  @param columnIndex the first column is 1, the second is 2, ...
-  @return the column value; if the value is SQL <code>NULL</code>, the
-    value returned is <code>null</code>
-}
-function TZASAResultSet.InternalGetString(ColumnIndex: Integer): RawByteString;
-begin
-  CheckClosed;
-  CheckColumnConvertion( ColumnIndex, stString);
-  if FInsert or ( FUpdate and FUpdateSQLData.IsAssigned( ColumnIndex - 1)) then
-    Result := FUpdateSqlData.GetString( ColumnIndex - 1)
-  else
-    Result := FSqlData.GetString( ColumnIndex - 1);
-  LastWasNull := IsNull( ColumnIndex);
+  begin
+    {$IFNDEF GENERIC_INDEX}
+    ColumnIndex := ColumnIndex -1;
+    {$ENDIF}
+    if FInsert or FUpdate then
+      Result := FUpdateSqlData.GetDate(ColumnIndex)
+    else
+      Result := FSqlData.GetDate(ColumnIndex);
+  end;
 end;
 
 {**
@@ -509,13 +594,20 @@ end;
 }
 function TZASAResultSet.GetTime(ColumnIndex: Integer): TDateTime;
 begin
-  CheckClosed;
   CheckColumnConvertion(ColumnIndex, stTime);
-  if FInsert or ( FUpdate and FUpdateSQLData.IsAssigned( ColumnIndex - 1)) then
-    Result := FUpdateSqlData.GetTime( ColumnIndex - 1)
+  LastWasNull := IsNull(ColumnIndex);
+  if LastWasNull then
+    Result := 0
   else
-    Result := FSqlData.GetTime( ColumnIndex - 1);
-  LastWasNull := IsNull( ColumnIndex);
+  begin
+    {$IFNDEF GENERIC_INDEX}
+    ColumnIndex := ColumnIndex -1;
+    {$ENDIF}
+    if FInsert or FUpdate then
+      Result := FUpdateSqlData.GetTime(ColumnIndex)
+    else
+      Result := FSqlData.GetTime(ColumnIndex);
+  end;
 end;
 
 {**
@@ -530,30 +622,59 @@ end;
 }
 function TZASAResultSet.GetTimestamp(ColumnIndex: Integer): TDateTime;
 begin
-  CheckClosed;
   CheckColumnConvertion(ColumnIndex, stTimestamp);
-  if FInsert or ( FUpdate and FUpdateSQLData.IsAssigned( ColumnIndex - 1)) then
-    Result := FUpdateSqlData.GetTimestamp( ColumnIndex - 1)
+  LastWasNull := IsNull(ColumnIndex);
+  if LastWasNull then
+    Result := 0
   else
-    Result := FSqlData.GetTimestamp( ColumnIndex - 1);
-  LastWasNull := IsNull( ColumnIndex);
+  begin
+    {$IFNDEF GENERIC_INDEX}
+    ColumnIndex := ColumnIndex -1;
+    {$ENDIF}
+    if FInsert or FUpdate then
+      Result := FUpdateSqlData.GetTimestamp(ColumnIndex)
+    else
+      Result := FSqlData.GetTimestamp(ColumnIndex);
+  end;
 end;
 
 {**
-  Indicates if the value of the designated column in the current row
-  of this <code>ResultSet</code> object is Null.
+  Returns the value of the designated column in the current row
+  of this <code>ResultSet</code> object as a <code>Blob</code> object
+  in the Java programming language.
 
-  @param columnIndex the first column is 1, the second is 2, ...
-  @return if the value is SQL <code>NULL</code>, the
-    value returned is <code>true</code>. <code>false</code> otherwise.
+  @param ColumnIndex the first column is 1, the second is 2, ...
+  @return a <code>Blob</code> object representing the SQL <code>BLOB</code> value in
+    the specified column
 }
-function TZASAResultSet.IsNull(ColumnIndex: Integer): Boolean;
+function TZASAResultSet.GetBlob(ColumnIndex: Integer): IZBlob;
+var
+  TempBytes: TBytes;
+  TempRaw: RawByteString;
 begin
-  CheckClosed;
-  if FInsert or ( FUpdate and FUpdateSQLData.IsAssigned( ColumnIndex - 1)) then
-    Result := FUpdateSqlData.IsNull( ColumnIndex - 1)
+  CheckBlobColumn(ColumnIndex);
+
+  LastWasNull := IsNull(ColumnIndex);
+  if LastWasNull then
+    Result := nil
   else
-    Result := FSqlData.IsNull(ColumnIndex - 1);
+    case GetMetadata.GetColumnType(ColumnIndex) of
+      stAsciiStream, stUnicodeStream:
+        Result := TZASAClob.Create(FsqlData, ColumnIndex{$IFNDEF GENERIC_INDEX}-1{$ENDIF}, ConSettings);
+      stBinaryStream:
+        Result := TZASABlob.Create(FsqlData, ColumnIndex{$IFNDEF GENERIC_INDEX}-1{$ENDIF});
+      stBytes:
+        begin
+          TempBytes := GetBytes(ColumnIndex);
+          Result := TZAbstractBlob.CreateWithData(Pointer(TempBytes), Length(TempBytes));
+        end;
+      else
+      begin
+        TempRaw := InternalGetString(ColumnIndex);
+        Result := TZAbstractClob.CreateWithData(PAnsiChar(TempRaw), Length(TempBytes),
+          ConSettings^.ClientCodePage^.CP, ConSettings);
+      end;
+    end;
 end;
 
 function TZASAResultSet.Last: Boolean;
@@ -600,7 +721,7 @@ begin
   FASAConnection.GetPlainDriver.db_fetch( FASAConnection.GetDBHandle,
     PAnsiChar(FCursorName), CUR_ABSOLUTE, Row, FSqlData.GetData, BlockSize, CUR_FORREGULAR);
   ZDbcASAUtils.CheckASAError( FASAConnection.GetPlainDriver,
-    FASAConnection.GetDBHandle, lcOther);
+    FASAConnection.GetDBHandle, lcOther, ConSettings);
 
   if FASAConnection.GetDBHandle.sqlCode <> SQLE_NOTFOUND then
   begin
@@ -627,7 +748,7 @@ begin
   FASAConnection.GetPlainDriver.db_fetch( FASAConnection.GetDBHandle,
     PAnsiChar( FCursorName), CUR_RELATIVE, Rows, FSqlData.GetData, BlockSize, CUR_FORREGULAR);
     ZDbcASAUtils.CheckASAError( FASAConnection.GetPlainDriver,
-      FASAConnection.GetDBHandle, lcOther, '', SQLE_CURSOR_NOT_OPEN); //handle a known null resultset issue (cursor not open)
+      FASAConnection.GetDBHandle, lcOther, ConSettings, '', SQLE_CURSOR_NOT_OPEN); //handle a known null resultset issue (cursor not open)
   if FASAConnection.GetDBHandle.sqlCode = SQLE_CURSOR_NOT_OPEN then Exit;
   if FASAConnection.GetDBHandle.sqlCode <> SQLE_NOTFOUND then
   begin
@@ -691,16 +812,22 @@ begin
     with ColumnInfo, FSqlData  do
     begin
       FieldSqlType := GetFieldSqlType(I);
-      ColumnName := GetFieldName(I);
+      ColumnName := ConSettings^.ConvFuncs.ZRawToString(GetFieldName(I), ConSettings^.ClientCodePage^.CP, ConSettings^.CTRL_CP);
 //      TableName := GetFieldRelationName(I);
       ColumnLabel := ColumnName;
       ColumnType := FieldSqlType;
 
-      case FieldSqlType of
-        stString,
-        stUnicodeString: Precision := GetFieldSize(FieldSqlType, ConSettings,
-          GetFieldLength(I)-4, ConSettings.ClientCodePage.CharWidth, @ColumnDisplaySize, True);
-      end;
+      if FieldSqlType in [stString, stUnicodeString, stAsciiStream, stUnicodeStream] then
+      begin
+        ColumnCodePage := ConSettings^.ClientCodePage^.CP;
+        case FieldSqlType of
+          stString,
+          stUnicodeString: Precision := GetFieldSize(FieldSqlType, ConSettings,
+            GetFieldLength(I)-4, ConSettings^.ClientCodePage^.CharWidth, @ColumnDisplaySize, True);
+        end;
+      end
+      else
+        ColumnCodePage := High(Word);
 
       ReadOnly := False;
 
@@ -760,7 +887,7 @@ begin
   if not Assigned( FUpdateSQLData) then
   begin
     FUpdateSQLData := TZASASQLDA.Create( FASAConnection.GetPlainDriver,
-      FASAConnection.GetDBHandle, FCursorName, ConSettings, FSQLData.GetFieldCount);
+      FASAConnection.GetDBHandle, Pointer(FCursorName), ConSettings, FSQLData.GetFieldCount);
   end
   else if FUpdateSQLData.GetFieldCount = 0 then
     FUpdateSQLData.AllocateSQLDA( FSQLData.GetFieldCount);
@@ -772,118 +899,115 @@ begin
   FUpdateSqlData.UpdateNull( ColumnIndex, True);
 end;
 
-procedure TZASAResultSet.UpdateBoolean(ColumnIndex: Integer; Value: Boolean);
+procedure TZASAResultSet.UpdateBoolean(ColumnIndex: Integer; const Value: Boolean);
 begin
   PrepareUpdateSQLData;
   FUpdateSqlData.UpdateBoolean( ColumnIndex, Value);
 end;
 
-procedure TZASAResultSet.UpdateByte(ColumnIndex: Integer; Value: ShortInt);
+procedure TZASAResultSet.UpdateByte(ColumnIndex: Integer; const Value: Byte);
 begin
   PrepareUpdateSQLData;
   FUpdateSqlData.UpdateByte( ColumnIndex, Value);
 end;
 
-procedure TZASAResultSet.UpdateShort(ColumnIndex: Integer; Value: SmallInt);
+procedure TZASAResultSet.UpdateShort(ColumnIndex: Integer; const Value: ShortInt);
 begin
   PrepareUpdateSQLData;
-  FUpdateSqlData.UpdateShort( ColumnIndex, Value);
+  FUpdateSqlData.UpdateSmall( ColumnIndex, Value);
 end;
 
-procedure TZASAResultSet.UpdateInt(ColumnIndex: Integer; Value: Integer);
+procedure TZASAResultSet.UpdateSmall(ColumnIndex: Integer; const Value: SmallInt);
+begin
+  PrepareUpdateSQLData;
+  FUpdateSqlData.UpdateSmall( ColumnIndex, Value);
+end;
+
+procedure TZASAResultSet.UpdateInt(ColumnIndex: Integer; const Value: Integer);
 begin
   PrepareUpdateSQLData;
   FUpdateSqlData.UpdateInt( ColumnIndex, Value);
 end;
 
-procedure TZASAResultSet.UpdateLong(ColumnIndex: Integer; Value: Int64);
+procedure TZASAResultSet.UpdateLong(ColumnIndex: Integer; const Value: Int64);
 begin
   PrepareUpdateSQLData;
   FUpdateSqlData.UpdateLong( ColumnIndex, Value);
 end;
 
-procedure TZASAResultSet.UpdateFloat(ColumnIndex: Integer; Value: Single);
+procedure TZASAResultSet.UpdateFloat(ColumnIndex: Integer; const Value: Single);
 begin
   PrepareUpdateSQLData;
   FUpdateSqlData.UpdateFloat( ColumnIndex, Value);
 end;
 
-procedure TZASAResultSet.UpdateDouble(ColumnIndex: Integer; Value: Double);
+procedure TZASAResultSet.UpdateDouble(ColumnIndex: Integer; const Value: Double);
 begin
   PrepareUpdateSQLData;
   FUpdateSqlData.UpdateDouble( ColumnIndex, Value);
 end;
 
-procedure TZASAResultSet.UpdateBigDecimal(ColumnIndex: Integer; Value: Extended);
+procedure TZASAResultSet.UpdateBigDecimal(ColumnIndex: Integer; const Value: Extended);
 begin
   PrepareUpdateSQLData;
   FUpdateSqlData.UpdateBigDecimal( ColumnIndex, Value);
 end;
 
-procedure TZASAResultSet.UpdatePChar(ColumnIndex: Integer; Value: PChar);
-begin
-  PrepareUpdateSQLData;
-  FUpdateSqlData.UpdatePChar( ColumnIndex, Value);
-end;
-
 procedure TZASAResultSet.UpdateString(ColumnIndex: Integer; const Value: String);
 begin
   PrepareUpdateSQLData;
-  FUpdateSqlData.UpdateString(ColumnIndex, ZPlainString(Value));
+  FRawTemp := ConSettings^.ConvFuncs.ZStringToRaw(Value,
+            ConSettings^.CTRL_CP, ConSettings^.ClientCodePage^.CP);
+  FUpdateSqlData.UpdatePRaw(ColumnIndex, Pointer(FRawTemp), Length(FRawTemp));
 end;
 
-procedure TZASAResultSet.UpdateUnicodeString(ColumnIndex: Integer; const Value: WideString);
+procedure TZASAResultSet.UpdateUnicodeString(ColumnIndex: Integer; const Value: ZWideString);
 begin
   PrepareUpdateSQLData;
-  FUpdateSqlData.UpdateString(ColumnIndex, ZPlainString(Value));
+  FRawTemp := ConSettings^.ConvFuncs.ZUnicodeToRaw(Value, ConSettings^.ClientCodePage^.CP);
+  FUpdateSqlData.UpdatePRaw(ColumnIndex, Pointer(FRawTemp), Length(FRawTemp));
 end;
 
-procedure TZASAResultSet.UpdateBytes(ColumnIndex: Integer; const Value: TByteDynArray);
+procedure TZASAResultSet.UpdateBytes(ColumnIndex: Integer; const Value: TBytes);
 begin
   PrepareUpdateSQLData;
   FUpdateSqlData.UpdateBytes( ColumnIndex, Value);
 end;
 
-procedure TZASAResultSet.UpdateDate(ColumnIndex: Integer; Value: TDateTime);
+procedure TZASAResultSet.UpdateDate(ColumnIndex: Integer; const Value: TDateTime);
 begin
   PrepareUpdateSQLData;
   FUpdateSqlData.UpdateDate( ColumnIndex, Value);
 end;
 
-procedure TZASAResultSet.UpdateTime(ColumnIndex: Integer; Value: TDateTime);
+procedure TZASAResultSet.UpdateTime(ColumnIndex: Integer; const Value: TDateTime);
 begin
   PrepareUpdateSQLData;
   FUpdateSqlData.UpdateTime( ColumnIndex, Value);
 end;
 
-procedure TZASAResultSet.UpdateTimestamp(ColumnIndex: Integer; Value: TDateTime);
+procedure TZASAResultSet.UpdateTimestamp(ColumnIndex: Integer; const Value: TDateTime);
 begin
   PrepareUpdateSQLData;
   FUpdateSqlData.UpdateTimestamp( ColumnIndex, Value);
 end;
 
-procedure TZASAResultSet.UpdateAsciiStream(ColumnIndex: Integer; Value: TStream);
+procedure TZASAResultSet.UpdateAsciiStream(ColumnIndex: Integer; const Value: TStream);
 begin
   PrepareUpdateSQLData;
   FUpdateSqlData.WriteBlob( ColumnIndex, Value, stAsciiStream);
 end;
 
-procedure TZASAResultSet.UpdateUnicodeStream(ColumnIndex: Integer; Value: TStream);
+procedure TZASAResultSet.UpdateUnicodeStream(ColumnIndex: Integer; const Value: TStream);
 begin
   PrepareUpdateSQLData;
   FUpdateSqlData.WriteBlob( ColumnIndex, Value, stUnicodeStream);
 end;
 
-procedure TZASAResultSet.UpdateBinaryStream(ColumnIndex: Integer; Value: TStream);
+procedure TZASAResultSet.UpdateBinaryStream(ColumnIndex: Integer; const Value: TStream);
 begin
   PrepareUpdateSQLData;
   FUpdateSqlData.WriteBlob( ColumnIndex, Value, stBinaryStream);
-end;
-
-procedure TZASAResultSet.UpdateValue(ColumnIndex: Integer; const Value: TZVariant);
-begin
-  PrepareUpdateSQLData;
-  FUpdateSqlData.UpdateValue( ColumnIndex, EncodeVariant( Value));
 end;
 
 procedure TZASAResultSet.InsertRow;
@@ -893,7 +1017,7 @@ begin
     FASAConnection.GetPlainDriver.db_put_into( FASAConnection.GetDBHandle,
       PAnsiChar(FCursorName), FUpdateSQLData.GetData, FSQLData.GetData);
     ZDbcASAUtils.CheckASAError( FASAConnection.GetPlainDriver,
-      FASAConnection.GetDBHandle, lcOther, 'Insert row');
+      FASAConnection.GetDBHandle, lcOther, ConSettings, 'Insert row');
 
     FInsert := false;
     FUpdateSQLData.FreeSQLDA;
@@ -907,7 +1031,7 @@ begin
     FASAConnection.GetPlainDriver.db_update( FASAConnection.GetDBHandle,
       PAnsiChar(FCursorName), FUpdateSQLData.GetData);
     ZDbcASAUtils.CheckASAError( FASAConnection.GetPlainDriver,
-      FASAConnection.GetDBHandle, lcOther, 'Update row:' + IntToStr( RowNo));
+      FASAConnection.GetDBHandle, lcOther, ConSettings, 'Update row:' + IntToRaw( RowNo));
 
     FUpdate := false;
     FUpdateSQLData.FreeSQLDA;
@@ -919,7 +1043,7 @@ begin
   FASAConnection.GetPlainDriver.db_delete( FASAConnection.GetDBHandle,
     PAnsiChar(FCursorName));
   ZDbcASAUtils.CheckASAError( FASAConnection.GetPlainDriver,
-    FASAConnection.GetDBHandle, lcOther, 'Delete row:' + IntToStr( RowNo));
+    FASAConnection.GetDBHandle, lcOther, ConSettings, 'Delete row:' + IntToRaw( RowNo));
 
   FDelete := True;
   if LastRowNo <> MaxInt then
@@ -943,7 +1067,7 @@ begin
   FInsert := true;
 end;
 
-procedure TZASAResultSet.MoveToCurrentRow;  
+procedure TZASAResultSet.MoveToCurrentRow;
 begin
   FInsert := false;
   if Assigned( FUpdateSQLData) then
@@ -952,96 +1076,36 @@ end;
 
 { TZASABlob }
 
-function TZASABlob.Clone: IZBlob;
-var
-  Dt: Pointer;
-begin
-  Dt := nil;
-  if BlobSize > 0 then
-  begin
-    GetMem( Dt, BlobSize);
-    System.Move( BlobData^, Dt^, BlobSize);
-  end;
-  Result := TZASABlob.CreateWithData( Dt, BlobSize, FConnection);
-end;
-
 {**
   Reads the blob information by blob handle.
   @param handle a Interbase6 database connect handle.
   @param the statement previously prepared
 }
-constructor TZASABlob.Create( ResultSet: TZASAResultSet; ColID: Integer);
-begin
-  inherited Create;
-  FConnection := ResultSet.GetStatement.GetConnection;
-  FBlobRead := False;
-  FResultSet := ResultSet;
-  FColID := ColID;
-end;
-
-constructor TZASABlob.CreateWithStream(Stream: TStream; Connection: IZConnection);
-begin
-  inherited CreateWithStream(Stream, Connection);
-  FBlobRead := true;
-end;
-
-constructor TZASABlob.CreateWithData(Data: Pointer; Size: Integer;
-  Connection: IZConnection);
-begin
-  inherited Create;
-  FConnection := Connection;
-  BlobData := Data;
-  BlobSize := Size;
-  Updated := False;
-  FBlobRead := true;
-end;
-
-function TZASABlob.GetBytes: TByteDynArray;
-begin
-  ReadBlob;
-  Result := inherited GetBytes;
-end;
-
-function TZASABlob.GetStream: TStream;
-begin
-  ReadBlob;
-  Result := inherited GetStream;
-end;
-
-function TZASABlob.GetString: RawByteString;
-begin
-  ReadBlob;
-  Result := inherited GetString;
-end;
-
-function TZASABlob.GetUnicodeString: WideString;
-begin
-  Result := inherited GetUnicodeString;
-end;
-
-function TZASABlob.IsEmpty: Boolean;
-begin
-  ReadBlob;
-  Result := inherited IsEmpty;
-end;
-
-procedure TZASABlob.ReadBlob;
+constructor TZASABlob.Create(const SqlData: IZASASQLDA; const ColID: Integer);
 var
-  Size: LongWord;
   Buffer: Pointer;
+  Len: NativeUInt;
 begin
-  if FBlobRead then
-   Exit;
-  if Assigned(BlobData) then
-    FreeMem(BlobData);
-
-  if FResultSet.FInsert or ( FResultSet.FUpdate and FResultSet.FUpdateSQLData.IsAssigned( FColID)) then
-    FResultSet.FUpdateSQLData.ReadBlobToMem( FColID, Buffer, Size)
-  else
-    FResultSet.FSQLData.ReadBlobToMem( FColID, Buffer, Size);
-  BlobSize := Size;
+  inherited Create;
+  SQLData.ReadBlobToMem(ColId, Buffer{%H-}, Len{%H-});
+  BlobSize := Len;
   BlobData := Buffer;
-  FBlobRead := True;
+end;
+
+{ TZASAClob }
+constructor TZASAClob.Create(const SqlData: IZASASQLDA; const ColID: Integer;
+  Const ConSettings: PZConSettings);
+var
+  Buffer: Pointer;
+  Len: NativeUInt;
+begin
+  inherited CreateWithData(nil, 0, ConSettings^.ClientCodePage^.CP, ConSettings);
+  InternalClear;
+
+  SQLData.ReadBlobToMem(ColId, Buffer{%H-}, Len{%H-}, False);
+  (PAnsiChar(Buffer)+Len)^ := #0; //add leading terminator
+  BlobData := Buffer;
+  BlobSize := Len+1;
 end;
 
 end.

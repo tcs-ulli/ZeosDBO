@@ -67,7 +67,6 @@ type
     AdoRecordSet: ZPlainAdo.RecordSet;
     FPlainDriver: IZPlainDriver;
     FAdoConnection: IZAdoConnection;
-    SQL: String;
     function IsSelect(const SQL: string): Boolean;
   public
     constructor Create(PlainDriver: IZPlainDriver; Connection: IZConnection; SQL: string; Info: TStrings);
@@ -139,9 +138,8 @@ uses
 {$ENDIF}
   OleDB, ComObj,
   {$IFDEF WITH_TOBJECTLIST_INLINE} System.Contnrs{$ELSE} Contnrs{$ENDIF},
-  {$IFNDEF UNICODE}ZEncoding,{$ENDIF}
-  ZDbcLogging, ZDbcCachedResultSet, ZDbcResultSet, ZDbcAdoResultSet,
-  ZDbcMetadata, ZDbcResultSetMetadata, ZDbcUtils;
+  ZEncoding, ZDbcLogging, ZDbcCachedResultSet, ZDbcResultSet, ZDbcAdoResultSet,
+  ZDbcMetadata, ZDbcResultSetMetadata, ZDbcUtils, ZMessages;
 
 constructor TZAdoStatement.Create(PlainDriver: IZPlainDriver; Connection: IZConnection; SQL: string;
   Info: TStrings);
@@ -176,7 +174,7 @@ begin
   Result := nil;
   LastResultSet := nil;
   LastUpdateCount := -1;
-  if not Execute(LogSql) then
+  if not Execute(WSQL) then
     while (not GetMoreResults) and (LastUpdateCount > -1) do ;
   Result := LastResultSet
 end;
@@ -191,14 +189,14 @@ begin
     {$IFDEF UNICODE}
     WSQL := SQL;
     {$ENDIF}
-    if IsSelect(LogSQL) then
+    if IsSelect(Self.SQL) then
     begin
       AdoRecordSet := CoRecordSet.Create;
       AdoRecordSet.MaxRecords := MaxRows;
       AdoRecordSet.Open(SQL, FAdoConnection.GetAdoConnection,
         adOpenStatic, adLockOptimistic, adAsyncFetch);
       LastResultSet := GetCurrentResultSet(AdoRecordSet, FAdoConnection, Self,
-        LogSQL, ConSettings, ResultSetConcurrency);
+        Self.SQL, ConSettings, ResultSetConcurrency);
       LastUpdateCount := RC;
       AdoRecordSet.Close;
       AdoRecordSet := nil;
@@ -207,11 +205,11 @@ begin
       AdoRecordSet := FAdoConnection.GetAdoConnection.Execute(WSQL, RC, adExecuteNoRecords);
     Result := RC;
     LastUpdateCount := Result;
-    DriverManager.LogMessage(lcExecute, FPlainDriver.GetProtocol, LogSQL);
+    DriverManager.LogMessage(lcExecute, ConSettings^.Protocol, ASQL);
   except
     on E: Exception do
     begin
-      DriverManager.LogError(lcExecute, FPlainDriver.GetProtocol, LogSQL, 0, E.Message);
+      DriverManager.LogError(lcExecute, ConSettings^.Protocol, ASQL, 0, ConvertEMsgToRaw(E.Message, ConSettings^.ClientCodePage^.CP));
       raise;
     end;
   end
@@ -227,8 +225,7 @@ begin
     {$ENDIF}
     LastResultSet := nil;
     LastUpdateCount := -1;
-    Self.SQL := sql;
-    if IsSelect(SSQL) then
+    if IsSelect(Self.SQL) then
     begin
       AdoRecordSet := CoRecordSet.Create;
       AdoRecordSet.MaxRecords := MaxRows;
@@ -238,14 +235,14 @@ begin
     else
       AdoRecordSet := FAdoConnection.GetAdoConnection.Execute(WSQL, RC, adExecuteNoRecords);
     LastResultSet := GetCurrentResultSet(AdoRecordSet, FAdoConnection, Self,
-      LogSQL, ConSettings, ResultSetConcurrency);
+      Self.SQL, ConSettings, ResultSetConcurrency);
     Result := Assigned(LastResultSet);
     LastUpdateCount := RC;
-    DriverManager.LogMessage(lcExecute, FPlainDriver.GetProtocol, LogSQL);
+    DriverManager.LogMessage(lcExecute, ConSettings^.Protocol, ASQL);
   except
     on E: Exception do
     begin
-      DriverManager.LogError(lcExecute, FPlainDriver.GetProtocol, LogSQL, 0, E.Message);
+      DriverManager.LogError(lcExecute, ConSettings^.Protocol, ASQL, 0, ConvertEMsgToRaw(E.Message, ConSettings^.ClientCodePage^.CP));
       raise;
     end;
   end
@@ -322,11 +319,11 @@ begin
     Exit
   else
     for i := 0 to InParamCount-1 do
-      if DefVarManager.IsNull(InParamValues[i]) then
+      if ClientVarManager.IsNull(InParamValues[i]) then
         if (InParamDefaultValues[i] <> '') and (UpperCase(InParamDefaultValues[i]) <> 'NULL') and
           StrToBoolEx(DefineStatementParameter(Self, 'defaults', 'true')) then
         begin
-          DefVarManager.SetAsString(InParamValues[i], InParamDefaultValues[i]);
+          ClientVarManager.SetAsString(InParamValues[i], InParamDefaultValues[i]);
           ADOSetInParam(FAdoCommand, FAdoConnection, InParamCount, I+1, InParamTypes[i], InParamValues[i], adParamInput)
         end
         else
@@ -396,11 +393,11 @@ begin
       SQL, ConSettings, ResultSetConcurrency);
     LastUpdateCount := RC;
     Result := Assigned(LastResultSet);
-    DriverManager.LogMessage(lcExecute, FPlainDriver.GetProtocol, SQL);
+    DriverManager.LogMessage(lcExecute, ConSettings^.Protocol, ASQL);
   except
     on E: Exception do
     begin
-      DriverManager.LogError(lcExecute, FPlainDriver.GetProtocol, SQL, 0, E.Message);
+      DriverManager.LogError(lcExecute, ConSettings^.Protocol, ASQL, 0, ConvertEMsgToRaw(E.Message, ConSettings^.ClientCodePage^.CP));
       raise;
     end;
   end
@@ -482,58 +479,72 @@ begin
       SetType(rtScrollInsensitive);
       SetConcurrency(rcReadOnly);
       RS.MoveToInsertRow;
-      for i := 1 to ColumnsInfo.Count do
-        case TZColumnInfo(ColumnsInfo[i-1]).ColumnType of
+      for i := FirstDbcIndex to ColumnsInfo.Count{$IFDEF GENERIC_INDEX}-1{$ENDIF} do
+        case TZColumnInfo(ColumnsInfo[i{$IFNDEF GENERIC_INDEX}-1{$ENDIF}]).ColumnType of
           stBoolean:
-            RS.UpdateBoolean(i, FAdoCommand.Parameters.Item[IndexAlign[i-1]].Value);
-          stByte, stShort, stInteger, stLong:
-            RS.UpdateInt(i, FAdoCommand.Parameters.Item[IndexAlign[i-1]].Value);
+            RS.UpdateBoolean(i, FAdoCommand.Parameters.Item[IndexAlign[i{$IFNDEF GENERIC_INDEX}-1{$ENDIF}]].Value);
+          stByte:
+            RS.UpdateByte(i, FAdoCommand.Parameters.Item[IndexAlign[i{$IFNDEF GENERIC_INDEX}-1{$ENDIF}]].Value);
+          stShort:
+            RS.UpdateShort(i, FAdoCommand.Parameters.Item[IndexAlign[i{$IFNDEF GENERIC_INDEX}-1{$ENDIF}]].Value);
+          stWord:
+            RS.UpdateWord(i, FAdoCommand.Parameters.Item[IndexAlign[i{$IFNDEF GENERIC_INDEX}-1{$ENDIF}]].Value);
+          stSmall:
+            RS.UpdateSmall(i, FAdoCommand.Parameters.Item[IndexAlign[i{$IFNDEF GENERIC_INDEX}-1{$ENDIF}]].Value);
+          stLongWord:
+            RS.UpdateUInt(i, FAdoCommand.Parameters.Item[IndexAlign[i{$IFNDEF GENERIC_INDEX}-1{$ENDIF}]].Value);
+          stInteger:
+            RS.UpdateInt(i, FAdoCommand.Parameters.Item[IndexAlign[i{$IFNDEF GENERIC_INDEX}-1{$ENDIF}]].Value);
+          stULong:
+            RS.UpdateULong(i, FAdoCommand.Parameters.Item[IndexAlign[i{$IFNDEF GENERIC_INDEX}-1{$ENDIF}]].Value);
+          stLong:
+            RS.UpdateLong(i, FAdoCommand.Parameters.Item[IndexAlign[i{$IFNDEF GENERIC_INDEX}-1{$ENDIF}]].Value);
           stFloat, stDouble, stBigDecimal:
-            RS.UpdateFloat(i, FAdoCommand.Parameters.Item[IndexAlign[i-1]].Value);
+            RS.UpdateFloat(i, FAdoCommand.Parameters.Item[IndexAlign[i{$IFNDEF GENERIC_INDEX}-1{$ENDIF}]].Value);
           stString:
-            RS.UpdateString(i, FAdoCommand.Parameters.Item[IndexAlign[i-1]].Value);
+            RS.UpdateString(i, FAdoCommand.Parameters.Item[IndexAlign[i{$IFNDEF GENERIC_INDEX}-1{$ENDIF}]].Value);
           stAsciiStream:
             begin
-              Stream := TStringStream.Create(AnsiString(FAdoCommand.Parameters.Item[IndexAlign[i-1]].Value));
+              Stream := TStringStream.Create(AnsiString(FAdoCommand.Parameters.Item[IndexAlign[i{$IFNDEF GENERIC_INDEX}-1{$ENDIF}]].Value));
               RS.UpdateAsciiStream(I, Stream);
               Stream.Free;
             end;
           stUnicodeString:
-            RS.UpdateUnicodeString(i, FAdoCommand.Parameters.Item[IndexAlign[i-1]].Value);
+            RS.UpdateUnicodeString(i, FAdoCommand.Parameters.Item[IndexAlign[i{$IFNDEF GENERIC_INDEX}-1{$ENDIF}]].Value);
           stUnicodeStream:
             begin
-              Stream := WideStringStream(WideString(FAdoCommand.Parameters.Item[IndexAlign[i-1]].Value));
+              Stream := WideStringStream(WideString(FAdoCommand.Parameters.Item[IndexAlign[i{$IFNDEF GENERIC_INDEX}-1{$ENDIF}]].Value));
               RS.UpdateUnicodeStream(I, Stream);
               FreeAndNil(Stream);
             end;
           stBytes:
-            RS.UpdateBytes(i, FAdoCommand.Parameters.Item[IndexAlign[i-1]].Value);
+            RS.UpdateBytes(i, FAdoCommand.Parameters.Item[IndexAlign[i{$IFNDEF GENERIC_INDEX}-1{$ENDIF}]].Value);
           stDate:
-            RS.UpdateDate(i, FAdoCommand.Parameters.Item[IndexAlign[i-1]].Value);
+            RS.UpdateDate(i, FAdoCommand.Parameters.Item[IndexAlign[i{$IFNDEF GENERIC_INDEX}-1{$ENDIF}]].Value);
           stTime:
-            RS.UpdateTime(i, FAdoCommand.Parameters.Item[IndexAlign[i-1]].Value);
+            RS.UpdateTime(i, FAdoCommand.Parameters.Item[IndexAlign[i{$IFNDEF GENERIC_INDEX}-1{$ENDIF}]].Value);
           stTimestamp:
-            RS.UpdateTimestamp(i, FAdoCommand.Parameters.Item[IndexAlign[i-1]].Value);
+            RS.UpdateTimestamp(i, FAdoCommand.Parameters.Item[IndexAlign[i{$IFNDEF GENERIC_INDEX}-1{$ENDIF}]].Value);
           stBinaryStream:
             begin
-              if VarIsStr(FAdoCommand.Parameters.Item[IndexAlign[i-1]].Value) then
+              if VarIsStr(FAdoCommand.Parameters.Item[IndexAlign[i{$IFNDEF GENERIC_INDEX}-1{$ENDIF}]].Value) then
               begin
-                Stream := TStringStream.Create(AnsiString(FAdoCommand.Parameters.Item[IndexAlign[i-1]].Value));
+                Stream := TStringStream.Create(AnsiString(FAdoCommand.Parameters.Item[IndexAlign[i{$IFNDEF GENERIC_INDEX}-1{$ENDIF}]].Value));
                 RS.UpdateBinaryStream(I, Stream);
                 FreeAndNil(Stream);
               end
               else
-                if VarIsArray(FAdoCommand.Parameters.Item[IndexAlign[i-1]].Value) then
+                if VarIsArray(FAdoCommand.Parameters.Item[IndexAlign[i{$IFNDEF GENERIC_INDEX}-1{$ENDIF}]].Value) then
                 begin
-                  P := VarArrayLock(FAdoCommand.Parameters.Item[IndexAlign[i-1]].Value);
+                  P := VarArrayLock(FAdoCommand.Parameters.Item[IndexAlign[i{$IFNDEF GENERIC_INDEX}-1{$ENDIF}]].Value);
                   try
                     Stream := TMemoryStream.Create;
-                    Stream.Size := VarArrayHighBound(FAdoCommand.Parameters.Item[IndexAlign[i-1]].Value, 1)+1;
+                    Stream.Size := VarArrayHighBound(FAdoCommand.Parameters.Item[IndexAlign[i{$IFNDEF GENERIC_INDEX}-1{$ENDIF}]].Value, 1)+1;
                     System.Move(P^, TMemoryStream(Stream).Memory^, Stream.Size);
                     RS.UpdateBinaryStream(I, Stream);
                     FreeAndNil(Stream);
                   finally
-                    VarArrayUnLock(FAdoCommand.Parameters.Item[IndexAlign[i-1]].Value);
+                    VarArrayUnLock(FAdoCommand.Parameters.Item[IndexAlign[i{$IFNDEF GENERIC_INDEX}-1{$ENDIF}]].Value);
                   end;
                 end;
             end
@@ -545,8 +556,8 @@ begin
     Result := RS;
   finally
     ColumnsInfo.Free;
-    if Assigned(Stream) then Stream.Free;
-
+    if Stream <> nil then
+      Stream.Free;
   end;
 end;
 
@@ -597,11 +608,12 @@ begin
       SQL, ConSettings, ResultSetConcurrency);
     LastUpdateCount := RC;
     Result := Assigned(LastResultSet);
-    DriverManager.LogMessage(lcExecute, FPlainDriver.GetProtocol, SQL);
+    DriverManager.LogMessage(lcExecute, ConSettings^.Protocol, ASQL);
   except
     on E: Exception do
     begin
-      DriverManager.LogError(lcExecute, FPlainDriver.GetProtocol, SQL, 0, E.Message);
+      DriverManager.LogError(lcExecute, ConSettings^.Protocol, ASQL, 0,
+        ConvertEMsgToRaw(E.Message, ConSettings^.ClientCodePage^.CP));
       raise;
     end;
   end
@@ -611,21 +623,21 @@ procedure TZAdoCallableStatement.RegisterParamType(ParameterIndex: Integer;
   ParamType: Integer);
 begin
   inherited RegisterParamType(ParameterIndex, ParamType);
-  if Length(FDirectionTypes) < ParameterIndex then
-    SetLength(FDirectionTypes, ParameterIndex);
+  if Length(FDirectionTypes) < ParameterIndex{$IFDEF GENERIC_INDEX}+1{$ENDIF} then
+    SetLength(FDirectionTypes, ParameterIndex{$IFDEF GENERIC_INDEX}+1{$ENDIF});
 
-  case Self.FDBParamTypes[ParameterIndex-1] of
+  case Self.FDBParamTypes[ParameterIndex{$IFNDEF GENERIC_INDEX}-1{$ENDIF}] of
     1: //ptInput
-      FDirectionTypes[ParameterIndex-1] := adParamInput;
+      FDirectionTypes[ParameterIndex{$IFNDEF GENERIC_INDEX}-1{$ENDIF}] := adParamInput;
     2: //ptOut
-      FDirectionTypes[ParameterIndex-1] := adParamOutput;
+      FDirectionTypes[ParameterIndex{$IFNDEF GENERIC_INDEX}-1{$ENDIF}] := adParamOutput;
     3: //ptInputOutput
-      FDirectionTypes[ParameterIndex-1] := adParamInputOutput;
+      FDirectionTypes[ParameterIndex{$IFNDEF GENERIC_INDEX}-1{$ENDIF}] := adParamInputOutput;
     4: //ptResult
-      FDirectionTypes[ParameterIndex-1] := adParamReturnValue;
+      FDirectionTypes[ParameterIndex{$IFNDEF GENERIC_INDEX}-1{$ENDIF}] := adParamReturnValue;
     else
       //ptUnknown
-      FDirectionTypes[ParameterIndex-1] := adParamUnknown;
+      FDirectionTypes[ParameterIndex{$IFNDEF GENERIC_INDEX}-1{$ENDIF}] := adParamUnknown;
   end;
 end;
 
@@ -665,29 +677,31 @@ begin
     Result := NullVariant
   else
   begin
-    Temp := FAdoCommand.Parameters.Item[ParameterIndex - 1].Value;
+    Temp := FAdoCommand.Parameters.Item[ParameterIndex{$IFNDEF GENERIC_INDEX}-1{$ENDIF}].Value;
 
-    case ConvertAdoToSqlType(FAdoCommand.Parameters.Item[ParameterIndex - 1].Type_,
+    case ConvertAdoToSqlType(FAdoCommand.Parameters.Item[ParameterIndex{$IFNDEF GENERIC_INDEX}-1{$ENDIF}].Type_,
       ConSettings.CPType) of
       stBoolean:
-        DefVarManager.SetAsBoolean(Result, Temp);
-      stByte, stShort, stInteger, stLong:
-        DefVarManager.SetAsInteger(Result, Temp);
-      stFloat, stDouble, stBigDecimal:
-        DefVarManager.SetAsFloat(Result, Temp);
+        ClientVarManager.SetAsBoolean(Result, Temp);
+      stByte, stShort, stWord, stSmall, stLongWord, stInteger, stULong, stLong:
+        ClientVarManager.SetAsInteger(Result, Temp);
+      stFloat, stDouble, stCurrency, stBigDecimal:
+        ClientVarManager.SetAsFloat(Result, Temp);
+      stGUID:
+        ClientVarManager.SetAsString(Result, Temp);
       stString, stAsciiStream:
-        DefVarManager.SetAsString(Result, Temp);
+        ClientVarManager.SetAsString(Result, Temp);
       stUnicodeString, stUnicodeStream:
-        DefVarManager.SetAsUnicodeString(Result, Temp);
+        ClientVarManager.SetAsUnicodeString(Result, Temp);
       stBytes:
-        DefVarManager.SetAsBytes(Result, VarToBytes(Temp));
+        ClientVarManager.SetAsBytes(Result, VarToBytes(Temp));
       stDate, stTime, stTimestamp:
-        DefVarManager.SetAsDateTime(Result, Temp);
+        ClientVarManager.SetAsDateTime(Result, Temp);
       stBinaryStream:
         begin
           if VarIsStr(V) then
           begin
-            TempBlob := TZAbstractBlob.CreateWithStream(nil, GetConnection);
+            TempBlob := TZAbstractBlob.CreateWithStream(nil);
             TempBlob.SetString(AnsiString(V));
           end
           else
@@ -695,20 +709,20 @@ begin
             begin
               P := VarArrayLock(V);
               try
-                TempBlob := TZAbstractBlob.CreateWithData(P, VarArrayHighBound(V, 1)+1, GetConnection);
+                TempBlob := TZAbstractBlob.CreateWithData(P, VarArrayHighBound(V, 1)+1);
               finally
                 VarArrayUnLock(V);
               end;
             end;
-          DefVarManager.SetAsInterface(Result, TempBlob);
+          ClientVarManager.SetAsInterface(Result, TempBlob);
           TempBlob := nil;
         end
       else
-        DefVarManager.SetNull(Result);
+        ClientVarManager.SetNull(Result);
     end;
   end;
 
-  LastWasNull := DefVarManager.IsNull(Result) or VarIsNull(Temp) or VarIsClear(Temp);
+  LastWasNull := ClientVarManager.IsNull(Result) or VarIsNull(Temp) or VarIsClear(Temp);
 end;
 
 procedure TZAdoCallableStatement.PrepareInParameters;
@@ -727,11 +741,11 @@ begin
   else
     for i := 0 to InParamCount-1 do
       if FDBParamTypes[i] in [1,3] then //ptInput, ptInputOutput
-        if DefVarManager.IsNull(InParamValues[i]) then
+        if ClientVarManager.IsNull(InParamValues[i]) then
           if (InParamDefaultValues[i] <> '') and (UpperCase(InParamDefaultValues[i]) <> 'NULL') and
             StrToBoolEx(DefineStatementParameter(Self, 'defaults', 'true')) then
           begin
-            DefVarManager.SetAsString(InParamValues[i], InParamDefaultValues[i]);
+            ClientVarManager.SetAsString(InParamValues[i], InParamDefaultValues[i]);
             ADOSetInParam(FAdoCommand, FAdoConnection, InParamCount, I+1, InParamTypes[i], InParamValues[i], adParamInput)
           end
           else

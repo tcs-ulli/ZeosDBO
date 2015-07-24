@@ -382,9 +382,13 @@ begin
     Exit;
 
   { Looks by field index. }
+  {$IFDEF GENERIC_INDEX}
+  if (ColumnIndex >= 0) and (ColumnIndex < FFields.Count) then
+  {$ELSE}
   if (ColumnIndex > 0) and (ColumnIndex <= FFields.Count) then
+  {$ENDIF}
   begin
-    Current := TZFieldRef(FFields[ColumnIndex - 1]);
+    Current := TZFieldRef(FFields[ColumnIndex {$IFNDEF GENERIC_INDEX}-1{$ENDIF}]);
     if not Current.Linked
       //note http://sourceforge.net/p/zeoslib/tickets/101/
       and ((Current.Alias = Field) or (Current.Field = Field) or (Current.Field = Convertor.Quote(Field))) then
