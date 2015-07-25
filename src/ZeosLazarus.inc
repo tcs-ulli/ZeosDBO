@@ -100,7 +100,7 @@
     {$ENDIF}
 
     {$IFDEF LCL}
-      {$DEFINE WITH_LCONVENCODING} //Only available for Lazarus
+      {.$DEFINE WITH_LCONVENCODING} //Only available for Lazarus
     {$ENDIF}
     {$DEFINE LAZARUSUTF8HACK} // Places that fixed for the Lazarus convention that all strings are UTF8  are marked with this
                               // ifdef. But probably most of them are adhoc hacks, and need revisiting in time.
