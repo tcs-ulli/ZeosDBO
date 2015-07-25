@@ -43,11 +43,9 @@
 
 {$DEFINE PUREPASCAL}
 
-{$DEFINE WITH_EARGUMENTEXCEPTION}     // EArgumentException is supported since?????
 {$DEFINE WITH_VARIANT_UINT64}         // System.TVariant supports UInt64 Values
 {$DEFINE WITH_VARIANT_UNICODESTRING}  // System.TVariant supports UnicodeString Values
 {$DEFINE WITH_TFIELD_FREEBUFFERS} //TField has virtual FreeBuffers procedure
-{$DEFINE TFIELD_HAS_ASBYTES}          // TField.AsBytes is supported
 {$DEFINE TFIELD_HAS_ASLARGEINT}       // TField-baseclass hase AsLargeIntProperty
 {$DEFINE HAVE_UNKNOWN_CIRCULAR_REFERENCE_ISSUES} //seems FPC behaves different to Delphi. Some weired ref issues arrive if Ancastor units using Descendants in implementation uses section??
 {$DEFINE NEED_TYPED_UINT64_CONSTANTS}
@@ -97,6 +95,8 @@
 
     {$IF FPC_FULLVERSION>=20602}
        {$DEFINE HAVE_TBYTES}         // TBytes is declared only in FPC 2.6.2 instead of 2.6.0 as declared...
+       {$DEFINE WITH_EARGUMENTEXCEPTION}     // EArgumentException is supported since?????
+       {$DEFINE TFIELD_HAS_ASBYTES}          // TField.AsBytes is supported
     {$ENDIF}
 
     {$IFDEF LCL}
@@ -154,4 +154,4 @@
       {$DEFINE LCONVENCODING_HAS_CP852_FUNCTIONS}
     {$ifend}
   {$ifend}
-{$ENDIF}
+{$ENDIF}

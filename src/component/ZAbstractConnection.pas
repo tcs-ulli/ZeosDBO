@@ -1703,4 +1703,4 @@ end;
 initialization
   SqlHourGlassLock := 0;
 end.
-
+

@@ -6278,7 +6278,9 @@ constructor TZByteField.Create(AOwner: TComponent);
 begin
   inherited Create(AOwner);
   SetDataType({$IFDEF WITH_FTBYTE}ftByte{$ELSE}ftWord{$ENDIF});
+  {$IF FPC_FULLVERSION>=20602}
   ValidChars := ['+', '0'..'9'];
+  {$ENDIF}
 end;
 
 { TZShortIntField }
@@ -6323,7 +6325,9 @@ constructor TZShortIntField.Create(AOwner: TComponent);
 begin
   inherited Create(AOwner);
   SetDataType({$IFDEF WITH_FTSHORTINT}ftShortInt{$ELSE}ftSmallInt{$ENDIF});
+  {$IF FPC_FULLVERSION>=20602}
   ValidChars := ['+', '-', '0'..'9'];
+  {$ENDIF}
 end;
 
 { TZWordField }
@@ -6368,7 +6372,9 @@ constructor TZWordField.Create(AOwner: TComponent);
 begin
   inherited Create(AOwner);
   SetDataType(ftWord);
+  {$IF FPC_FULLVERSION>=20602}
   ValidChars := ['+', '0'..'9'];
+  {$ENDIF}
 end;
 
 { TZSmallIntField }
@@ -6413,7 +6419,9 @@ constructor TZSmallIntField.Create(AOwner: TComponent);
 begin
   inherited Create(AOwner);
   SetDataType(ftSmallInt);
+  {$IF FPC_FULLVERSION>=20602}
   ValidChars := ['+', '-', '0'..'9'];
+  {$ENDIF}
 end;
 
 { TZIntegerField }
@@ -6458,7 +6466,9 @@ constructor TZIntegerField.Create(AOwner: TComponent);
 begin
   inherited Create(AOwner);
   SetDataType(ftInteger);
+  {$IF FPC_FULLVERSION>=20602}
   ValidChars := ['+', '-', '0'..'9'];
+  {$ENDIF}
 end;
 
 { TZLongWordField }
@@ -6503,7 +6513,9 @@ constructor TZLongWordField.Create(AOwner: TComponent);
 begin
   inherited Create(AOwner);
   SetDataType({$IFDEF WITH_FTLONGWORD}ftLongWord{$ELSE}ftLargeInt{$ENDIF});
+  {$IF FPC_FULLVERSION>=20602}
   ValidChars := ['+', '0'..'9'];
+  {$ENDIF}
 end;
 
 { TZInt64Field }
@@ -6548,7 +6560,9 @@ constructor TZInt64Field.Create(AOwner: TComponent);
 begin
   inherited Create(AOwner);
   SetDataType(ftLargeint);
+  {$IF FPC_FULLVERSION>=20602}
   ValidChars := ['+', '-', '0'..'9']
+  {$ENDIF}
 end;
 
 { TZUInt64Field }
@@ -6593,7 +6607,9 @@ constructor TZUInt64Field.Create(AOwner: TComponent);
 begin
   inherited Create(AOwner);
   SetDataType(ftLargeint);
+  {$IF FPC_FULLVERSION>=20602}
   ValidChars := ['+', '0'..'9']
+  {$ENDIF}
 end;
 
 { TZStringField }
@@ -6729,7 +6745,9 @@ begin
   inherited Create(AOwner);
   SetDataType({$IFDEF WITH_FTSINGLE}ftSingle{$ELSE}ftFloat{$ENDIF});
   FPrecision := 7;
+  {$IF FPC_FULLVERSION>=20602}
   ValidChars := [{$IFDEF WITH_FORMATSETTINGS}FormatSettings.{$ENDIF}DecimalSeparator, '+', '-', '0'..'9', 'E', 'e'];
+  {$ENDIF}
 end;
 
 { TZDoubleField }
@@ -6814,7 +6832,9 @@ begin
   inherited Create(AOwner);
   SetDataType(ftFloat);
   FPrecision := 15;
+  {$IF FPC_FULLVERSION>=20602}
   ValidChars := [{$IFDEF WITH_FORMATSETTINGS}FormatSettings.{$ENDIF}DecimalSeparator, '+', '-', '0'..'9', 'E', 'e'];
+  {$ENDIF}
 end;
 
 { TZCurrencyField }
@@ -6899,7 +6919,9 @@ begin
   inherited Create(AOwner);
   SetDataType(ftCurrency);
   FPrecision := 15;
+  {$IF FPC_FULLVERSION>=20602}
   ValidChars := [{$IFDEF WITH_FORMATSETTINGS}FormatSettings.{$ENDIF}DecimalSeparator, '+', '-', '0'..'9', 'E', 'e'];
+  {$ENDIF}
 end;
 
 { TZExtendedField }
@@ -6976,7 +6998,9 @@ begin
   inherited Create(AOwner);
   SetDataType({$IFDEF WITH_FTEXTENDED}ftExtended{$ELSE}ftFloat{$ENDIF});
   FPrecision := 19;
+  {$IF FPC_FULLVERSION>=20602}
   ValidChars := [{$IFDEF WITH_FORMATSETTINGS}FormatSettings.{$ENDIF}DecimalSeparator, '+', '-', '0'..'9', 'E', 'e'];
+  {$ENDIF}
 end;
 
 { TZFieldDef }
@@ -7465,4 +7489,4 @@ end;
 end.
 
 
-
+

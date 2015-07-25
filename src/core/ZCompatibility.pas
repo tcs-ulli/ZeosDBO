@@ -310,7 +310,15 @@ type
   TPUnicodeToString = function (const Src: PWideChar; CodePoints: NativeUInt; const StringCP: Word): String;
 
   {** Defines the Target Ansi codepages for the Controls }
-  TZControlsCodePage = ({$IFDEF UNICODE}cCP_UTF16, cCP_UTF8, cGET_ACP{$ELSE}{$IFDEF FPC}cCP_UTF8, cCP_UTF16, cGET_ACP{$ELSE}cGET_ACP, cCP_UTF8, cCP_UTF16{$ENDIF}{$ENDIF});
+  {$IFDEF UNICODE}
+  TZControlsCodePage = (cCP_UTF16, cCP_UTF8, cGET_ACP);
+  {$ELSE}
+    {$IFDEF FPC}
+    TZControlsCodePage = (cCP_UTF8, cCP_UTF16, cGET_ACP);
+    {$ELSE}
+    TZControlsCodePage = (cGET_ACP, cCP_UTF8, cCP_UTF16);
+    {$ENDIF}
+  {$ENDIF}
 
   TZCharEncoding = (
     ceDefault,  //Internal switch for the two Functions below do not use it as a CodePage-declaration!
@@ -815,4 +823,4 @@ end.
 
 
 
-
+
