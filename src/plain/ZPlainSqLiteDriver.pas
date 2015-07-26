@@ -904,6 +904,7 @@ begin
   else
     SQLite_API.sqlite_open(filename, Result0);
 {$ENDIF}
+  SQLite_API.sqlite_busy_timeout(Result0,100000);
   Result := Result0;
 end;
 
