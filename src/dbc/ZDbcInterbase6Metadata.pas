@@ -63,12 +63,22 @@ type
 
   // technobot 2008-06-25 - methods moved as is from TZInterbase6DatabaseMetadata:
   {** Implements Interbase6 Database Information. }
-  TZInterbase6DatabaseInfo = class(TZAbstractDatabaseInfo)
+  IZInterbaseDatabaseInfo = Interface(IZDatabaseInfo)
+    ['{F2895A2A-C427-4984-9356-79349EAAD44F}']
+    function HostIsFireBird: Boolean;
+    procedure CollectServerInformations;
+  End;
+
+  TZInterbase6DatabaseInfo = class(TZAbstractDatabaseInfo, IZInterbaseDatabaseInfo)
   private
+    FIsFireBird: Boolean;
     FServerVersion: string;
+    FProductVersion: String;
 //    function UncachedGetUDTs(const Catalog: string; const SchemaPattern: string;
 //      const TypeNamePattern: string; const Types: TIntegerDynArray): IZResultSet; override;
   public
+    procedure CollectServerInformations;
+    function HostIsFireBird: Boolean;
     // database/driver/server info:
     function GetDatabaseProductName: string; override;
     function GetDatabaseProductVersion: string; override;
@@ -76,7 +86,7 @@ type
 //    function GetDriverVersion: string; override; -> Same as parent
     function GetDriverMajorVersion: Integer; override;
     function GetDriverMinorVersion: Integer; override;
-    function GetServerVersion: string;
+    function GetServerVersion: string; override;
 
     // capabilities (what it can/cannot do):
 //    function AllProceduresAreCallable: Boolean; override; -> Not implemented
@@ -256,12 +266,35 @@ type
 
 implementation
 
-uses ZMessages, ZDbcInterbase6Utils;
+uses ZMessages, ZDbcInterbase6Utils, ZPlainFirebirdInterbaseConstants, ZFastCode;
+
+const
+  DBProvider: array[Boolean] of String = ('Interbase', 'Firebird');
 
 { TZInterbase6DatabaseInfo }
 
 //----------------------------------------------------------------------
 // First, a variety of minor information about the target database.
+
+procedure TZInterbase6DatabaseInfo.CollectServerInformations;
+var
+  FIBConnection: IZInterbase6Connection;
+begin
+  if FServerVersion = '' then
+  begin
+    FIBConnection := Metadata.GetConnection as IZInterbase6Connection;
+    FServerVersion := GetISC_StringInfo(FIBConnection.GetPlainDriver,
+      FIBConnection.GetDBHandle, isc_info_version, FIBConnection.GetConSettings);
+    FIsFireBird := ZFastCode.Pos('Firebird', FServerVersion) > 0;
+    FProductVersion := Copy(FServerVersion, ZFastCode.Pos(DBProvider[FIsFireBird],
+      FServerVersion)+8+Ord(not FIsFireBird)+1, Length(FServerVersion));
+  end;
+end;
+
+function TZInterbase6DatabaseInfo.HostIsFireBird: Boolean;
+begin
+  Result := FIsFireBird;
+end;
 
 {**
   What's the name of this database product?
@@ -269,7 +302,7 @@ uses ZMessages, ZDbcInterbase6Utils;
 }
 function TZInterbase6DatabaseInfo.GetDatabaseProductName: string;
 begin
-  Result := 'Interbase/Firebird';
+  Result := DBProvider[FIsFireBird];
 end;
 
 {**
@@ -278,7 +311,7 @@ end;
 }
 function TZInterbase6DatabaseInfo.GetDatabaseProductVersion: string;
 begin
-  Result := '6.0+';
+  Result := FProductVersion;
 end;
 
 {**
@@ -313,15 +346,7 @@ end;
   @returns the version of the server.
 }
 function TZInterbase6DatabaseInfo.GetServerVersion: string;
-var
-  FIBConnection: IZInterbase6Connection;
 begin
-  if FServerVersion = '' then
-  begin
-    FIBConnection := Metadata.GetConnection as IZInterbase6Connection;
-    FServerVersion := GetVersion(FIBConnection.GetPlainDriver,
-      FIBConnection.GetDBHandle, Metadata.GetConnection.GetConSettings);
-  end;
   Result := FServerVersion;
 end;
 
@@ -1190,7 +1215,12 @@ end;
 function TZInterbase6DatabaseMetadata.ConstructNameCondition(Pattern: string;
   Column: string): string;
 begin
-  Result := Inherited ConstructnameCondition(Pattern,'trim('+Column+')');
+  if (GetDatabaseInfo as IZInterbaseDatabaseInfo).HostIsFireBird and
+      (GetConnection.GetHostVersion >= 2000000) then
+    Result := Inherited ConstructnameCondition(Pattern,'trim('+Column+')')
+  else
+    //Old FireBird and Interbase do NOT support 'trim'
+    Result := Inherited ConstructnameCondition(Pattern,Column)
 end;
 
 function TZInterbase6DatabaseMetadata.UncachedGetTriggers(const Catalog: string;
@@ -1296,12 +1326,7 @@ begin
       while Next do
       begin
         Result.MoveToInsertRow;
-        Result.UpdateNull(CatalogNameIndex);
-        Result.UpdateNull(SchemaNameIndex);
         Result.UpdateString(ProcedureNameIndex, GetString(PROCEDURE_NAME_Index)); //RDB$PROCEDURE_NAME
-        Result.UpdateNull(ProcedureOverloadIndex);
-        Result.UpdateNull(ProcedureReserverd1Index);
-        Result.UpdateNull(ProcedureReserverd2Index);
         Result.UpdateString(ProcedureRemarksIndex, GetString(DESCRIPTION_Index)); //RDB$DESCRIPTION
         if IsNull(PROCEDURE_OUTPUTS_Index) then //RDB$PROCEDURE_OUTPUTS
           Result.UpdateInt(ProcedureTypeIndex, Ord(prtNoResult))
@@ -1805,8 +1830,8 @@ begin
 
         Result.UpdateString(TableColColumnRemarksIndex, Copy(GetString(ColumnIndexes[12]),1,255));   //REMARKS
         Result.UpdateString(TableColColumnColDefIndex, DefaultValue);   //COLUMN_DEF
-        Result.UpdateNull(TableColColumnSQLDataTypeIndex);   //SQL_DATA_TYPE
-        Result.UpdateNull(TableColColumnSQLDateTimeSubIndex);   //SQL_DATETIME_SUB
+        //Result.UpdateNull(TableColColumnSQLDataTypeIndex);   //SQL_DATA_TYPE
+        //Result.UpdateNull(TableColColumnSQLDateTimeSubIndex);   //SQL_DATETIME_SUB
         Result.UpdateInt(TableColColumnCharOctetLengthIndex, GetInt({$IFDEF GENERIC_INDEX}6{$ELSE}7{$ENDIF}));   //CHAR_OCTET_LENGTH
         Result.UpdateInt(TableColColumnOrdPosIndex, GetInt(ColumnIndexes[13])+ 1);   //ORDINAL_POSITION
 
@@ -2761,15 +2786,15 @@ begin
         Result.UpdateNull(SchemaNameIndex); //TABLE_SCHEM
         Result.UpdateString(TableNameIndex, GetString(RDB_RELATION_NAME)); //TABLE_NAME, RDB$RELATION_NAME
         Result.UpdateBoolean(IndexInfoColNonUniqueIndex, not GetBoolean(RDB_UNIQUE_FLAG)); //NON_UNIQUE, RDB$UNIQUE_FLAG
-        Result.UpdateNull(IndexInfoColIndexQualifierIndex); //INDEX_QUALIFIER
+        //Result.UpdateNull(IndexInfoColIndexQualifierIndex); //INDEX_QUALIFIER
         Result.UpdateString(IndexInfoColIndexNameIndex, GetString(RDB_INDEX_NAME)); //INDEX_NAME, RDB$INDEX_NAME
         Result.UpdateInt(IndexInfoColTypeIndex, Ord(ntNoNulls)); //TYPE
         Result.UpdateInt(IndexInfoColOrdPositionIndex, GetInt(RDB_FIELD_POSITION){$IFNDEF GENERIC_INDEX} + 1{$ENDIF}); //ORDINAL_POSITION, RDB$FIELD_POSITION
         Result.UpdateString(IndexInfoColColumnNameIndex, GetString(RDB_FIELD_NAME)); //COLUMN_NAME, RDB$FIELD_NAME
-        Result.UpdateNull(IndexInfoColAscOrDescIndex); //ASC_OR_DESC
-        Result.UpdateNull(IndexInfoColCardinalityIndex); //CARDINALITY
+        //Result.UpdateNull(IndexInfoColAscOrDescIndex); //ASC_OR_DESC
+        //Result.UpdateNull(IndexInfoColCardinalityIndex); //CARDINALITY
         Result.UpdateInt(IndexInfoColPagesIndex, GetInt(RDB_PAGE_NUMBER)); //PAGES, COUNT (DISTINCT P.RDB$PAGE_NUMBER)
-        Result.UpdateNull(IndexInfoColFilterConditionIndex); //FILTER_CONDITION
+        //Result.UpdateNull(IndexInfoColFilterConditionIndex); //FILTER_CONDITION
         Result.InsertRow;
       end;
       Close;
@@ -2785,12 +2810,12 @@ var
 begin
     Result:=inherited UncachedGetSequences(Catalog, SchemaPattern, SequenceNamePattern);
 
-    LSequenceNamePattern := ConstructNameCondition(SequenceNamePattern, 
+    LSequenceNamePattern := ConstructNameCondition(SequenceNamePattern,
       'RDB$GENERATOR_NAME');
     if LSequenceNamePattern <> '' then
       LSequenceNamePattern := ' and '+LSequenceNamePattern;
 
-    SQL := ' SELECT RDB$GENERATOR_NAME FROM RDB$GENERATORS ' + 
+    SQL := ' SELECT RDB$GENERATOR_NAME FROM RDB$GENERATORS ' +
       'WHERE (RDB$SYSTEM_FLAG IS NULL OR RDB$SYSTEM_FLAG = 0)'+ LSequenceNamePattern;
 
     with GetConnection.CreateStatement.ExecuteQuery(SQL) do
@@ -2798,9 +2823,7 @@ begin
       while Next do
       begin
         Result.MoveToInsertRow;
-        Result.UpdateNull(1);
-        Result.UpdateNull(2);
-        Result.UpdateString(3, GetString(1)); //RDB$GENERATOR_NAME
+        Result.UpdateString(SequenceNameIndex, GetString(FirstDbcIndex)); //RDB$GENERATOR_NAME
         Result.InsertRow;
       end;
       Close;

@@ -83,7 +83,7 @@ type
   {** Options for dataset. }
   TZDatasetOption = (doOemTranslate, doCalcDefaults, doAlwaysDetailResync,
     doSmartOpen, doPreferPrepared, doDontSortOnPost, doUpdateMasterFirst,
-    doCachedLobs, doNoAlignDisplayWidth);
+    doCachedLobs, doAlignMaxRequiredWideStringFieldSize, doNoAlignDisplayWidth);
 
   {** Set of dataset options. }
   TZDatasetOptions = set of TZDatasetOption;
@@ -186,7 +186,7 @@ type
     FNewRowBuffer: PZRowBuffer;
     FCurrentRows: TZSortedList;
     FFetchCount: Integer;
-    FFieldsLookupTable: TIntegerDynArray;
+    FFieldsLookupTable: TPointerDynArray;
     FRowsAffected: Integer;
 
     FFilterEnabled: Boolean;
@@ -335,7 +335,7 @@ type
     property NewRowBuffer: PZRowBuffer read FNewRowBuffer write FNewRowBuffer;
     property CurrentRows: TZSortedList read FCurrentRows write FCurrentRows;
     property FetchCount: Integer read FFetchCount write FFetchCount;
-    property FieldsLookupTable: TIntegerDynArray read FFieldsLookupTable
+    property FieldsLookupTable: TPointerDynArray read FFieldsLookupTable
       write FFieldsLookupTable;
 
     property FilterEnabled: Boolean read FFilterEnabled write FFilterEnabled;
@@ -2131,9 +2131,7 @@ begin
   begin
     if Active then
        Close;
-    if Assigned(Statement) then
-      Statement.Close;
-    Statement := nil;
+    Unprepare;
     if FConnection <> nil then
       FConnection.UnregisterDataSet(Self);
     FConnection := Value;
@@ -2194,7 +2192,7 @@ begin
   //not Unicode-Save since the AnsiString(AUnicodeString) cast.
   //Known issues: Simplified chinese or Persian f.e. have some equal UTF8
   //two/four byte sequense wich lead to data loss. So success is randomly!!
-  if Connection.AutoEncodeStrings then
+  if Connection.DbcConnection.AutoEncodeStrings then
   begin
     FStringFieldSetter := StringFieldSetterFromRawAutoEncode;
     if Connection.DbcConnection.GetConSettings.CPType = cCP_UTF8 then
@@ -2485,21 +2483,24 @@ end;
 }
 function TZAbstractRODataset.FetchOneRow: Boolean;
 begin
-  repeat
-    if (FetchCount = 0) or (ResultSet.GetRow = FetchCount)
-      or ResultSet.MoveAbsolute(FetchCount) then
-      Result := ResultSet.Next
-    else
-      Result := False;
-    if Result then
-    begin
-      Inc(FFetchCount);
-      if FilterRow(ResultSet.GetRow) then
-        CurrentRows.Add({%H-}Pointer(ResultSet.GetRow))
+  if Assigned(ResultSet) then
+    repeat
+      if (FetchCount = 0) or (ResultSet.GetRow = FetchCount)
+        or ResultSet.MoveAbsolute(FetchCount) then
+        Result := ResultSet.Next
       else
-        Continue;
-    end;
-  until True;
+        Result := False;
+      if Result then
+      begin
+        Inc(FFetchCount);
+        if FilterRow(ResultSet.GetRow) then
+          CurrentRows.Add({%H-}Pointer(ResultSet.GetRow))
+        else
+          Continue;
+      end;
+    until True
+  else
+    Result := False;
 end;
 
 {**
@@ -2921,12 +2922,23 @@ begin
       Result := not Result;
     end
     else
-    begin
       if Field.DataType in [ftBlob, ftMemo, ftGraphic, ftFmtMemo {$IFDEF WITH_WIDEMEMO},ftWideMemo{$ENDIF}] then
         Result := not RowAccessor.GetBlob(ColumnIndex, Result).IsEmpty
       else
-        Result := not RowAccessor.IsNull(ColumnIndex);
-    end;
+      // added by KestasL
+      begin
+        {$IFDEF WITH_TVALUEBUFFER}
+        //See: http://sourceforge.net/p/zeoslib/tickets/118/
+        if Field.DataType = ftExtended then
+        begin
+          SetLength(Buffer, SizeOf(Extended));
+          PExtended(Buffer)^ := RowAccessor.GetBigDecimal(ColumnIndex, Result);
+          Result := not Result;
+        end
+        else
+        {$ENDIF WITH_TVALUEBUFFER}
+          Result := not RowAccessor.IsNull(ColumnIndex);
+      end;
   end
   else
     Result := False;
@@ -3069,15 +3081,17 @@ end;
 }
 
 {$IFDEF WITH_TRECORDBUFFER}
-
 function TZAbstractRODataset.AllocRecordBuffer: TRecordBuffer;
 begin
    Result := TRecordBuffer(RowAccessor.Alloc);
 end;
 {$ELSE}
-
 function TZAbstractRODataset.AllocRecordBuffer: PChar;
 begin
+  {Dev notes:
+   This will be called for OldRowBuffer, NewRowBuffer and for count of visible rows
+   so NO memory wasting happens here!
+  }
   Result := PChar(RowAccessor.Alloc);
 end;
 {$ENDIF}
@@ -3175,7 +3189,15 @@ begin
       begin
         FieldType := ConvertDbcToDatasetType(GetColumnType(I));
         if FieldType in [ftBytes, ftString, ftWidestring] then
-          Size := GetPrecision(I)
+          if (FieldType = ftWideString) then
+            if (GetColumnDisplaySize(I) = 0) or ((doAlignMaxRequiredWideStringFieldSize in fOptions) and
+               (ResultSet.GetConSettings^.ClientCodePage^.Encoding = ceUTF8)) then
+              Size := GetPrecision(I) //most UTF8 DB's assume 4Byte / Char (surrogates included) such encoded characters may kill the heap of the FieldBuffer
+              //users are warned: http://zeoslib.sourceforge.net/viewtopic.php?f=40&p=51427#p51427
+            else
+              Size := GetColumnDisplaySize(I)
+          else
+            Size := GetPrecision(I)
         else
           {$IFDEF WITH_FTGUID}
           if FieldType = ftGUID then
@@ -3366,15 +3388,19 @@ begin
     { Initializes accessors and buffers. }
     ColumnList := ConvertFieldsToColumnInfo(Fields);
     try
-      if Connection.DbcConnection.GetConSettings^.ClientCodePage^.IsStringFieldCPConsistent then
+      if Connection.DbcConnection.GetConSettings^.ClientCodePage^.IsStringFieldCPConsistent
+        and (Connection.DbcConnection.GetConSettings^.ClientCodePage^.Encoding in [ceAnsi, ceUTF8]) then
         RowAccessor := TZRawRowAccessor.Create(ColumnList, Connection.DbcConnection.GetConSettings)
       else
         RowAccessor := TZUnicodeRowAccessor.Create(ColumnList, Connection.DbcConnection.GetConSettings);
     finally
       ColumnList.Free;
     end;
-    FOldRowBuffer := PZRowBuffer(AllocRecordBuffer);
-    FNewRowBuffer := PZRowBuffer(AllocRecordBuffer);
+    if not IsUnidirectional then
+    begin
+      FOldRowBuffer := PZRowBuffer(AllocRecordBuffer);
+      FNewRowBuffer := PZRowBuffer(AllocRecordBuffer);
+    end;
 
     SetStringFieldSetterAndSetter;
 
@@ -3398,7 +3424,7 @@ end;
 procedure TZAbstractRODataset.InternalClose;
 begin
   if ResultSet <> nil then
-    if not FDoNotCloseResultSet then ResultSet.Close;
+    if not FDoNotCloseResultSet then ResultSet.ResetCursor;
   ResultSet := nil;
 
   if FOldRowBuffer <> nil then
@@ -6278,9 +6304,7 @@ constructor TZByteField.Create(AOwner: TComponent);
 begin
   inherited Create(AOwner);
   SetDataType({$IFDEF WITH_FTBYTE}ftByte{$ELSE}ftWord{$ENDIF});
-  {$IF FPC_FULLVERSION>=20602}
   ValidChars := ['+', '0'..'9'];
-  {$ENDIF}
 end;
 
 { TZShortIntField }
@@ -6325,9 +6349,7 @@ constructor TZShortIntField.Create(AOwner: TComponent);
 begin
   inherited Create(AOwner);
   SetDataType({$IFDEF WITH_FTSHORTINT}ftShortInt{$ELSE}ftSmallInt{$ENDIF});
-  {$IF FPC_FULLVERSION>=20602}
   ValidChars := ['+', '-', '0'..'9'];
-  {$ENDIF}
 end;
 
 { TZWordField }
@@ -6372,9 +6394,7 @@ constructor TZWordField.Create(AOwner: TComponent);
 begin
   inherited Create(AOwner);
   SetDataType(ftWord);
-  {$IF FPC_FULLVERSION>=20602}
   ValidChars := ['+', '0'..'9'];
-  {$ENDIF}
 end;
 
 { TZSmallIntField }
@@ -6419,9 +6439,7 @@ constructor TZSmallIntField.Create(AOwner: TComponent);
 begin
   inherited Create(AOwner);
   SetDataType(ftSmallInt);
-  {$IF FPC_FULLVERSION>=20602}
   ValidChars := ['+', '-', '0'..'9'];
-  {$ENDIF}
 end;
 
 { TZIntegerField }
@@ -6466,9 +6484,7 @@ constructor TZIntegerField.Create(AOwner: TComponent);
 begin
   inherited Create(AOwner);
   SetDataType(ftInteger);
-  {$IF FPC_FULLVERSION>=20602}
   ValidChars := ['+', '-', '0'..'9'];
-  {$ENDIF}
 end;
 
 { TZLongWordField }
@@ -6513,9 +6529,7 @@ constructor TZLongWordField.Create(AOwner: TComponent);
 begin
   inherited Create(AOwner);
   SetDataType({$IFDEF WITH_FTLONGWORD}ftLongWord{$ELSE}ftLargeInt{$ENDIF});
-  {$IF FPC_FULLVERSION>=20602}
   ValidChars := ['+', '0'..'9'];
-  {$ENDIF}
 end;
 
 { TZInt64Field }
@@ -6560,9 +6574,7 @@ constructor TZInt64Field.Create(AOwner: TComponent);
 begin
   inherited Create(AOwner);
   SetDataType(ftLargeint);
-  {$IF FPC_FULLVERSION>=20602}
   ValidChars := ['+', '-', '0'..'9']
-  {$ENDIF}
 end;
 
 { TZUInt64Field }
@@ -6607,9 +6619,7 @@ constructor TZUInt64Field.Create(AOwner: TComponent);
 begin
   inherited Create(AOwner);
   SetDataType(ftLargeint);
-  {$IF FPC_FULLVERSION>=20602}
   ValidChars := ['+', '0'..'9']
-  {$ENDIF}
 end;
 
 { TZStringField }
@@ -6745,9 +6755,7 @@ begin
   inherited Create(AOwner);
   SetDataType({$IFDEF WITH_FTSINGLE}ftSingle{$ELSE}ftFloat{$ENDIF});
   FPrecision := 7;
-  {$IF FPC_FULLVERSION>=20602}
   ValidChars := [{$IFDEF WITH_FORMATSETTINGS}FormatSettings.{$ENDIF}DecimalSeparator, '+', '-', '0'..'9', 'E', 'e'];
-  {$ENDIF}
 end;
 
 { TZDoubleField }
@@ -6832,9 +6840,7 @@ begin
   inherited Create(AOwner);
   SetDataType(ftFloat);
   FPrecision := 15;
-  {$IF FPC_FULLVERSION>=20602}
   ValidChars := [{$IFDEF WITH_FORMATSETTINGS}FormatSettings.{$ENDIF}DecimalSeparator, '+', '-', '0'..'9', 'E', 'e'];
-  {$ENDIF}
 end;
 
 { TZCurrencyField }
@@ -6919,9 +6925,7 @@ begin
   inherited Create(AOwner);
   SetDataType(ftCurrency);
   FPrecision := 15;
-  {$IF FPC_FULLVERSION>=20602}
   ValidChars := [{$IFDEF WITH_FORMATSETTINGS}FormatSettings.{$ENDIF}DecimalSeparator, '+', '-', '0'..'9', 'E', 'e'];
-  {$ENDIF}
 end;
 
 { TZExtendedField }
@@ -6998,9 +7002,7 @@ begin
   inherited Create(AOwner);
   SetDataType({$IFDEF WITH_FTEXTENDED}ftExtended{$ELSE}ftFloat{$ENDIF});
   FPrecision := 19;
-  {$IF FPC_FULLVERSION>=20602}
   ValidChars := [{$IFDEF WITH_FORMATSETTINGS}FormatSettings.{$ENDIF}DecimalSeparator, '+', '-', '0'..'9', 'E', 'e'];
-  {$ENDIF}
 end;
 
 { TZFieldDef }
@@ -7489,4 +7491,4 @@ end;
 end.
 
 
-
+

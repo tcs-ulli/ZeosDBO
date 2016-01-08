@@ -424,8 +424,7 @@ type
   IZSQLitePlainDriver = interface (IZPlainDriver)
     ['{B931C952-3076-4ECB-9630-D900E8DB9869}']
 
-    function Open(const filename: PAnsiChar; mode: Integer;
-      var errmsg: PAnsiChar): Psqlite;
+    function Open(const filename: PAnsiChar): Psqlite;
     function Close(db: Psqlite): Integer;
     function Execute(db: Psqlite; const sql: PAnsiChar;
       sqlite_callback: Tsqlite_callback; arg: Pointer;
@@ -487,17 +486,11 @@ type
     function clear_bindings(pStmt: Psqlite3_stmt): Integer;
     function column_count(pStmt: Psqlite3_stmt): Integer;
     function column_name(pStmt: Psqlite3_stmt; iCol: Integer): PAnsiChar;
-    function column_name16(pStmt: Psqlite3_stmt; iCol: Integer): PWideChar;
 
     function column_database_name(pStmt: Psqlite3_stmt; iCol: Integer): PAnsiChar;
-    function column_database_name16(pStmt: Psqlite3_stmt; iCol: Integer): PWideChar;
     function column_table_name(pStmt: Psqlite3_stmt; iCol: Integer): PAnsiChar;
-    function column_table_name16(pStmt: Psqlite3_stmt; iCol: Integer): PWideChar;
     function column_origin_name(pStmt: Psqlite3_stmt; iCol: Integer): PAnsiChar;
-    function column_origin_name16(pStmt: Psqlite3_stmt; iCol: Integer): PWideChar;
-
     function column_decltype(pStmt: Psqlite3_stmt; iCol: Integer): PAnsiChar;
-    function column_decltype16(pStmt: Psqlite3_stmt; iCol: Integer): PWideChar;
 
     function Step(Stmt: Psqlite3_stmt): Integer;
     function data_count(pStmt: Psqlite3_stmt): Integer;
@@ -553,8 +546,7 @@ type
   public
     constructor Create;
 
-    function Open(const filename: PAnsiChar; {%H-}mode: Integer;
-      var {%H-}errmsg: PAnsiChar): Psqlite;
+    function Open(const filename: PAnsiChar): Psqlite;
     function Close(db: Psqlite): Integer;
     function Execute(db: Psqlite; const sql: PAnsiChar;
       sqlite_callback: Tsqlite_callback; arg: Pointer;
@@ -616,17 +608,11 @@ type
     function clear_bindings(pStmt: Psqlite3_stmt): Integer;
     function column_count(pStmt: Psqlite3_stmt): Integer;
     function column_name(pStmt: Psqlite3_stmt; iCol: Integer): PAnsiChar;
-    function column_name16(pStmt: Psqlite3_stmt; iCol: Integer): PWideChar;
 
     function column_database_name(pStmt: Psqlite3_stmt; iCol: Integer): PAnsiChar;
-    function column_database_name16(pStmt: Psqlite3_stmt; iCol: Integer): PWideChar;
     function column_table_name(pStmt: Psqlite3_stmt; iCol: Integer): PAnsiChar;
-    function column_table_name16(pStmt: Psqlite3_stmt; iCol: Integer): PWideChar;
     function column_origin_name(pStmt: Psqlite3_stmt; iCol: Integer): PAnsiChar;
-    function column_origin_name16(pStmt: Psqlite3_stmt; iCol: Integer): PWideChar;
-
     function column_decltype(pStmt: Psqlite3_stmt; iCol: Integer): PAnsiChar;
-    function column_decltype16(pStmt: Psqlite3_stmt; iCol: Integer): PWideChar;
 
     function Step(Stmt: Psqlite3_stmt): Integer;
     function data_count(pStmt: Psqlite3_stmt): Integer;
@@ -874,16 +860,14 @@ begin
   Result := SQLite_API.sqlite_libversion;
 end;
 
-function TZSQLiteBaseDriver.Open(const filename: PAnsiChar; mode: Integer;
-  var errmsg: PAnsiChar): Psqlite;
-var
-  Result0: Psqlite;
+function TZSQLiteBaseDriver.Open(const filename: PAnsiChar): Psqlite;
 {$IFNDEF UNICODE}
+var
   Version: string;
   FileNameString: String;
 {$ENDIF}
 begin
-  Result0:= nil;
+  Result:= nil;
   (*Note to Windows users: The encoding used for the filename argument of
     sqlite3_open() and sqlite3_open_v2() must be UTF-8, not whatever codepage
     is currently defined. Filenames containing international characters must
@@ -891,21 +875,19 @@ begin
     sqlite3_open_v2(). *)
 
 {$IFDEF UNICODE}
-  SQLite_API.sqlite_open(filename, Result0);
+  SQLite_API.sqlite_open(filename, Result);
 {$ELSE}
   Version := LibVersion;
   FileNameString := filename;
   if (Version > '3.2.5') then
     {$IFDEF FPC}
-      SQLite_API.sqlite_open(PAnsiChar(FileNameString), Result0)
+      SQLite_API.sqlite_open(PAnsiChar(FileNameString), Result)
     {$ELSE}
-      SQLite_API.sqlite_open(PAnsiChar(AnsiToUTF8(FileNameString)), Result0)
+      SQLite_API.sqlite_open(PAnsiChar(AnsiToUTF8(FileNameString)), Result)
     {$ENDIF}
   else
-    SQLite_API.sqlite_open(filename, Result0);
+    SQLite_API.sqlite_open(filename, Result);
 {$ENDIF}
-  SQLite_API.sqlite_busy_timeout(Result0,100000);
-  Result := Result0;
 end;
 
 function TZSQLiteBaseDriver.OpenEncrypted(const zFilename, pKey: PAnsiChar;
@@ -1033,49 +1015,33 @@ begin
   Result := SQLite_API.sqlite_column_name(pStmt, iCol);
 end;
 
-function TZSQLiteBaseDriver.column_name16(pStmt: Psqlite3_stmt; iCol: Integer): PWideChar;
-begin
-  Result := SQLite_API.sqlite_column_name16(pStmt, iCol);
-end;
-
 function TZSQLiteBaseDriver.column_database_name(pStmt: Psqlite3_stmt; iCol: Integer): PAnsiChar;
 begin
-  Result := SQLite_API.sqlite_column_database_name(pStmt, iCol);
-end;
-
-function TZSQLiteBaseDriver.column_database_name16(pStmt: Psqlite3_stmt; iCol: Integer): PWideChar;
-begin
-  Result := SQLite_API.sqlite_column_database_name16(pStmt, iCol);
+  if Assigned(SQLite_API.sqlite_column_database_name) then
+    Result := SQLite_API.sqlite_column_database_name(pStmt, iCol)
+  else
+    Result := nil;
 end;
 
 function TZSQLiteBaseDriver.column_table_name(pStmt: Psqlite3_stmt; iCol: Integer): PAnsiChar;
 begin
-  Result := SQLite_API.sqlite_column_table_name(pStmt, iCol);
-end;
-
-function TZSQLiteBaseDriver.column_table_name16(pStmt: Psqlite3_stmt; iCol: Integer): PWideChar;
-begin
-  Result := SQLite_API.sqlite_column_table_name16(pStmt, iCol);
+  if Assigned(SQLite_API.sqlite_column_table_name) then
+    Result := SQLite_API.sqlite_column_table_name(pStmt, iCol)
+  else
+    Result := nil;
 end;
 
 function TZSQLiteBaseDriver.column_origin_name(pStmt: Psqlite3_stmt; iCol: Integer): PAnsiChar;
 begin
-  Result := SQLite_API.sqlite_column_origin_name(pStmt, iCol);
-end;
-
-function TZSQLiteBaseDriver.column_origin_name16(pStmt: Psqlite3_stmt; iCol: Integer): PWideChar;
-begin
-  Result := SQLite_API.sqlite_column_origin_name16(pStmt, iCol);
+  if Assigned(SQLite_API.sqlite_column_origin_name) then
+    Result := SQLite_API.sqlite_column_origin_name(pStmt, iCol)
+  else
+    Result := nil;
 end;
 
 function TZSQLiteBaseDriver.column_decltype(pStmt: Psqlite3_stmt; iCol: Integer): PAnsiChar;
 begin
   Result := SQLite_API.sqlite_column_decltype(pStmt, iCol);
-end;
-
-function TZSQLiteBaseDriver.column_decltype16(pStmt: Psqlite3_stmt; iCol: Integer): PWideChar;
-begin
-  Result := SQLite_API.sqlite_column_decltype16(pStmt, iCol);
 end;
 
 function TZSQLiteBaseDriver.Step(Stmt: Psqlite3_stmt): Integer;

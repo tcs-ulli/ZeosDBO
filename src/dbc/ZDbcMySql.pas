@@ -94,6 +94,7 @@ type
   private
     FCatalog: string;
     FHandle: PZMySQLConnect;
+    FMaxLobSize: ULong;
   protected
     procedure InternalCreate; override;
   public
@@ -118,7 +119,7 @@ type
     function GetCatalog: string; override;
 
     procedure SetTransactionIsolation(Level: TZTransactIsolationLevel); override;
-    procedure SetAutoCommit(AutoCommit: Boolean); override;
+    procedure SetAutoCommit(Value: Boolean); override;
     {ADDED by fduenas 15-06-2006}
     function GetClientVersion: Integer; override;
     function GetHostVersion: Integer; override;
@@ -155,6 +156,7 @@ begin
   AddSupportedProtocol(AddPlainDriverToCache(TZMySQLD41PlainDriver.Create));
   AddSupportedProtocol(AddPlainDriverToCache(TZMySQLD5PlainDriver.Create));
   AddSupportedProtocol(AddPlainDriverToCache(TZMariaDB5PlainDriver.Create));
+  AddSupportedProtocol(AddPlainDriverToCache(TZMariaDB10PlainDriver.Create));
 end;
 
 {**
@@ -211,9 +213,7 @@ end;
 }
 function TZMySQLDriver.GetTokenizer: IZTokenizer;
 begin
-  if Tokenizer = nil then
-    Tokenizer := TZMySQLTokenizer.Create;
-  Result := Tokenizer;
+  Result := TZMySQLTokenizer.Create;
 end;
 
 {**
@@ -222,9 +222,7 @@ end;
 }
 function TZMySQLDriver.GetStatementAnalyser: IZStatementAnalyser;
 begin
-  if Analyser = nil then
-    Analyser := TZMySQLStatementAnalyser.Create;
-  Result := Analyser;
+  Result := TZMySQLStatementAnalyser.Create; { thread save! Allways return a new Analyser! }
 end;
 
 {**
@@ -278,7 +276,6 @@ begin
   AutoCommit := True;
   TransactIsolationLevel := tiNone;
   FHandle := nil;
-
   { Processes connection properties. }
   Open;
 end;
@@ -466,11 +463,21 @@ setuint:      UIntOpt := StrToIntDef(Info.Values[sMyOpt], 0);
     if (FClientCodePage <> sMy_client_Char_Set) then
     begin
       SQL := 'SET NAMES '+{$IFDEF UNICODE}UnicodeStringToAscii7{$ENDIF}(FClientCodePage);
-      GetPlainDriver.ExecQuery(FHandle, Pointer(SQL));
+      GetPlainDriver.ExecRealQuery(FHandle, Pointer(SQL), Length(SQL));
       CheckMySQLError(GetPlainDriver, FHandle, lcExecute, SQL, ConSettings);
       DriverManager.LogMessage(lcExecute, ConSettings^.Protocol, SQL);
     end;
     Self.CheckCharEncoding(FClientCodePage);
+
+    FMaxLobSize := {$IFDEF UNICODE}UnicodeToIntDef{$ELSE}RawToIntDef{$ENDIF}(Info.Values['FMaxLobSize'], 0);
+    if FMaxLobSize <> 0 then
+    begin
+      SQL := 'SET GLOBAL max_allowed_packet='+IntToRaw(FMaxLobSize);
+      GetPlainDriver.ExecRealQuery(FHandle, Pointer(SQL), Length(SQL));
+      CheckMySQLError(GetPlainDriver, FHandle, lcExecute, SQL, ConSettings);
+      DriverManager.LogMessage(lcExecute, ConSettings^.Protocol, SQL);
+    end
+    else FMaxLobSize := MaxBlobSize;
 
     { Sets transaction isolation level. }
     OldLevel := TransactIsolationLevel;
@@ -494,12 +501,12 @@ setuint:      UIntOpt := StrToIntDef(Info.Values[sMyOpt], 0);
     with CreateStatement.ExecuteQuery('show variables like "character_set_database"') do
     begin
       if Next then
-        FClientCodePage := GetString(2);
+        FClientCodePage := GetString(FirstDbcIndex+1);
       Close;
     end;
     ConSettings^.ClientCodePage := GetPlainDriver.ValidateCharEncoding(FClientCodePage);
     ZEncoding.SetConvertFunctions(ConSettings);
-  end
+  end;
 end;
 
 {**
@@ -723,22 +730,22 @@ begin
         tiNone, tiReadUncommitted:
           begin
             SQL := 'SET SESSION TRANSACTION ISOLATION LEVEL READ UNCOMMITTED';
-            testResult := GetPlainDriver.ExecQuery(FHandle, PAnsiChar(SQL));
+            testResult := GetPlainDriver.ExecRealQuery(FHandle, Pointer(SQL), Length(SQL));
           end;
         tiReadCommitted:
           begin
             SQL := 'SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED';
-            testResult := GetPlainDriver.ExecQuery(FHandle, PAnsiChar(SQL));
+            testResult := GetPlainDriver.ExecRealQuery(FHandle, Pointer(SQL), Length(SQL));
           end;
         tiRepeatableRead:
           begin
             SQL := 'SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ';
-            testResult := GetPlainDriver.ExecQuery(FHandle, PAnsiChar(SQL));
+            testResult := GetPlainDriver.ExecRealQuery(FHandle, Pointer(SQL), Length(SQL));
           end;
         tiSerializable:
           begin
             SQL := 'SET SESSION TRANSACTION ISOLATION LEVEL SERIALIZABLE';
-            testResult := GetPlainDriver.ExecQuery(FHandle, PAnsiChar(SQL));
+            testResult := GetPlainDriver.ExecRealQuery(FHandle, Pointer(SQL), Length(SQL));
           end;
         else
           SQL := '';
@@ -771,15 +778,15 @@ end;
 
   @param autoCommit true enables auto-commit; false disables auto-commit.
 }
-procedure TZMySQLConnection.SetAutoCommit(AutoCommit: Boolean);
+procedure TZMySQLConnection.SetAutoCommit(Value: Boolean);
 begin
-  if AutoCommit <> Self.AutoCommit then
+  if AutoCommit <> Value then
   begin
-    inherited SetAutoCommit(AutoCommit);
+    inherited SetAutoCommit(Value);
 
     if not Closed then
     begin
-      if not GetPlaindriver.SetAutocommit(FHandle, AutoCommit) then
+      if not GetPlaindriver.SetAutocommit(FHandle, Value) then
         CheckMySQLError(GetPlainDriver, FHandle, lcExecute, 'Native SetAutoCommit '+BoolToRawEx(AutoCommit)+'call', ConSettings);
       DriverManager.LogMessage(lcExecute, ConSettings^.Protocol, 'Native SetAutoCommit '+BoolToRawEx(AutoCommit)+'call');
     end;

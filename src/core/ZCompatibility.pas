@@ -101,7 +101,7 @@ type
 {$ENDIF}
   // EgonHugeist: Use always a 4Byte unsigned Integer for Windows otherwise MySQL64 has problems on Win64!
   // don't know anything about reported issues on other OS's
-  ULong                 = {$IFDEF WIN64}LongWord{$ELSE}NativeUInt{$ENDIF};
+  ULong                 = {$IFDEF MSWINDOWS}LongWord{$ELSE}NativeUInt{$ENDIF};
   ULongLong             = UInt64;
   PULong                = ^ULong;
   PULongLong            = ^ULongLong;
@@ -310,15 +310,7 @@ type
   TPUnicodeToString = function (const Src: PWideChar; CodePoints: NativeUInt; const StringCP: Word): String;
 
   {** Defines the Target Ansi codepages for the Controls }
-  {$IFDEF UNICODE}
-  TZControlsCodePage = (cCP_UTF16, cCP_UTF8, cGET_ACP);
-  {$ELSE}
-    {$IFDEF FPC}
-    TZControlsCodePage = (cCP_UTF8, cCP_UTF16, cGET_ACP);
-    {$ELSE}
-    TZControlsCodePage = (cGET_ACP, cCP_UTF8, cCP_UTF16);
-    {$ENDIF}
-  {$ENDIF}
+  TZControlsCodePage = ({$IFDEF UNICODE}cCP_UTF16, cCP_UTF8, cGET_ACP{$ELSE}{$IFDEF FPC}cCP_UTF8, cCP_UTF16, cGET_ACP{$ELSE}cGET_ACP, cCP_UTF8, cCP_UTF16{$ENDIF}{$ENDIF});
 
   TZCharEncoding = (
     ceDefault,  //Internal switch for the two Functions below do not use it as a CodePage-declaration!
@@ -420,6 +412,10 @@ procedure ZSetString(const Src: PAnsiChar; const Len: Cardinal; var Dest: UTF8St
 procedure ZSetString(Src: PAnsiChar; const Len: LengthInt; var Dest: ZWideString); overload;// {$IFDEF WITH_INLINE}Inline;{$ENDIF}
 {$IFDEF WITH_RAWBYTESTRING}
 procedure ZSetString(const Src: PAnsiChar; const Len: Cardinal; var Dest: RawByteString); overload;// {$IFDEF WITH_INLINE}Inline;{$ENDIF}
+{$ENDIF}
+
+{$IFDEF MISS_MATH_UINT64_MIN_MAX_OVERLOAD}
+function Min(const A, B: NativeUInt): NativeUInt; overload; {$IFDEF WITH_INLINE}Inline;{$ENDIF}
 {$ENDIF}
 
 var
@@ -813,6 +809,15 @@ begin
 end;
 {$ENDIF}
 
+{$IFDEF MISS_MATH_UINT64_MIN_MAX_OVERLOAD}
+function Min(const A, B: NativeUInt): NativeUInt;
+begin
+  if A < B then
+    Result := A
+  else
+    Result := B;
+end;
+{$ENDIF}
 
 initialization
   case ConSettingsDummy.CPType of
@@ -823,4 +828,4 @@ end.
 
 
 
-
+

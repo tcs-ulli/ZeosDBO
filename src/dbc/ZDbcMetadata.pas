@@ -319,7 +319,7 @@ type
     function GetDriverVersion: string; virtual;
     function GetDriverMajorVersion: Integer; virtual;
     function GetDriverMinorVersion: Integer; virtual;
-    function GetServerVersion: string;
+    function GetServerVersion: string; virtual;
 
     // capabilities (what it can/cannot do):
     function AllProceduresAreCallable: Boolean; virtual;
@@ -686,6 +686,9 @@ const
   IndexInfoColFilterConditionIndex = {$IFDEF GENERIC_INDEX}12{$ELSE}13{$ENDIF};
 var
   IndexInfoColumnsDynArray: TZMetadataColumnDefs;
+const
+  SequenceNameIndex = {$IFDEF GENERIC_INDEX}2{$ELSE}3{$ENDIF};
+var
   SequenceColumnsDynArray: TZMetadataColumnDefs;
 const
   UDTColTypeNameIndex = {$IFDEF GENERIC_INDEX}2{$ELSE}3{$ENDIF};
@@ -2269,10 +2272,11 @@ begin
         stBigDecimal:
           DestResultSet.UpdateBigDecimal(I, SrcResultSet.GetBigDecimal(I));
         stString, stUnicodeString, stAsciiStream, stUnicodeStream:
-          if ConSettings^.ClientCodePage^.IsStringFieldCPConsistent then
-            DestResultSet.UpdatePAnsiChar(I, SrcResultSet.GetPAnsiChar(I, Len), @Len)
+          if (not ConSettings^.ClientCodePage^.IsStringFieldCPConsistent) or
+             (ConSettings^.ClientCodePage^.Encoding = ceUTF16) then
+            DestResultSet.UpdatePWideChar(I, SrcResultSet.GetPWideChar(I, Len), @Len)
           else
-            DestResultSet.UpdateUnicodeString(I, SrcResultSet.GetUnicodeString(I));
+            DestResultSet.UpdatePAnsiChar(I, SrcResultSet.GetPAnsiChar(I, Len), @Len);
         stBytes, stBinaryStream:
           DestResultSet.UpdateBytes(I, SrcResultSet.GetBytes(I));
         stDate:
@@ -2310,7 +2314,7 @@ begin
   Metadata := ResultSet.GetMetadata;
   ColumnsInfo := TObjectList.Create(True);
   try
-    for I := {$IFNDEF GENERIC_INDEX}1{$ELSE}0{$ENDIF} to Metadata.GetColumnCount{$IFDEF GENERIC_INDEX}-1{$ENDIF} do
+    for I := FirstDbcIndex to Metadata.GetColumnCount{$IFDEF GENERIC_INDEX}-1{$ENDIF} do
     begin
       ColumnInfo := TZColumnInfo.Create;
       with ColumnInfo do
@@ -2354,13 +2358,10 @@ begin
   if HasNoWildcards(WorkPattern) then
   begin
     WorkPattern := StripEscape(WorkPattern);
-    Result := Format('%s = %s', [Column, EscapeString(WorkPattern)]);
+    Result := Column+' = '+EscapeString(WorkPattern);
   end
   else
-  begin
-    Result := Format('%s like %s',
-      [Column, EscapeString(WorkPattern)]);
-  end;
+    Result := Column+' like '+EscapeString(WorkPattern);
 end;
 
 {**
@@ -4498,14 +4499,15 @@ end;
 
 function TZAbstractDatabaseMetadata.NormalizePatternCase(Pattern:String): string;
 begin
-  if not GetIdentifierConvertor.IsQuoted(Pattern) then
-    if FDatabaseInfo.StoresUpperCaseIdentifiers then
-      Result := UpperCase(Pattern)
-    else if FDatabaseInfo.StoresLowerCaseIdentifiers then
-      Result := LowerCase(Pattern)
-    else Result := Pattern
-  else
-    Result := GetIdentifierConvertor.ExtractQuote(Pattern);
+  with GetIdentifierConvertor do
+    if not IsQuoted(Pattern) then
+      if FDatabaseInfo.StoresUpperCaseIdentifiers then
+        Result := UpperCase(Pattern)
+      else if FDatabaseInfo.StoresLowerCaseIdentifiers then
+        Result := LowerCase(Pattern)
+      else Result := Pattern
+    else
+      Result := ExtractQuote(Pattern);
 end;
 
 {**

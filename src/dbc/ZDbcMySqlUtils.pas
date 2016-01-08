@@ -75,9 +75,8 @@ type
   @param FieldFlags field flags.
   @return a SQL undepended type.
 }
-function ConvertMySQLHandleToSQLType(PlainDriver: IZMySQLPlainDriver;
-  FieldHandle: PZMySQLField; FieldFlags: Integer;
-  const CtrlsCPType: TZControlsCodePage): TZSQLType;
+function ConvertMySQLHandleToSQLType(FieldHandle: PZMySQLField;
+  CtrlsCPType: TZControlsCodePage): TZSQLType;
 
 {**
   Convert string mysql field type to SQLType
@@ -147,9 +146,8 @@ function getMySQLFieldSize (field_type: TMysqlFieldTypes; field_size: LongWord):
   @param FieldHandle the handle of the fetched field
   @returns a new TZColumnInfo
 }
-function GetMySQLColumnInfoFromFieldHandle(PlainDriver: IZMySQLPlainDriver;
-  const FieldHandle: PZMySQLField; ConSettings: PZConSettings;
-  const bUseResult:boolean): TZColumnInfo;
+function GetMySQLColumnInfoFromFieldHandle(FieldHandle: PZMySQLField;
+  ConSettings: PZConSettings; bUseResult:boolean): TZColumnInfo;
 
 procedure ConvertMySQLColumnInfoFromString(const TypeInfo: String;
   ConSettings: PZConSettings; out TypeName, TypeInfoSecond: String;
@@ -160,10 +158,14 @@ function MySQLPrepareAnsiSQLParam(Handle: PZMySQLConnect; Value: TZVariant;
   PlainDriver: IZMySQLPlainDriver; const InParamType: TZSQLType;
   const UseDefaults: Boolean; ConSettings: PZConSettings): RawByteString;
 
+function ReverseWordBytes(Src: Pointer): Word;
+function ReverseLongWordBytes(Src: Pointer; Len: Byte): LongWord;
+function ReverseQuadWordBytes(Src: Pointer; Len: Byte): UInt64;
+
 implementation
 
 uses {$IFDEF WITH_UNITANSISTRINGS}AnsiStrings, {$ENDIF} Math,
-  ZMessages, ZDbcUtils, ZFastCode;
+  ZMessages, ZDbcUtils, ZFastCode{$IFDEF UNICODE}, ZEncoding{$ENDIF};
 
 threadvar
   SilentMySQLError: Integer;
@@ -185,50 +187,43 @@ end;
   @param FieldFlags a field flags.
   @return a SQL undepended type.
 }
-function ConvertMySQLHandleToSQLType(PlainDriver: IZMySQLPlainDriver;
-  FieldHandle: PZMySQLField; FieldFlags: Integer;
-  const CtrlsCPType: TZControlsCodePage): TZSQLType;
-
-  function Signed: Boolean;
-  begin
-    Result := (UNSIGNED_FLAG and FieldFlags) = 0;
-  end;
-
+function ConvertMySQLHandleToSQLType(FieldHandle: PZMySQLField;
+  CtrlsCPType: TZControlsCodePage): TZSQLType;
 begin
-    case PlainDriver.GetFieldType(FieldHandle) of
+    case PMYSQL_FIELD(FieldHandle)^._type of
     FIELD_TYPE_TINY:
-      if Signed then
+      if PMYSQL_FIELD(FieldHandle)^.flags and UNSIGNED_FLAG = 0 then
          Result := stShort
       else
          Result := stByte;
     FIELD_TYPE_YEAR:
       Result := stWord;
     FIELD_TYPE_SHORT:
-      if Signed then
+      if PMYSQL_FIELD(FieldHandle)^.flags and UNSIGNED_FLAG = 0 then
          Result := stSmall
       else
          Result := stWord;
     FIELD_TYPE_INT24, FIELD_TYPE_LONG:
-      if Signed then
+      if PMYSQL_FIELD(FieldHandle)^.flags and UNSIGNED_FLAG = 0 then
          Result := stInteger
       else
          Result := stLongWord;
     FIELD_TYPE_LONGLONG:
-      if Signed then
+      if PMYSQL_FIELD(FieldHandle)^.flags and UNSIGNED_FLAG = 0 then
          Result := stLong
       else
         Result := stULong;
     FIELD_TYPE_FLOAT:
       Result := stFloat;
     FIELD_TYPE_DECIMAL, FIELD_TYPE_NEWDECIMAL: {ADDED FIELD_TYPE_NEWDECIMAL by fduenas 20-06-2006}
-      if PlainDriver.GetFieldDecimals(FieldHandle) = 0 then
-        if PlainDriver.GetFieldLength(FieldHandle) < 11 then
-          if Signed then
+      if PMYSQL_FIELD(FieldHandle)^.decimals = 0 then
+        if PMYSQL_FIELD(FieldHandle)^.length < 11 then
+          if PMYSQL_FIELD(FieldHandle)^.flags and UNSIGNED_FLAG = 0 then
             Result := stInteger
           else
             Result := stLongWord
         else
-          if Signed then
+          if PMYSQL_FIELD(FieldHandle)^.flags and UNSIGNED_FLAG = 0 then
              Result := stLong
           else
             Result := stULong
@@ -244,19 +239,24 @@ begin
       Result := stTimestamp;
     FIELD_TYPE_TINY_BLOB, FIELD_TYPE_MEDIUM_BLOB,
     FIELD_TYPE_LONG_BLOB, FIELD_TYPE_BLOB:
-      if (FieldFlags and BINARY_FLAG) = 0 then
+      if (PMYSQL_FIELD(FieldHandle)^.flags and BINARY_FLAG) = 0 then
         If ( CtrlsCPType = cCP_UTF16) then
           Result := stUnicodeStream
         else
           Result := stAsciiStream
       else
         Result := stBinaryStream;
-    FIELD_TYPE_BIT:
-      Result := stByte;
+    FIELD_TYPE_BIT: //http://dev.mysql.com/doc/refman/5.1/en/bit-type.html
+      case PMYSQL_FIELD(FieldHandle)^.length of
+        1..8: Result := stByte;
+        9..16: Result := stWord;
+        17..32: Result := stLongWord;
+        else Result := stULong;
+      end;
     FIELD_TYPE_VARCHAR,
     FIELD_TYPE_VAR_STRING,
     FIELD_TYPE_STRING:
-      if (FieldFlags and BINARY_FLAG) = 0 then
+      if (PMYSQL_FIELD(FieldHandle)^.flags and BINARY_FLAG) = 0 then
         if ( CtrlsCPType = cCP_UTF16) then
           Result := stUnicodeString
         else
@@ -413,12 +413,25 @@ begin
   end
   else if TypeName = 'SET' then
     Result := stString
-  else if TypeName = 'BIT' then
-    Result := stSmall
-  else
-      for i := 0 to Length(GeoTypes) - 1 do
-         if GeoTypes[i] = TypeName then
-            Result := stBinaryStream;
+  else if TypeName = 'BIT' then  //see: http://dev.mysql.com/doc/refman/5.1/en/bit-type.html
+  begin
+    Posi := ZFastCode.Pos('(', TypeNameFull);
+    if (Posi > 0) and EndsWith(TypeNameFull, ')') then
+    begin
+      Len := {$IFDEF UNICODE}UnicodeToIntDef{$ELSE}RawToIntDef{$ENDIF}(Copy(TypeNameFull, Posi+1, Length(TypeNameFull)-Posi-1), 1);
+      case Len of
+        1..8: Result := stByte;
+        9..16: Result := stWord;
+        17..32: Result := stLongWord;
+        else Result := stULong;
+      end;
+    end
+    else
+      Result := stByte
+  end else
+    for i := 0 to Length(GeoTypes) - 1 do
+       if GeoTypes[i] = TypeName then
+          Result := stBinaryStream;
 
   if ( CtrlsCPType = cCP_UTF16) then
   case result of
@@ -467,7 +480,7 @@ var
   ErrorMessage: RawByteString;
   ErrorCode: Integer;
 begin
-  ErrorCode := PlainDriver.GetLastPreparedErrorCode(Handle);
+  ErrorCode := PlainDriver.stmt_errno(Handle);
   if Assigned(ErrorIsIgnored) then
     if (IgnoreErrorCode = ErrorCode) then
     begin
@@ -476,7 +489,7 @@ begin
     end
     else
       ErrorIsIgnored^ := False;
-  ErrorMessage := {$IFDEF WITH_UNITANSISTRINGS}AnsiStrings.{$ENDIF}Trim(PlainDriver.GetLastPreparedError(Handle));
+  ErrorMessage := {$IFDEF WITH_UNITANSISTRINGS}AnsiStrings.{$ENDIF}Trim(PlainDriver.stmt_error(Handle));
   if (ErrorCode <> 0) and (ErrorMessage <> '') then
   begin
     if SilentMySQLError > 0 then
@@ -569,26 +582,39 @@ end;
   @param FieldHandle the handle of the fetched field
   @returns a new TZColumnInfo
 }
-function GetMySQLColumnInfoFromFieldHandle(PlainDriver: IZMySQLPlainDriver;
-  const FieldHandle: PZMySQLField; ConSettings: PZConSettings;
-  const bUseResult:boolean): TZColumnInfo;
+function GetMySQLColumnInfoFromFieldHandle(FieldHandle: PZMySQLField;
+  ConSettings: PZConSettings; bUseResult:boolean): TZColumnInfo;
 var
-  FieldFlags: Integer;
   FieldLength: ULong;
 begin
   if Assigned(FieldHandle) then
   begin
     Result := TZColumnInfo.Create;
-    FieldFlags := PlainDriver.GetFieldFlags(FieldHandle);
-
-    Result.ColumnLabel := ConSettings^.ConvFuncs.ZRawToString(PlainDriver.GetFieldName(FieldHandle), ConSettings^.ClientCodePage^.CP, ConSettings^.CTRL_CP);
-    Result.ColumnName := ConSettings^.ConvFuncs.ZRawToString(PlainDriver.GetFieldOrigName(FieldHandle), ConSettings^.ClientCodePage^.CP, ConSettings^.CTRL_CP);
-    Result.TableName := ConSettings^.ConvFuncs.ZRawToString(PlainDriver.GetFieldTable(FieldHandle), ConSettings^.ClientCodePage^.CP, ConSettings^.CTRL_CP);
-    Result.ReadOnly := (PlainDriver.GetFieldTable(FieldHandle) = '');
+    {$IFDEF UNICODE}
+    Result.ColumnLabel := PRawToUnicode(PMYSQL_FIELD(FieldHandle)^.name,
+      PMYSQL_FIELD(FieldHandle)^.name_length, ConSettings^.ClientCodePage^.CP);
+    Result.ColumnName := PRawToUnicode(PMYSQL_FIELD(FieldHandle)^.org_name,
+      PMYSQL_FIELD(FieldHandle)^.org_name_length, ConSettings^.ClientCodePage^.CP);
+    Result.TableName := PRawToUnicode(PMYSQL_FIELD(FieldHandle)^.org_table,
+      PMYSQL_FIELD(FieldHandle)^.org_table_length, ConSettings^.ClientCodePage^.CP);
+    Result.SchemaName := PRawToUnicode(PMYSQL_FIELD(FieldHandle)^.db,
+      PMYSQL_FIELD(FieldHandle)^.db_length, ConSettings^.ClientCodePage^.CP);
+    Result.CatalogName := PRawToUnicode(PMYSQL_FIELD(FieldHandle)^.catalog,
+      PMYSQL_FIELD(FieldHandle)^.catalog_length, ConSettings^.ClientCodePage^.CP);
+    //Result.DefaultValue := PRawToUnicode(PMYSQL_FIELD(FieldHandle)^.def,
+      //PMYSQL_FIELD(FieldHandle)^.def_length, ConSettings^.ClientCodePage^.CP);
+    {$ELSE}
+    Result.ColumnLabel := ConSettings^.ConvFuncs.ZRawToString(PMYSQL_FIELD(FieldHandle)^.name, ConSettings^.ClientCodePage^.CP, ConSettings^.CTRL_CP);
+    Result.ColumnName := ConSettings^.ConvFuncs.ZRawToString(PMYSQL_FIELD(FieldHandle)^.org_name, ConSettings^.ClientCodePage^.CP, ConSettings^.CTRL_CP);
+    Result.TableName := ConSettings^.ConvFuncs.ZRawToString(PMYSQL_FIELD(FieldHandle)^.org_table, ConSettings^.ClientCodePage^.CP, ConSettings^.CTRL_CP);
+    Result.SchemaName := ConSettings^.ConvFuncs.ZRawToString(PMYSQL_FIELD(FieldHandle)^.db, ConSettings^.ClientCodePage^.CP, ConSettings^.CTRL_CP);
+    Result.CatalogName := ConSettings^.ConvFuncs.ZRawToString(PMYSQL_FIELD(FieldHandle)^.catalog, ConSettings^.ClientCodePage^.CP, ConSettings^.CTRL_CP);
+    //Result.DefaultValue := ConSettings^.ConvFuncs.ZRawToString(PMYSQL_FIELD(FieldHandle)^.def, ConSettings^.ClientCodePage^.CP, ConSettings^.CTRL_CP);
+    {$ENDIF}
+    Result.ReadOnly := (PMYSQL_FIELD(FieldHandle)^.table = nil);
     Result.Writable := not Result.ReadOnly;
-    Result.ColumnType := ConvertMySQLHandleToSQLType(PlainDriver,
-        FieldHandle, FieldFlags, ConSettings.CPType);
-    FieldLength:=PlainDriver.GetFieldLength(FieldHandle);
+    Result.ColumnType := ConvertMySQLHandleToSQLType(FieldHandle, ConSettings.CPType);
+    FieldLength := PMYSQL_FIELD(FieldHandle)^.length;
     //EgonHugeist: arrange the MBCS field DisplayWidth to a proper count of Chars
 
     if Result.ColumnType in [stString, stUnicodeString, stAsciiStream, stUnicodeStream] then
@@ -597,7 +623,7 @@ begin
       Result.ColumnCodePage := High(Word);
 
     if Result.ColumnType in [stString, stUnicodeString] then
-       case PlainDriver.GetFieldCharsetNr(FieldHandle) of
+       case PMYSQL_FIELD(FieldHandle)^.charsetnr of
         1, 84, {Big5}
         95, 96, {cp932 japanese}
         19, 85, {euckr}
@@ -635,21 +661,13 @@ begin
         end;
       end
     else
-      Result.Precision := min(MaxBlobSize,FieldLength);
-
-    if PlainDriver.GetFieldType(FieldHandle) in [FIELD_TYPE_BLOB,FIELD_TYPE_MEDIUM_BLOB,FIELD_TYPE_LONG_BLOB,FIELD_TYPE_STRING,
-       FIELD_TYPE_VAR_STRING] then
-      if bUseResult then  //PMYSQL_FIELD(Field)^.max_length not valid
-        Result.MaxLenghtBytes := Result.Precision
-      else
-        Result.MaxLenghtBytes := PlainDriver.GetFieldMaxLength(FieldHandle)
-    else
-      Result.MaxLenghtBytes := FieldLength;
-    Result.Scale := PlainDriver.GetFieldDecimals(FieldHandle);
-    Result.AutoIncrement := (AUTO_INCREMENT_FLAG and FieldFlags <> 0) or
-      (TIMESTAMP_FLAG and FieldFlags <> 0);
-    Result.Signed := (UNSIGNED_FLAG and FieldFlags) = 0;
-    if NOT_NULL_FLAG and FieldFlags <> 0 then
+      Result.Precision := Integer(FieldLength)*Ord(not (PMYSQL_FIELD(FieldHandle)^._type in
+        [FIELD_TYPE_BLOB, FIELD_TYPE_TINY_BLOB, FIELD_TYPE_MEDIUM_BLOB, FIELD_TYPE_LONG_BLOB]));
+    Result.Scale := PMYSQL_FIELD(FieldHandle)^.decimals;
+    Result.AutoIncrement := (AUTO_INCREMENT_FLAG and PMYSQL_FIELD(FieldHandle)^.flags <> 0) or
+      (TIMESTAMP_FLAG and PMYSQL_FIELD(FieldHandle)^.flags <> 0);
+    Result.Signed := (UNSIGNED_FLAG and PMYSQL_FIELD(FieldHandle)^.flags) = 0;
+    if NOT_NULL_FLAG and PMYSQL_FIELD(FieldHandle)^.flags <> 0 then
       Result.Nullable := ntNoNulls
     else
       Result.Nullable := ntNullable;
@@ -827,7 +845,7 @@ begin
                     GetValidatedAnsiStringFromBuffer(TempBlob.GetBuffer,
                       TempBlob.Length, ConSettings), ConSettings, True);
             end;
-          end
+         end
           else
             Result := 'NULL';
         end;
@@ -835,5 +853,32 @@ begin
   end;
 end;
 
+procedure ReverseBytes(const Src, Dest: Pointer; Len: Byte);
+var b: Byte;
+  P: PAnsiChar;
+begin
+  Len := Len -1;
+  P := PAnsiChar(Src)+Len;
+  for b := Len downto 0 do
+    (PAnsiChar(Dest)+B)^ := (P-B)^;
+end;
+
+function ReverseWordBytes(Src: Pointer): Word;
+begin
+  (PAnsiChar(@Result)+1)^ := PAnsiChar(Src)^;
+  PAnsiChar(@Result)^ := (PAnsiChar(Src)+1)^;
+end;
+
+function ReverseLongWordBytes(Src: Pointer; Len: Byte): LongWord;
+begin
+  Result := 0;
+  ReverseBytes(Src, @Result, Len);
+end;
+
+function ReverseQuadWordBytes(Src: Pointer; Len: Byte): UInt64;
+begin
+  Result := 0;
+  ReverseBytes(Src, @Result, Len);
+end;
 
 end.

@@ -385,13 +385,9 @@ end;
 procedure RaiseSQLException(E: Exception);
 begin
   if E is EZSQLException then
-  begin
-    raise EZSQLException.CreateClone(EZSQLException(E));
-  end
+    raise EZSQLException.CreateClone(EZSQLException(E))
   else
-  begin
     raise EZSQLException.Create(E.Message);
-  end;
 end;
 
 {**
@@ -811,7 +807,7 @@ begin
     {$ENDIF}
 end;
 
-{$IF defined(ENABLE_MYSQL) or defined(ENABLE_POSTGRESQL) or defined(ENABLE_INTERBASE)}
+{$IF defined(ENABLE_MYSQL) or defined(ENABLE_POSTGRESQL) or defined(ENABLE_INTERBASE) or defined(EANABLE_ASA)}
 procedure AssignOutParamValuesFromResultSet(const ResultSet: IZResultSet;
   OutParamValues: TZVariantDynArray; const OutParamCount: Integer;
   const ParamTypes: array of ShortInt);
@@ -940,7 +936,7 @@ begin
     case TestEncoding(Bytes, Size, ConSettings) of
       ceDefault: ZSetString(Buffer, Size, Result);
       ceAnsi:
-        if ConSettings.ClientCodePage.Encoding = ceAnsi then
+        if ConSettings.ClientCodePage.Encoding in [ceAnsi, ceUTF16] then
           if ( ConSettings.CTRL_CP = zCP_UTF8) or (ConSettings.CTRL_CP = ConSettings.ClientCodePage.CP) then //second test avoids encode the string twice
             ZSetString(Buffer, Size, Result)  //should be exact
           else

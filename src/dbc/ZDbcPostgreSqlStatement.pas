@@ -66,7 +66,14 @@ type
 
   { TZPostgreSQLPreparedStatement }
 
-  TZPostgreSQLPreparedStatement = class(TZAbstractPreparedStatement)
+  {** PostgreSQL Prepared SQL statement interface. }
+  IZPGSQLPreparedStatement = interface(IZPreparedStatement)
+    ['{EED35CAA-8F36-4639-8B67-32DF237E8F6F}']
+    function GetLastQueryHandle: PZPostgreSQLResult;
+  end;
+
+  TZPostgreSQLPreparedStatement = class(TZAbstractPreparedStatement,
+    IZPGSQLPreparedStatement)
   private
     FRawPlanName: RawByteString;
     FPostgreSQLConnection: IZPostgreSQLConnection;
@@ -90,6 +97,7 @@ type
       Connection: IZPostgreSQLConnection; const SQL: string; Info: TStrings); overload;
     constructor Create(PlainDriver: IZPostgreSQLPlainDriver;
       Connection: IZPostgreSQLConnection; Info: TStrings); overload;
+    function GetLastQueryHandle: PZPostgreSQLResult;
 
     function ExecuteQueryPrepared: IZResultSet; override;
     function ExecuteUpdatePrepared: Integer; override;
@@ -163,7 +171,7 @@ type
   end;
 
   {** Implements a specialized cached resolver for PostgreSQL. }
-  TZPostgreSQLCachedResolver = class(TZGenericCachedResolver, IZCachedResolver)
+  TZPostgreSQLCachedResolver = class(TZGenericCachedResolver)
   protected
     function CheckKeyColumn(ColumnIndex: Integer): Boolean; override;
   end;
@@ -192,7 +200,7 @@ begin
     (Connection as IZPostgreSQLConnection).IsOidAsBlob;
   FPostgreSQLConnection := Connection;
   FPlainDriver := PlainDriver;
-  ResultSetType := rtScrollInsensitive;
+  //ResultSetType := rtScrollInsensitive;
   FConnectionHandle := Connection.GetConnectionHandle;
   Findeterminate_datatype := False;
   FUndefinedVarcharAsStringLength := StrToInt(ZDbcUtils.DefineStatementParameter(Self, 'Undefined_Varchar_AsString_Length' , '0'));
@@ -205,6 +213,11 @@ constructor TZPostgreSQLPreparedStatement.Create(PlainDriver: IZPostgreSQLPlainD
   Connection: IZPostgreSQLConnection; Info: TStrings);
 begin
   Create(PlainDriver, Connection, SQL, Info);
+end;
+
+function TZPostgreSQLPreparedStatement.GetLastQueryHandle: PZPostgreSQLResult;
+begin
+  Result := QueryHandle;
 end;
 
 function TZPostgreSQLPreparedStatement.CreateResultSet(
@@ -267,13 +280,8 @@ end;
 function TZPostgreSQLPreparedStatement.ExecuteQueryPrepared: IZResultSet;
 begin
   Result := nil;
-
   Prepare;
-  if FOpenResultSet <> nil then
-  begin
-    IZResultSet(FOpenResultSet).Close;
-    FOpenResultSet := nil;
-  end;
+  PrepareOpenResultSetForReUse;
   if Prepared  then
     if Findeterminate_datatype then
       QueryHandle := ExecuteInternal(PrepareAnsiSQLQuery, eicExecute)
@@ -285,7 +293,10 @@ begin
   else
     QueryHandle := ExecuteInternal(ASQL, eicExecute);
   if QueryHandle <> nil then
-    Result := CreateResultSet(QueryHandle)
+    if Assigned(FOpenResultSet) then
+      Result := IZResultSet(FOpenResultSet)
+    else
+      Result := CreateResultSet(QueryHandle)
   else
     Result := nil;
   inherited ExecuteQueryPrepared;
@@ -320,7 +331,7 @@ begin
   if QueryHandle <> nil then
   begin
     Result := RawToIntDef(FPlainDriver.GetCommandTuples(QueryHandle), 0);
-    FPlainDriver.Clear(QueryHandle);
+    FPlainDriver.PQclear(QueryHandle);
   end;
 
   { Autocommit statement. }
@@ -343,7 +354,7 @@ var
   ResultStatus: TZPostgreSQLExecStatusType;
 begin
   Prepare;
-
+  PrepareLastResultSetForReUse;
   if Prepared  then
     if Findeterminate_datatype then
       QueryHandle := ExecuteInternal(PrepareAnsiSQLQuery, eicExecute)
@@ -356,26 +367,27 @@ begin
     QueryHandle := ExecuteInternal(ASQL, eicExecute);
 
   { Process queries with result sets }
-  ResultStatus := FPlainDriver.GetResultStatus(QueryHandle);
+  ResultStatus := FPlainDriver.PQresultStatus(QueryHandle);
   case ResultStatus of
     PGRES_TUPLES_OK:
       begin
         Result := True;
-        LastResultSet := CreateResultSet(QueryHandle);
+        if not Assigned(LastResultSet) then
+          LastResultSet := CreateResultSet(QueryHandle);
       end;
     PGRES_COMMAND_OK:
       begin
         Result := False;
         LastUpdateCount := RawToIntDef(
           FPlainDriver.GetCommandTuples(QueryHandle), 0);
-        FPlainDriver.Clear(QueryHandle);
+        FPlainDriver.PQclear(QueryHandle);
       end;
     else
       begin
         Result := False;
         LastUpdateCount := RawToIntDef(
           FPlainDriver.GetCommandTuples(QueryHandle), 0);
-        FPlainDriver.Clear(QueryHandle);
+        FPlainDriver.PQclear(QueryHandle);
       end;
   end;
 
@@ -426,7 +438,7 @@ begin
     if not Findeterminate_datatype then
     begin
       QueryHandle := ExecuteInternal(GetDeallocateSQL, eicUnprepStmt);
-      FPlainDriver.Clear(QueryHandle);
+      FPlainDriver.PQclear(QueryHandle);
       FPostgreSQLConnection.UnregisterPreparedStmtName({$IFDEF UNICODE}ASCII7ToUnicodeString{$ENDIF}(FRawPlanName));
     end;
   end;
@@ -468,7 +480,7 @@ begin
         end;
         if not Findeterminate_datatype then
         begin
-          FPlainDriver.Clear(Result);
+          FPlainDriver.PQclear(Result);
           FPostgreSQLConnection.RegisterPreparedStmtName({$IFDEF UNICODE}ASCII7ToUnicodeString{$ENDIF}(FRawPlanName));
         end;
       end;
@@ -561,7 +573,7 @@ begin
         if not Findeterminate_datatype then
         begin
           FPostgreSQLConnection.RegisterPreparedStmtName({$IFDEF UNICODE}ASCII7ToUnicodeString{$ENDIF}(FRawPlanName));
-          FPlainDriver.Clear(Result);
+          FPlainDriver.PQclear(Result);
         end;
       end;
     eicExecPrepStmt:
