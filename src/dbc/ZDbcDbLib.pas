@@ -346,6 +346,14 @@ begin
         GetPlainDriver.dbsetlpwd(LoginRec, PAnsiChar(AnsiString(Password)));
         LogMessage := LogMessage + ' AS USER "'+ConSettings^.User+'"';
       end;
+
+      if FFreeTDS then begin
+        S := Info.Values['codepage'];
+        if S <> '' then begin
+          GetPlainDriver.dbSetLCharSet(LoginRec, Pointer({$IFDEF UNICODE}UnicodeStringToAscii7{$ENDIF}(S)));
+          CheckCharEncoding(s);
+        end;
+      end;
     end;
 
     //sybase specific parameters
@@ -360,8 +368,13 @@ begin
     end;
 
     CheckDBLibError(lcConnect, LogMessage);
-    FHandle := GetPlainDriver.dbOpen(LoginRec, PAnsiChar(AnsiString(HostName)));
+    s := HostName;
+    // add port number if FreeTDS is used, the port number was specified and no server instance name was given:
+    if FreeTDS and (Port <> 0) and (ZFastCode.Pos('\', HostName) = 0)  then s := s + ':' + ZFastCode.IntToStr(Port);
+    FHandle := GetPlainDriver.dbOpen(LoginRec, PAnsiChar(AnsiString(s)));
     CheckDBLibError(lcConnect, LogMessage);
+    if not Assigned(FHandle) then raise EZSQLException.Create('The connection to the server failed, no proper handle was returned. Insufficient memory, unable to connect for any reason. ');
+
     DriverManager.LogMessage(lcConnect, ConSettings^.Protocol, LogMessage);
   finally
     GetPLainDriver.dbLoginFree(LoginRec);
@@ -436,7 +449,7 @@ begin
 
   inherited Open;
 
-  if FProvider = dpMsSQL then
+  if (FProvider = dpMsSQL) and (not FreeTDS) then
   begin
   {note: this is a hack from a user-request of synopse project!
     Purpose is to notify Zeos all Character columns are
@@ -447,7 +460,7 @@ begin
     Else all results are invalid!!!!! Just to invoke later questions, reports!}
     FDisposeCodePage := True;
     ConSettings^.ClientCodePage := New(PZCodePage);
-    ConSettings^.ClientCodePage^.CP := ZDefaultSystemCodePage; //need a tempory CP for the SQL preparation
+    ConSettings^.ClientCodePage^.CP := ZOSCodePage; //need a tempory CP for the SQL preparation
     ConSettings^.ClientCodePage^.Encoding := ceAnsi;
     ConSettings^.ClientCodePage^.Name := DetermineMSServerCollation;
     FServerAnsiCodePage := DetermineMSServerCodePage(ConSettings^.ClientCodePage^.Name);

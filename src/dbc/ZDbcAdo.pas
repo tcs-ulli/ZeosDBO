@@ -235,11 +235,11 @@ var
 begin
   try
     FAdoConnection.Execute(SQL, RowsAffected, adExecuteNoRecords);
-    DriverManager.LogMessage(lcExecute, ConSettings^.Protocol, ConSettings^.ConvFuncs.ZUnicodeToRaw(SQL, ZDefaultSystemCodePage));
+    DriverManager.LogMessage(lcExecute, ConSettings^.Protocol, ConSettings^.ConvFuncs.ZUnicodeToRaw(SQL, ZOSCodePage));
   except
     on E: Exception do
     begin
-      DriverManager.LogError(lcExecute, ConSettings^.Protocol, ConSettings^.ConvFuncs.ZUnicodeToRaw(SQL, ZDefaultSystemCodePage), 0,
+      DriverManager.LogError(lcExecute, ConSettings^.Protocol, ConSettings^.ConvFuncs.ZUnicodeToRaw(SQL, ZOSCodePage), 0,
         ConvertEMsgToRaw(E.Message, ConSettings^.ClientCodePage^.CP));
       raise;
     end;
@@ -280,7 +280,7 @@ begin
     FAdoConnection.Set_CursorLocation(adUseClient);
     DriverManager.LogMessage(lcConnect, ConSettings^.Protocol, LogMessage);
     ConSettings^.AutoEncode := {$IFDEF UNICODE}False{$ELSE}True{$ENDIF};
-    CheckCharEncoding('CP_ADO');
+    CheckCharEncoding('CP_UTF16');
   except
     on E: Exception do
     begin

@@ -116,8 +116,9 @@ type
     function GetConnectionHandle: PZPostgreSQLConnect;
     function GetServerMajorVersion: Integer;
     function GetServerMinorVersion: Integer;
-    function EncodeBinary(const Value: RawByteString): RawByteString; overload;
-    function EncodeBinary(const Value: TBytes): RawByteString; overload;
+    function EncodeBinary(Buf: Pointer; Len: Integer; Quoted: Boolean): RawByteString; overload;
+    function EncodeBinary(const Value: TBytes; Quoted: Boolean): RawByteString; overload;
+    function EscapeString(const FromChar: PAnsiChar; len: NativeUInt; Quoted: Boolean): RawByteString; overload;
     procedure RegisterPreparedStmtName(const value: String);
     procedure UnregisterPreparedStmtName(const value: String);
     function ClientSettingsChanged: Boolean;
@@ -156,8 +157,10 @@ type
     procedure LoadServerVersion;
     procedure OnPropertiesChange(Sender: TObject); override;
     procedure SetStandardConformingStrings(const Value: Boolean);
-    function EncodeBinary(const Value: RawByteString): RawByteString; overload;
-    function EncodeBinary(const Value: TBytes): RawByteString; overload;
+    function EncodeBinary(const Value: RawByteString; Quoted: Boolean): RawByteString; overload;
+    function EncodeBinary(const Value: TBytes; Quoted: Boolean): RawByteString; overload;
+    function EncodeBinary(Buf: Pointer; Len: Integer; Quoted: Boolean): RawByteString; overload;
+    function EscapeString(const FromChar: PAnsiChar; len: NativeUInt; Quoted: Boolean): RawByteString; overload;
     procedure RegisterPreparedStmtName(const value: String);
     procedure UnregisterPreparedStmtName(const value: String);
     function ClientSettingsChanged: Boolean;
@@ -198,7 +201,7 @@ type
     function GetServerSubVersion: Integer;
 
     function PingServer: Integer; override;
-    function EscapeString(Value: RawByteString): RawByteString; override;
+    function EscapeString(const Value: RawByteString): RawByteString; overload; override;
     function GetBinaryEscapeString(const Value: RawByteString): String; overload; override;
     function GetBinaryEscapeString(const Value: TBytes): String; overload; override;
     function GetEscapeString(const Value: ZWideString): ZWideString; overload; override;
@@ -215,8 +218,8 @@ type
   public
     function GetCurrentValue: Int64; override;
     function GetNextValue: Int64; override;
-    function  GetCurrentValueSQL:String;override;
-    function  GetNextValueSQL:String;override;
+    function GetCurrentValueSQL:String;override;
+    function GetNextValueSQL:String;override;
   end;
 
 
@@ -627,24 +630,18 @@ end;
   @param Value the Binary String
   @result the encoded String
 }
-function TZPostgreSQLConnection.EncodeBinary(const Value: TBytes): RawByteString;
-var Temp: RawByteString;
+function TZPostgreSQLConnection.EncodeBinary(const Value: TBytes; Quoted: Boolean): RawByteString;
 begin
-  ZSetString(PAnsiChar(Value), Length(Value), Temp{%H-});
-  Result := EncodeBinary(Temp);
+  Result := EncodeBinary(Pointer(Value), Length(Value), Quoted);
 end;
 {**
   Encodes a Binary-AnsiString to a PostgreSQL format
   @param Value the Binary String
   @result the encoded String
 }
-function TZPostgreSQLConnection.EncodeBinary(const Value: RawByteString): RawByteString;
+function TZPostgreSQLConnection.EncodeBinary(const Value: RawByteString; Quoted: Boolean): RawByteString;
 begin
-  if ( Self.GetServerMajorVersion > 7 ) or
-    ((GetServerMajorVersion = 7) and (GetServerMinorVersion >= 3)) then
-    Result := GetPlainDriver.EncodeBYTEA(Value, GetConnectionHandle)
-  else
-    Result := ZDbcPostgreSqlUtils.EncodeBinaryString(Value);
+  Result := EncodeBinary(Pointer(Value), Length(Value), Quoted);
 end;
 
 procedure TZPostgreSQLConnection.RegisterPreparedStmtName(const value: String);
@@ -1194,8 +1191,8 @@ the connection is resumed.
 } 
 function TZPostgreSQLConnection.PingServer: Integer; 
 const 
-  PING_ERROR_ZEOSCONNCLOSED = -1; 
-var 
+  PING_ERROR_ZEOSCONNCLOSED = -1;
+var
   Closing: boolean;
   res: PZPostgreSQLResult;
   isset: boolean;
@@ -1223,9 +1220,9 @@ begin
   end;
 end;
 
-function TZPostgreSQLConnection.EscapeString(Value: RawByteString): RawByteString;
+function TZPostgreSQLConnection.EscapeString(const Value: RawByteString): RawByteString;
 begin
-  Result := PlainDriver.EscapeString(Self.FHandle, Value, ConSettings)
+  Result := EscapeString(Pointer(Value), Length(Value), True)
 end;
 {**
   Creates a sequence generator object.
@@ -1249,7 +1246,7 @@ end;
 }
 function TZPostgreSQLConnection.GetBinaryEscapeString(const Value: RawByteString): String;
 begin
-  Result := String(EncodeBinary(Value));
+  Result := String(EncodeBinary(Value, True));
   if GetAutoEncodeStrings then
     Result := GetDriver.GetTokenizer.GetEscapeString(Result);
 end;
@@ -1266,7 +1263,7 @@ function TZPostgreSQLConnection.GetBinaryEscapeString(const Value: TBytes): Stri
 var Tmp: RawByteString;
 begin
   ZSetString(PAnsiChar(Value), Length(Value), Tmp{%H-});
-  Result := {$IFDEF UNICODE}ASCII7ToUnicodeString{$ENDIF}(EncodeBinary(Tmp));
+  Result := {$IFDEF UNICODE}ASCII7ToUnicodeString{$ENDIF}(EncodeBinary(Tmp, True));
   if GetAutoEncodeStrings then
     Result := GetDriver.GetTokenizer.GetEscapeString(Result);
 end;
@@ -1281,7 +1278,7 @@ end;
 }
 function TZPostgreSQLConnection.GetEscapeString(const Value: ZWideString): ZWideString;
 begin
-  Result := ConSettings^.ConvFuncs.ZRawToUnicode(GetPlainDriver.EscapeString(FHandle, ConSettings.ConvFuncs.ZUnicodeToRaw(Value, ConSettings^.ClientCodePage^.CP), ConSettings), ConSettings^.ClientCodePage^.CP);
+  Result := ConSettings^.ConvFuncs.ZRawToUnicode(EscapeString(ConSettings.ConvFuncs.ZUnicodeToRaw(Value, ConSettings^.ClientCodePage^.CP)), ConSettings^.ClientCodePage^.CP);
   {$IFDEF UNICODE}
   if GetAutoEncodeStrings then
     Result := GetDriver.GetTokenizer.GetEscapeString(Result);
@@ -1290,7 +1287,7 @@ end;
 
 function TZPostgreSQLConnection.GetEscapeString(const Value: RawByteString): RawByteString;
 begin
-  Result := GetPlainDriver.EscapeString(FHandle, Value, ConSettings);
+  Result := EscapeString(Value);
   {$IFNDEF UNICODE}
   if GetAutoEncodeStrings then
     Result := GetDriver.GetTokenizer.GetEscapeString(Result);
@@ -1411,6 +1408,52 @@ end;
 function TZPostgreSQLSequence.GetNextValueSQL: String;
 begin
   result := ' NEXTVAL('''+Name+''') ';
+end;
+
+function TZPostgreSQLConnection.EncodeBinary(Buf: Pointer;
+  Len: Integer; Quoted: Boolean): RawByteString;
+var
+  escapedBuf: PAnsiChar;
+  escapedLen: LongWord;
+begin
+  if (Buf = nil) or (Len = 0) then
+    if Quoted then
+      Result := '''''' else
+      Result := ''
+  else if GetPlainDriver.SupportsEncodeBYTEA then begin
+    escapedBuf := GetPlainDriver.EscapeBytea(GetConnectionHandle, Buf, Len, @escapedLen);
+    escapedLen := escapedLen -1; //return length including #0
+    ZSetString(nil, escapedLen+Byte(Ord(Quoted) shl 1), Result);
+    if Quoted then begin
+      Result[1] := '''';
+      Result[Length(Result)] := '''';
+    end;
+    System.Move(escapedBuf^, Result[1+Ord(Quoted)], escapedLen);
+    GetPlainDriver.FreeMem(escapedBuf);
+  end else
+    Result := ZDbcPostgreSqlUtils.EncodeBinaryString(Buf, Len, Quoted);
+end;
+
+function TZPostgreSQLConnection.EscapeString(const FromChar: PAnsiChar;
+  len: NativeUInt; Quoted: Boolean): RawByteString;
+var
+  Buf: Array[0..2048] of AnsiChar;
+  iError: Integer;
+begin
+  if GetPlainDriver.SupportsStringEscaping(FClientSettingsChanged) then begin
+    if (Len+Byte(Ord(Quoted))) shl 1 > (SizeOf(Buf)-1) then begin
+      SetLength(Result, (Len+Byte(Ord(Quoted))) shl 1);
+      SetLength(Result, GetPlainDriver.EscapeString(FHandle, PAnsiChar(Pointer(Result))+Ord(Quoted), FromChar, Len, @iError)+(Byte(Ord(Quoted)) shl 1));
+    end else
+      ZSetString(@Buf[0], GetPlainDriver.EscapeString(FHandle, @Buf[0+Ord(Quoted)], FromChar, Len, @iError)+(Byte(Ord(Quoted) shl 1)), Result);
+    if iError <> 0 then
+      raise Exception.Create('Wrong string escape behavior!');
+    if Quoted then begin
+      Result[1] := '''';
+      Result[Length(Result)] := '''';
+    end;
+  end else
+    Result := ZDbcPostgreSqlUtils.PGEscapeString(FromChar, Len, ConSettings, Quoted);
 end;
 
 initialization

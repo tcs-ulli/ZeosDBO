@@ -41,6 +41,7 @@
 {********************************************************@}
 //common compilation directives
 {$DEFINE ZEOS72UP}
+{$DEFINE ZEOS73UP}
 
 // Uncomment these defines to disable some DB drivers (reduce binary size)
 {.$DEFINE ZEOS_DISABLE_MYSQL}
@@ -54,6 +55,7 @@
 {.$DEFINE ZEOS_DISABLE_POOLED}
 
 {.$DEFINE WITH_ZSTRINGFIELDS}
+
 
 // In Version 6.1.5 there are several bugs with the TZSQLMetadata-Component
 // For Version 6.5.0 you should uncomment the following line
@@ -69,6 +71,7 @@
 // ENGLISH, GERMAN, PORTUGUESE, DUTCH, SPANISH, ROMANA, INDONESIAN, RUSSIAN, CZECH, POLISH, FRENCH
 {$DEFINE ENGLISH} //see \core\ZMessages.pas
 
+{$DEFINE MISS_MATH_NATIVEUINT_MIN_MAX_OVERLOAD} //IDE can't determine overload for NativeUInt(64-Bit)
  // Compilation directives for Lazarus/FPC
 {$IFDEF FPC}
   {$I ZeosLazarus.inc}
@@ -123,7 +126,6 @@
     {$DEFINE VER150BELOW}                   //found in ZTestBugCompPostgreSql.pas
     {$IF CompilerVersion >= 16} //Delphi 8+
       {$IF CompilerVersion >= 17} //Delphi 2005+
-        {$DEFINE USE_RAW2WIDE_PROCS}   // compiler related: D7/8 is less optimal for fast mapping -> use MultiByteToWidechar instead for known CP's
         {$DEFINE WITH_INLINE}          // compiler supports inline methodes
 
         {$IF CompilerVersion >= 18} //Delphi 2006+
@@ -333,6 +335,7 @@
 {$IFOPT R-}
 {$DEFINE DISABLE_CHECKING}
 {$ENDIF}
+
 
 // Enables MySQL support in TZConnection/TZDataset
 {$IFNDEF ZEOS_DISABLE_MYSQL}

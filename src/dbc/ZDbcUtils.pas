@@ -148,18 +148,6 @@ function GetSQLHexWideString(Value: PAnsiChar; Len: Integer; ODBC: Boolean = Fal
 function GetSQLHexAnsiString(Value: PAnsiChar; Len: Integer; ODBC: Boolean = False): RawByteString;
 function GetSQLHexString(Value: PAnsiChar; Len: Integer; ODBC: Boolean = False): String;
 
-{**
-  Returns a FieldSize in Bytes dependend to the FieldType and CharWidth
-  @param <code>TZSQLType</code> the Zeos FieldType
-  @param <code>Integer</code> the Current given FieldLength
-  @param <code>Integer</code> the Current CountOfByte/Char
-  @param <code>Boolean</code> does the Driver returns the FullSizeInBytes
-  @returns <code>Integer</code> the count of AnsiChars for Field.Size * SizeOf(Char)
-}
-function GetFieldSize(const SQLType: TZSQLType;ConSettings: PZConSettings;
-  const Precision, CharWidth: Integer; DisplaySize: PInteger = nil;
-    SizeInBytes: Boolean = False): Integer;
-
 function WideStringStream(const AString: WideString): TStream;
 
 function TokenizeSQLQueryRaw(var SQL: {$IF defined(FPC) and defined(WITH_RAWBYTESTRING)}RawByteString{$ELSE}String{$IFEND}; Const ConSettings: PZConSettings;
@@ -202,8 +190,7 @@ function GetValidatedAnsiString(const Ansi: RawByteString;
 function GetValidatedUnicodeStream(const Buffer: Pointer; Size: Cardinal;
   ConSettings: PZConSettings; FromDB: Boolean): TStream; overload;
 
-function GetValidatedUnicodeStream(const Ansi: RawByteString;
-  ConSettings: PZConSettings; FromDB: Boolean): TStream; overload;
+function ZSQLTypeToBuffSize(SQLType: TZSQLType): Integer;
 
 implementation
 
@@ -472,25 +459,18 @@ end;
 function GetSQLHexWideString(Value: PAnsiChar; Len: Integer; ODBC: Boolean = False): ZWideString;
 var P: PWideChar;
 begin
-  Result := ''; //init speeds setlength x2
-  if ODBC then
-  begin
-    SetLength(Result,(Len shl 1)+2); //shl 1 = * 2 but faster
+  ZSetString(nil, ((Len+1) shl 1)+Ord(not Odbc), Result{%H-});
+  if ODBC then begin
     P := Pointer(Result);
     P^ := '0';
-    Inc(P);
-    P^ := 'x';
-    Inc(P);
+    (P+1)^ := 'x';
+    Inc(P, 2);
     ZBinToHex(Value, P, Len);
-  end
-  else
-  begin
-    SetLength(Result, (Len shl 1)+3); //shl 1 = * 2 but faster
+  end else begin
     P := Pointer(Result);
     P^ := 'x';
-    Inc(P);
-    P^ := #39;
-    Inc(P);
+    (P+1)^ := #39;
+    Inc(P,2);
     ZBinToHex(Value, P, Len);
     Inc(P, Len shl 1); //shl 1 = * 2 but faster
     P^ := #39;
@@ -500,25 +480,18 @@ end;
 function GetSQLHexAnsiString(Value: PAnsiChar; Len: Integer; ODBC: Boolean = False): RawByteString;
 var P: PAnsiChar;
 begin
-  Result := ''; //init speeds setlength x2
-  if ODBC then
-  begin
-    System.SetLength(Result,(Len shl 1)+2);//shl 1 = * 2 but faster
+  ZSetString(nil, ((Len+1) shl 1)+Ord(not Odbc), Result{%H-});
+  if ODBC then begin
     P := Pointer(Result);
     P^ := '0';
-    Inc(P);
-    P^ := 'x';
-    Inc(P);
+    (P+1)^ := 'x';
+    Inc(P, 2);
     ZBinToHex(Value, P, Len);
-  end
-  else
-  begin
-    SetLength(Result, (Len shl 1)+3); //shl 1 = * 2 but faster
+  end else begin
     P := Pointer(Result);
     P^ := 'x';
-    Inc(P);
-    P^ := #39;
-    Inc(P);
+    (P+1)^ := #39;
+    Inc(P,2);
     ZBinToHex(Value, P, Len);
     Inc(P, Len shl 1); //shl 1 = * 2 but faster
     P^ := #39;
@@ -532,57 +505,6 @@ begin
   {$ELSE}
   Result := GetSQLHexAnsiString(Value, Len, ODBC);
   {$ENDIF}
-end;
-
-{**
-  Returns a FieldSize in Bytes dependend to the FieldType and CharWidth
-  @param <code>TZSQLType</code> the Zeos FieldType
-  @param <code>Integer</code> the Current given FieldLength
-  @param <code>Integer</code> the Current CountOfByte/Char
-  @param <code>Boolean</code> does the Driver returns the FullSizeInBytes
-  @returns <code>Integer</code> the count of AnsiChars for Field.Size * SizeOf(Char)
-}
-function GetFieldSize(const SQLType: TZSQLType; ConSettings: PZConSettings;
-  const Precision, CharWidth: Integer; DisplaySize: PInteger = nil;
-    SizeInBytes: Boolean = False): Integer;
-var
-  TempPrecision: Integer;
-begin
-  if ( SQLType in [stString, stUnicodeString] ) and ( Precision <> 0 )then
-  begin
-    if SizeInBytes then
-      TempPrecision := Precision div CharWidth
-    else
-      TempPrecision := Precision;
-
-    if Assigned(DisplaySize) then
-      DisplaySize^ := TempPrecision;
-
-    if SQLType = stString then
-      //the RowAccessor assumes SizeOf(Char)*Precision+SizeOf(Char)
-      //the Field assumes Precision*SizeOf(Char)
-      {$IFDEF UNICODE}
-      if ConSettings^.ClientCodePage^.CharWidth >= 2 then //All others > 3 are UTF8
-        Result := TempPrecision shl 1 //add more mem for a reserved thirt byte
-      else //two and one byte AnsiChars are one WideChar
-        Result := TempPrecision
-      {$ELSE}
-        if ( ConSettings^.CPType = cCP_UTF8 ) or (ConSettings^.CTRL_CP = zCP_UTF8) then
-          Result := TempPrecision shl 2 // = *4
-        else
-          Result := TempPrecision * CharWidth
-      {$ENDIF}
-    else //stUnicodeString
-      //UTF8 can pickup LittleEndian/BigEndian 4 Byte Chars
-      //the RowAccessor assumes 2*Precision+2!
-      //the Field assumes 2*Precision ??Does it?
-      if CharWidth > 2 then
-        Result := TempPrecision shl 1
-      else
-        Result := TempPrecision;
-  end
-  else
-    Result := Precision;
 end;
 
 function WideStringStream(const AString: WideString): TStream;
@@ -895,7 +817,7 @@ begin
       I know this can lead to pain with two byte ansi chars, but what else can i do?
     step two: detect the encoding }
 
-  if (Size mod 2 = 0) and ( ZFastCode.StrLen(PAnsiChar(Bytes)) {%H-}< Size ) then //Sure PWideChar written!! A #0 was in the byte-sequence!
+  if (Size mod 2 = 0) and ( ZFastCode.StrLen(Pointer(Bytes)) {%H-}< Size ) then //Sure PWideChar written!! A #0 was in the byte-sequence!
     result := ceUTF16
   else
     if ConSettings.AutoEncode then
@@ -926,6 +848,7 @@ function GetValidatedAnsiStringFromBuffer(const Buffer: Pointer; Size: Cardinal;
 var
   US: ZWideString; //possible com base widestring -> prevent overflow
   Bytes: TByteDynArray;
+  Encoding: TZCharEncoding;
 begin
   if Size = 0 then
     Result := ''
@@ -933,7 +856,9 @@ begin
   begin
     SetLength(Bytes, Size +2);
     System.move(Buffer^, Pointer(Bytes)^, Size);
-    case TestEncoding(Bytes, Size, ConSettings) of
+    Encoding := TestEncoding(Bytes, Size, ConSettings);
+    SetLength(Bytes, 0);
+    case Encoding of
       ceDefault: ZSetString(Buffer, Size, Result);
       ceAnsi:
         if ConSettings.ClientCodePage.Encoding in [ceAnsi, ceUTF16] then
@@ -941,36 +866,34 @@ begin
             ZSetString(Buffer, Size, Result)  //should be exact
           else
           begin
-            US := PRawToUnicode(Pointer(Bytes), Size, ConSettings.CTRL_CP);
+            US := PRawToUnicode(Buffer, Size, ConSettings.CTRL_CP);
             Result := ZUnicodeToRaw(US, ConSettings.ClientCodePage.CP)
           end
-        else  //Database expects UTF8
+        else begin  //Database expects UTF8
           if ( ConSettings.CTRL_CP = zCP_UTF8) then
-            if ZDefaultSystemCodePage = zCP_UTF8 then
-              Result := AnsiToUTF8(String(PAnsiChar(Bytes))) //Can't localize the ansi CP
+            if ZOSCodePage = zCP_UTF8 then
+              US := ZSysUtils.ASCII7ToUnicodeString(Buffer, Size) //Can't localize the ansi CP
             else
-            begin
-              US := PRawToUnicode(Pointer(Bytes), Size, ZDefaultSystemCodePage);
-              Result := ZUnicodeToRaw(US, ConSettings.ClientCodePage.CP);
-            end
+              US := PRawToUnicode(Buffer, Size, ZOSCodePage)
           else
-          begin
-            US := PRawToUnicode(Pointer(Bytes), Size, ConSettings.CTRL_CP);
-            Result := UTF8Encode(US);
-          end;
+            US := PRawToUnicode(Buffer, Size, ConSettings.CTRL_CP);
+          Result := UTF8Encode(US);
+        end;
       ceUTF8:
-        if ConSettings.ClientCodePage.Encoding = ceAnsi then //ansi expected
+        if (ConSettings.ClientCodePage.Encoding in [ceAnsi, ceUTF16]) then begin//ansi expected
           {$IFDEF WITH_LCONVENCODING}
-          Result := Consettings.PlainConvertFunc(String(PAnsiChar(Bytes)))
+          ZSetString(Buffer, Size, Result);
+          Result := Consettings.PlainConvertFunc(Result);
           {$ELSE}
-          Result := ZUnicodeToRaw(UTF8ToString(PAnsiChar(Bytes)), ConSettings.ClientCodePage.CP)
+          US := PRawToUnicode(Buffer, Size, zCP_UTF8);
+          Result := ZUnicodeToRaw(US, ConSettings.ClientCodePage.CP)
           {$ENDIF}
-         else //UTF8 Expected
+         end else //UTF8 Expected
            ZSetString(Buffer, Size, Result);  //should be exact
       ceUTF16:
         begin
           SetLength(US, Size shr 1);
-          System.Move(Bytes[0], US[1], Size);
+          System.Move(Buffer^, US[1], Size);
           if ConSettings.ClientCodePage.Encoding = ceAnsi then
             {$IFDEF WITH_LCONVENCODING}
             Result := Consettings.PlainConvertFunc(UTF8Encode(US))
@@ -1025,6 +948,7 @@ var
   Len: Integer;
   US: ZWideString;
   Bytes: TByteDynArray;
+  Encoding: TZCharEncoding;
 begin
   Result := nil;
   US := '';
@@ -1033,22 +957,25 @@ begin
     SetLength(Bytes, Size +2);
     System.move(Buffer^, Pointer(Bytes)^, Size);
     if FromDB then //do not check encoding twice
-      Result := GetValidatedUnicodeStream(PAnsiChar(Bytes), ConSettings, FromDB)
-    else
-      case TestEncoding(Bytes, Size, ConSettings) of
+      US := PRawToUnicode(Buffer, Size, ConSettings.ClientCodePage.CP)
+    else begin
+      Encoding := TestEncoding(Bytes, Size, ConSettings);
+      SetLength(Bytes, 0);
+      case Encoding of
         ceDefault: US := USASCII7ToUnicodeString(Buffer, Size);
         ceAnsi: //We've to start from the premisse we've got a Unicode string in here ):
           begin
             SetLength(US, Size shr 1);
-            System.Move(Pointer(Bytes)^, Pointer(US)^, Size);
+            System.Move(Buffer^, Pointer(US)^, Size);
           end;
         ceUTF8: US := PRawToUnicode(Buffer, size, zCP_UTF8);
         ceUTF16:
           begin
             SetLength(US, Size shr 1);
-            System.Move(Pointer(Bytes)^, Pointer(US)^, Size);
+            System.Move(Buffer^, Pointer(US)^, Size);
           end;
       end;
+    end;
 
     Len := Length(US) shl 1;
     if not Assigned(Result) and (Len > 0) then
@@ -1061,44 +988,18 @@ begin
   end;
 end;
 
-function GetValidatedUnicodeStream(const Ansi: RawByteString;
-  ConSettings: PZConSettings; FromDB: Boolean): TStream;
-var
-  Len: Integer;
-  US: ZWideString;
+function ZSQLTypeToBuffSize(SQLType: TZSQLType): Integer;
 begin
-  Result := nil;
-  if Ansi <> '' then
-  begin
-    if FromDB then
-      {$IFDEF WITH_LCONVENCODING}
-      US := UTF8ToString(Consettings.DbcConvertFunc(Ansi))
-      {$ELSE}
-      US := ZRawToUnicode(Ansi, ConSettings.ClientCodePage.CP)
-      {$ENDIF}
-    else
-      case ZDetectUTF8Encoding(Ansi) of
-        etUSASCII: US := USASCII7ToUnicodeString(Ansi);
-        etUTF8: US := PRawToUnicode(Pointer(Ansi), Length(Ansi), zCP_UTF8);
-        etAnsi:
-          {$IFDEF WITH_LCONVENCODING}
-          US := ZWideString(Ansi); //random success
-          {$ELSE}
-          if ( ConSettings.CTRL_CP = zCP_UTF8) then
-            US := ZWideString(Ansi) //random success
-          else
-            US := ZRawToUnicode(Ansi, ConSettings.CTRL_CP);
-         {$ENDIF}
-      end;
-
-    Len := Length(US)*2;
-    if Len > 0 then
-    begin
-      Result := TMemoryStream.Create;
-      Result.Size := Len;
-      System.Move(Pointer(US)^, TMemoryStream(Result).Memory^, Len);
-      Result.Position := 0;
-    end;
+  Result := 0;
+  case SQLType of
+    stUnknown: ;
+    stBoolean: Result := SizeOf(WordBool);
+    stByte, stShort: Result := 1;
+    stWord, stSmall: Result := 2;
+    stLongWord, stInteger, stFloat: Result := 4;
+    stULong, stLong, stDouble, stCurrency, stDate, stTime, stTimestamp: Result := 8;
+    stBigDecimal: Result := SizeOf(Extended);
+    stGUID: Result := SizeOf(TGUID);
   end;
 end;
 

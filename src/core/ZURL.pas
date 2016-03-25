@@ -119,7 +119,7 @@ type
 
 implementation
 
-uses ZCompatibility, StrUtils, ZFastCode;
+uses ZCompatibility, ZFastCode;
 
 {TZURLStringList}
 function TZURLStringList.GetTextStr: string;
@@ -450,7 +450,7 @@ function TZURL.GetParamAndValue(AString: String; Var Param, Value: String): Bool
 var
   DelimPos: Integer;
 begin
-  DelimPos := PosEx('=', AString);
+  DelimPos := ZFastCode.Pos('=', AString);
   Result := DelimPos <> 0;
   Param := '';
   Value := '';
