@@ -696,6 +696,7 @@ begin
   else
     sqlite3_open(filename, Result);
 {$ENDIF}
+  sqlite3_busy_timeout(Result,100000);
 end;
 
 procedure TZSQLiteBaseDriver.ProgressHandler(db: Psqlite; p1: Integer;
