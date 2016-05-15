@@ -123,15 +123,19 @@ var
   FloatPoint: Boolean;
   LastChar: Char;
 
-  procedure ReadDecDigits;
+  function ReadDecDigits: string;
   begin
+    Result := '';
     LastChar := #0;
     while Stream.Read(LastChar, SizeOf(Char)) > 0 do
     begin
-      if CharInSet(LastChar, ['0'..'9']) then begin
-        ToBuf(LastChar, Result.Value);
+      if CharInSet(LastChar, ['0'..'9']) then
+      begin
+        Result := Result + LastChar;
         LastChar := #0;
-      end else begin
+      end
+      else
+      begin
         Stream.Seek(-SizeOf(Char), soFromCurrent);
         Break;
       end;
@@ -140,53 +144,55 @@ var
 
 begin
   FloatPoint := FirstChar = '.';
-  Result.Value := '';
-  InitBuf(FirstChar);
+  Result.Value := FirstChar;
   Result.TokenType := ttUnknown;
   LastChar := #0;
 
   { Reads the first part of the number before decimal point }
-  if not FloatPoint then begin
-    ReadDecDigits;
+  if not FloatPoint then
+  begin
+    Result.Value := Result.Value + ReadDecDigits;
     FloatPoint := LastChar = '.';
     if FloatPoint then
     begin
       Stream.Read(TempChar{%H-}, SizeOf(Char));
-      ToBuf(TempChar, Result.Value);
+      Result.Value := Result.Value + TempChar;
     end;
   end;
 
   { Reads the second part of the number after decimal point }
   if FloatPoint then
-    ReadDecDigits;
+    Result.Value := Result.Value + ReadDecDigits;
 
   { Reads a power part of the number }
-  if (Ord(LastChar) or $20) = ord('e') then //CharInSet(LastChar, ['e','E']) then
+  if CharInSet(LastChar, ['e','E']) then
   begin
     Stream.Read(TempChar, SizeOf(Char));
-    ToBuf(TempChar, Result.Value);
+    Result.Value := Result.Value + TempChar;
     FloatPoint := True;
 
     Stream.Read(TempChar, SizeOf(Char));
-    if CharInSet(TempChar, ['0'..'9','-','+']) then begin
-      ToBuf(TempChar, Result.Value);
-      ReadDecDigits;
-    end else begin
-      FlushBuf(Result.Value);
+    if CharInSet(TempChar, ['0'..'9','-','+']) then
+      Result.Value := Result.Value + TempChar + ReadDecDigits
+    else
+    begin
       Result.Value := Copy(Result.Value, 1, Length(Result.Value) - 1);
       Stream.Seek(-2*SizeOf(Char), soFromCurrent);
     end;
   end;
-  FlushBuf(Result.Value);
 
   { Prepare the result }
-  if Result.Value = '.' then begin
+  if Result.Value = '.' then
+  begin
     if Tokenizer.SymbolState <> nil then
       Result := Tokenizer.SymbolState.NextToken(Stream, FirstChar, Tokenizer);
-  end else
+  end
+  else
+  begin
     if FloatPoint then
-      Result.TokenType := ttFloat else
-      Result.TokenType := ttInteger;
+      Result.TokenType := ttFloat
+    else Result.TokenType := ttInteger;
+  end;
 end;
 
 { TZSQLiteQuoteState }
@@ -204,8 +210,7 @@ var
   ReadChar: Char;
   LastChar: Char;
 begin
-  Result.Value := '';
-  InitBuf(FirstChar);
+  Result.Value := FirstChar;
   LastChar := #0;
   while Stream.Read(ReadChar{%H-}, SizeOf(Char)) > 0 do
   begin
@@ -215,12 +220,11 @@ begin
       Stream.Seek(-SizeOf(Char), soFromCurrent);
       Break;
     end;
-    ToBuf(ReadChar, Result.Value);
+    Result.Value := Result.Value + ReadChar;
     if (LastChar = FirstChar) and (ReadChar = FirstChar) then
       LastChar := #0
     else LastChar := ReadChar;
   end;
-  FlushBuf(Result.Value);
 
   if CharInSet(FirstChar, ['"', '[']) then
     Result.TokenType := ttWord
@@ -279,38 +283,40 @@ var
   ReadChar: Char;
   ReadNum: Integer;
 begin
-  InitBuf(FirstChar);
-  Result.Value := '';
+  Result.Value := FirstChar;
   Result.TokenType := ttUnknown;
 
   if FirstChar = '-' then
   begin
     ReadNum := Stream.Read(ReadChar{%H-}, SizeOf(Char));
-    if (ReadNum > 0) and (ReadChar = '-') then begin
+    if (ReadNum > 0) and (ReadChar = '-') then
+    begin
       Result.TokenType := ttComment;
-      ToBuf(ReadChar, Result.Value);
-      GetSingleLineComment(Stream, Result.Value);
-    end else begin
+      Result.Value := '--' + GetSingleLineComment(Stream);
+    end
+    else
+    begin
       if ReadNum > 0 then
         Stream.Seek(-SizeOf(Char), soFromCurrent);
     end;
-  end else if FirstChar = '/' then begin
+  end
+  else if FirstChar = '/' then
+  begin
     ReadNum := Stream.Read(ReadChar, SizeOf(Char));
     if (ReadNum > 0) and (ReadChar = '*') then
     begin
       Result.TokenType := ttComment;
-      ToBuf(ReadChar, Result.Value);
-      GetMultiLineComment(Stream, Result.Value);
-    end else begin
+      Result.Value := '/*' + GetMultiLineComment(Stream);
+    end
+    else
+    begin
       if ReadNum > 0 then
         Stream.Seek(-SizeOf(Char), soFromCurrent);
     end;
   end;
 
   if (Result.TokenType = ttUnknown) and (Tokenizer.SymbolState <> nil) then
-    Result := Tokenizer.SymbolState.NextToken(Stream, FirstChar, Tokenizer)
-  else
-    FlushBuf(Result.Value);
+    Result := Tokenizer.SymbolState.NextToken(Stream, FirstChar, Tokenizer);
 end;
 
 { TZSQLiteSymbolState }

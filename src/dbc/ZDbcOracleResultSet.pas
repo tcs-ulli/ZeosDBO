@@ -146,7 +146,7 @@ type
   end;
 
   {** Implements external blob wrapper object for Oracle. }
-  TZOracleBlob = class(TZAbstractBlob, IZOracleBlob)
+  TZOracleBlob = class(TZAbstractUnCachedBlob, IZOracleBlob)
   private
     FContextHandle: POCISvcCtx;
     FErrorHandle: POCIError;
@@ -165,15 +165,15 @@ type
     destructor Destroy; override;
 
     procedure CreateBlob;
-    procedure ReadLob; //override;
-    procedure WriteLob; //override;
+    procedure ReadLob; override;
+    procedure WriteLob; override;
     procedure WriteLobFromBuffer(const Buffer: Pointer; const Len: Cardinal);
+
+    function Clone(Empty: Boolean = False): IZBlob; override;
   end;
 
-  {EH: my current uncached implementation doesn't work here since we've no
-   scrollable RS}
   {** Implements external blob wrapper object for Oracle. }
-  TZOracleClob = class(TZAbstractCLob, IZOracleBlob)
+  TZOracleClob = class(TZAbstractUnCachedCLob, IZOracleBlob)
   private
     FContextHandle: POCISvcCtx;
     FErrorHandle: POCIError;
@@ -191,16 +191,18 @@ type
     destructor Destroy; override;
 
     procedure CreateBlob;
-    procedure ReadLob; //override;
-    procedure WriteLob; //override;
+    procedure ReadLob; override;
+    procedure WriteLob; override;
     procedure WriteLobFromBuffer(const Buffer: Pointer; const Len: Cardinal);
+
+    function Clone(Empty: Boolean = False): IZBlob; override;
   end;
 
 implementation
 
 uses
   Math, {$IFDEF WITH_UNITANSISTRINGS}AnsiStrings,{$ENDIF} ZFastCode,
-  ZMessages, ZEncoding;
+  ZMessages, ZDbcUtils, ZEncoding;
 
 { TZOracleAbstractResultSet }
 
@@ -477,7 +479,7 @@ begin
           // attention : this code handles all timestamps on 01/01/0001 as a pure time value
           // reason : oracle doesn't have a pure time datatype so all time comparisons compare
           //          TDateTime values on 30 Dec 1899 against oracle timestamps on 01 januari 0001 (negative TDateTime)
-            if (Status = OCI_SUCCESS) and (not ((Year=1) and (Month=1) and (Day=1))) then
+            if (Status = OCI_SUCCESS) and (not (Year and Month and Day = 1)) then
               Result := EncodeDate(Year, Month, Day)
             else Result := 0;
           end
@@ -627,6 +629,8 @@ end;
 function TZOracleAbstractResultSet.GetInt(ColumnIndex: Integer): Integer;
 var
   SQLVarHolder: PZSQLVar;
+  P: PAnsiChar;
+  Len: NativeUInt;
 begin
 {$IFNDEF DISABLE_CHECKING}
   CheckColumnConvertion(ColumnIndex, stInteger);
@@ -638,7 +642,13 @@ begin
     with SQLVarHolder^ do
       case TypeCode of
         SQLT_AFC:
-          Result := RawToIntDef({%H-}PAnsiChar({%H-}NativeUInt(Data)+(FCurrentBufRowNo*Length)), 0);
+          begin
+            Len := oDataSize;
+            P := {%H-}PAnsiChar({%H-}NativeUInt(Data)+(FCurrentBufRowNo*Length));
+            while (P+Len-1)^ = ' ' do Dec(Len); //omit trailing spaces
+            ZSetString(P, Len, FRawTemp);
+            Result := RawToIntDef(FRawTemp, 0);
+          end;
         SQLT_INT:
           Result := {%H-}PLongInt({%H-}NativeUInt(Data)+(FCurrentBufRowNo*Length))^;
         SQLT_UIN:
@@ -670,6 +680,8 @@ end;
 function TZOracleAbstractResultSet.GetLong(ColumnIndex: Integer): Int64;
 var
   SQLVarHolder: PZSQLVar;
+  P: PAnsiChar;
+  Len: NativeUInt;
 begin
 {$IFNDEF DISABLE_CHECKING}
   CheckColumnConvertion(ColumnIndex, stLong);
@@ -681,7 +693,13 @@ begin
     with SQLVarHolder^ do
       case TypeCode of
         SQLT_AFC:
-          Result := RawToInt64Def({%H-}PAnsiChar({%H-}NativeUInt(Data)+(FCurrentBufRowNo*Length)), 0);
+          begin
+            Len := oDataSize;
+            P := {%H-}PAnsiChar({%H-}NativeUInt(Data)+(FCurrentBufRowNo*Length));
+            while (P+Len-1)^ = ' ' do Dec(Len); //omit trailing spaces
+            ZSetString(P, Len, FRawTemp);
+            Result := RawToInt64Def(FRawTemp, 0);
+          end;
         SQLT_INT:
           Result := {%H-}PLongInt({%H-}NativeUInt(Data)+(FCurrentBufRowNo*Length))^;
         SQLT_UIN:
@@ -713,6 +731,8 @@ end;
 function TZOracleAbstractResultSet.GetULong(ColumnIndex: Integer): UInt64;
 var
   SQLVarHolder: PZSQLVar;
+  P: PAnsiChar;
+  Len: NativeUInt;
 begin
 {$IFNDEF DISABLE_CHECKING}
   CheckColumnConvertion(ColumnIndex, stULong);
@@ -724,7 +744,13 @@ begin
     with SQLVarHolder^ do
       case TypeCode of
         SQLT_AFC:
-          Result := RawToUInt64Def({%H-}PAnsiChar({%H-}NativeUInt(Data)+(FCurrentBufRowNo*Length)), 0);
+          begin
+            Len := oDataSize;
+            P := {%H-}PAnsiChar({%H-}NativeUInt(Data)+(FCurrentBufRowNo*Length));
+            while (P+Len-1)^ = ' ' do Dec(Len); //omit trailing spaces
+            ZSetString(P, Len, FRawTemp);
+            Result := RawToUInt64Def(FRawTemp, 0);
+          end;
         SQLT_INT:
           Result := {%H-}PLongInt({%H-}NativeUInt(Data)+(FCurrentBufRowNo*Length))^;
         SQLT_UIN:
@@ -773,7 +799,8 @@ begin
             Len := oDataSize;
             P := {%H-}PAnsiChar({%H-}NativeUInt(Data)+(FCurrentBufRowNo*Length));
             while (P+Len-1)^ = ' ' do Dec(Len); //omit trailing spaces
-            SqlStrToFloatDef(P, 0, Result, Len);
+            ZSetString(P, Len, FRawTemp);
+            Result := SqlStrToFloatDef(FRawTemp, 0);
           end;
         SQLT_INT:
           Result := {%H-}PLongInt({%H-}NativeUInt(Data)+(FCurrentBufRowNo*Length))^;
@@ -782,14 +809,14 @@ begin
         SQLT_FLT:
           Result := {%H-}PDouble({%H-}NativeUInt(Data)+(FCurrentBufRowNo*Length))^;
         SQLT_STR:
-           SqlStrToFloatDef({%H-}PAnsichar({%H-}NativeUInt(Data)+(FCurrentBufRowNo*Length)),
-            0, Result, oDataSizeArray^[FCurrentBufRowNo]);
+          Result := SqlStrToFloatDef({%H-}PAnsichar({%H-}NativeUInt(Data)+(FCurrentBufRowNo*Length)),
+            oDataSizeArray^[FCurrentBufRowNo] , 0);
         SQLT_LVB, SQLT_LVC, SQLT_BIN:
           Result := 0;
         SQLT_DAT, SQLT_TIMESTAMP:
           Result := GetAsDateTimeValue(SQLVarHolder);
         SQLT_BLOB, SQLT_CLOB:
-          SqlStrToFloatDef(PAnsiChar(GetBlob(ColumnIndex).GetBuffer), 0, Result);
+          Result := SqlStrToFloatDef(PAnsiChar(GetBlob(ColumnIndex).GetBuffer), 0);
       else
         Result := 0;
       end;
@@ -824,7 +851,8 @@ begin
             Len := oDataSize;
             P := {%H-}PAnsiChar({%H-}NativeUInt(Data)+(FCurrentBufRowNo*Length));
             while (P+Len-1)^ = ' ' do Dec(Len); //omit trailing spaces
-            SqlStrToFloatDef(P, 0, Result, Len);
+            ZSetString(P, Len, FRawTemp);
+            Result := SqlStrToFloatDef(FRawTemp, 0);
           end;
         SQLT_INT:
           Result := {%H-}PLongInt({%H-}NativeUInt(Data)+(FCurrentBufRowNo*Length))^;
@@ -833,14 +861,14 @@ begin
         SQLT_FLT:
           Result := {%H-}PDouble({%H-}NativeUInt(Data)+(FCurrentBufRowNo*Length))^;
         SQLT_STR:
-          SqlStrToFloatDef({%H-}PAnsichar({%H-}NativeUInt(Data)+(FCurrentBufRowNo*Length)),
-            0, Result, oDataSizeArray^[FCurrentBufRowNo]);
+          Result := SqlStrToFloatDef({%H-}PAnsichar({%H-}NativeUInt(Data)+(FCurrentBufRowNo*Length)),
+            oDataSizeArray^[FCurrentBufRowNo] , 0);
         SQLT_LVB, SQLT_LVC, SQLT_BIN:
           Result := 0;
         SQLT_DAT, SQLT_TIMESTAMP:
           Result := GetAsDateTimeValue(SQLVarHolder);
         SQLT_BLOB, SQLT_CLOB:
-          SqlStrToFloatDef(PAnsiChar(GetBlob(ColumnIndex).GetBuffer), 0, Result);
+          Result := SqlStrToFloatDef(PAnsiChar(GetBlob(ColumnIndex).GetBuffer), 0);
       else
         Result := 0;
       end;
@@ -876,7 +904,8 @@ begin
             Len := oDataSize;
             P := {%H-}PAnsiChar({%H-}NativeUInt(Data)+(FCurrentBufRowNo*Length));
             while (P+Len-1)^ = ' ' do Dec(Len); //omit trailing spaces
-            SqlStrToFloatDef(P, 0, Result, Len);
+            ZSetString(P, Len, FRawTemp);
+            Result := SqlStrToFloatDef(FRawTemp, 0);
           end;
         SQLT_INT:
           Result := {%H-}PLongInt({%H-}NativeUInt(Data)+(FCurrentBufRowNo*Length))^;
@@ -885,14 +914,14 @@ begin
         SQLT_FLT:
           Result := {%H-}PDouble({%H-}NativeUInt(Data)+(FCurrentBufRowNo*Length))^;
         SQLT_STR:
-          SqlStrToFloatDef({%H-}PAnsichar({%H-}NativeUInt(Data)+(FCurrentBufRowNo*Length)),
-            0, Result, oDataSizeArray^[FCurrentBufRowNo]);
+          Result := SqlStrToFloatDef({%H-}PAnsichar({%H-}NativeUInt(Data)+(FCurrentBufRowNo*Length)),
+            oDataSizeArray^[FCurrentBufRowNo], 0);
         SQLT_LVB, SQLT_LVC, SQLT_BIN:
           Result := 0;
         SQLT_DAT, SQLT_TIMESTAMP:
           Result := GetAsDateTimeValue(SQLVarHolder);
         SQLT_BLOB, SQLT_CLOB:
-          SqlStrToFloatDef(PAnsiChar(GetBlob(ColumnIndex).GetBuffer), 0, Result);
+          Result := SqlStrToFloatDef(PAnsiChar(GetBlob(ColumnIndex).GetBuffer), 0);
       else
         Result := 0;
       end;
@@ -1448,10 +1477,7 @@ begin
         {$IFDEF UNICODE}
         ColumnLabel := ZEncoding.PRawToUnicode(P, TempColumnNameLen, ConSettings^.ClientCodePage^.CP)
         {$ELSE}
-        if (not ConSettings^.AutoEncode) or ZCompatibleCodePages(ConSettings^.ClientCodePage^.CP, ConSettings^.CTRL_CP) then
-          ColumnLabel := BufferToStr(P, TempColumnNameLen)
-        else
-          ColumnLabel := ZUnicodeToString(PRawToUnicode(P, TempColumnNameLen, ConSettings^.ClientCodePage^.CP), ConSettings^.CTRL_CP)
+        ColumnLabel := BufferToStr(P, TempColumnNameLen)
         {$ENDIF}
       else
         ColumnLabel := 'Col_'+ZFastCode.IntToStr(I+1);
@@ -1469,13 +1495,8 @@ begin
           @CSForm, nil, OCI_ATTR_CHARSET_FORM, FErrorHandle);
         if CSForm = SQLCS_NCHAR then //We should determine the NCHAR set on connect
           ColumnDisplaySize := ColumnDisplaySize shr 1; //shr 1 = div 2 but faster
-        Precision := ColumnDisplaySize;
-        CharOctedLength := CurrentVar^.oDataSize;
-        if ColumnType = stString then begin
-          CharOctedLength := Precision * ConSettings^.ClientCodePage^.CharWidth;
-        end else begin
-          CharOctedLength := Precision shl 1;
-        end;
+        Precision := GetFieldSize(ColumnType, ConSettings, ColumnDisplaySize,
+          ConSettings.ClientCodePage^.CharWidth);
       end
       else
         if (ColumnType = stBytes ) then
@@ -1674,7 +1695,8 @@ begin
       if ( ColumnType in [stString, stUnicodeString] ) then
       begin
         ColumnDisplaySize := CurrentVar.oDataSize;
-        Precision := CurrentVar.oDataSize;
+        Precision := GetFieldSize(ColumnType, ConSettings, CurrentVar.oDataSize,
+          ConSettings.ClientCodePage^.CharWidth);
       end
       else
         Precision := CurrentVar.Precision;
@@ -1836,7 +1858,7 @@ begin
     { Assigns data }
     InternalSetData(Buf, Offset);
   end;
-  //inherited ReadLob;
+  inherited ReadLob;
 end;
 
 {**
@@ -1862,6 +1884,20 @@ begin
   InternalClear;
   BlobData := AData;
   BlobSize := ASize;
+end;
+
+{**
+  Clones this blob object.
+  @return a clonned blob object.
+}
+function TZOracleBlob.Clone(Empty: Boolean = False): IZBlob;
+begin
+  if Empty then
+    Result := TZOracleBlob.Create(FPlainDriver, nil, 0, FContextHandle,
+      FErrorHandle, FLobLocator, FChunkSize, FConSettings)
+  else
+    Result := TZOracleBlob.Create(FPlainDriver, BlobData, Length, FContextHandle,
+      FErrorHandle, FLobLocator, FChunkSize, FConSettings);
 end;
 
 { TZOracleClob }
@@ -1925,7 +1961,6 @@ var
     end;
   end;
 begin
-  FCurrentCodePage := FConSettings^.ClientCodePage^.CP;
   if not Updated and (FLobLocator <> nil) and (BlobData = nil) and (not FTemporary) then
   begin
     { Opens a large object or file for read. }
@@ -1963,7 +1998,7 @@ begin
         FreeMem(Buf);
     end;
   end;
-  //inherited ReadLob;
+  inherited ReadLob;
 end;
 
 procedure TZOracleClob.WriteLob;
@@ -1981,6 +2016,18 @@ begin
   else
     OraWriteLob(FPlainDriver, Buffer, FContextHandle, FErrorHandle, FLobLocator,
       FChunkSize, Len+1, False, FConSettings);
+end;
+
+function TZOracleClob.Clone(Empty: Boolean = False): IZBlob;
+begin
+  if Empty then
+    Result := TZOracleClob.Create(FPlainDriver, nil, 0,
+      FConnectionHandle, FContextHandle, FErrorHandle, FLobLocator, FChunkSize,
+      FConSettings, CurrentCodePage)
+  else
+    Result := TZOracleClob.Create(FPlainDriver, BlobData, Length,
+      FConnectionHandle, FContextHandle, FErrorHandle, FLobLocator, FChunkSize,
+      FConSettings, CurrentCodePage);
 end;
 
 end.

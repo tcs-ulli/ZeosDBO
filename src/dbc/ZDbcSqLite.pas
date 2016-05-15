@@ -199,7 +199,9 @@ end;
 }
 function TZSQLiteDriver.GetTokenizer: IZTokenizer;
 begin
-  Result := TZSQLiteTokenizer.Create; { thread save! Allways return a new Tokenizer! }
+  if Tokenizer = nil then
+    Tokenizer := TZSQLiteTokenizer.Create;
+  Result := Tokenizer;
 end;
 
 {**
@@ -208,7 +210,9 @@ end;
 }
 function TZSQLiteDriver.GetStatementAnalyser: IZStatementAnalyser;
 begin
-  Result := TZSQLiteStatementAnalyser.Create; { thread save! Allways return a new Analyser! }
+  if Analyser = nil then
+    Analyser := TZSQLiteStatementAnalyser.Create;
+  Result := Analyser;
 end;
 
 { TZSQLiteConnection }
@@ -279,7 +283,8 @@ begin
   LogMessage := 'CONNECT TO "'+ConSettings^.Database+'" AS USER "'+ConSettings^.User+'"';
 
   SQL := {$IFDEF UNICODE}UTF8String{$ENDIF}(Database);
-  FHandle := GetPlainDriver.Open(Pointer(SQL));
+  FHandle := GetPlainDriver.Open(Pointer(SQL), 0, ErrorMessage);
+
   if FHandle = nil then
     CheckSQLiteError(GetPlainDriver, FHandle, SQLITE_ERROR, ErrorMessage,
       lcConnect, LogMessage, ConSettings);

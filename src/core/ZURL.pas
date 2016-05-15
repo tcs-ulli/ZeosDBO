@@ -119,7 +119,7 @@ type
 
 implementation
 
-uses ZCompatibility, ZFastCode;
+uses ZCompatibility, StrUtils, ZFastCode;
 
 {TZURLStringList}
 function TZURLStringList.GetTextStr: string;
@@ -450,7 +450,7 @@ function TZURL.GetParamAndValue(AString: String; Var Param, Value: String): Bool
 var
   DelimPos: Integer;
 begin
-  DelimPos := ZFastCode.Pos('=', AString);
+  DelimPos := PosEx('=', AString);
   Result := DelimPos <> 0;
   Param := '';
   Value := '';
@@ -471,8 +471,7 @@ begin
     if GetParamAndValue(Values[i], Param{%H-}, Value{%H-}) then
       FProperties.Values[Param] := Value
     else
-      if FProperties.IndexOf(Values[i]) = -1 then //add unique params only!
-        FProperties.Add(Values[i]);
+      FProperties.Add(Values[i]);
 end;
 
 end.

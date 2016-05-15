@@ -71,7 +71,7 @@ type
 
   { Paparameter string name and it value}
   TZIbParam = record
-    Name: String;
+    Name: RawByteString;
     Number: word;
   end;
   PZIbParam = ^TZIbParam;
@@ -142,6 +142,7 @@ type
     FTransactionHandle: PISC_TR_HANDLE;
     FXSQLDA: PXSQLDA;
     FPlainDriver: IZInterbasePlainDriver;
+    Temp: AnsiString;
     FDecribedLengthArray: TSmallIntDynArray;
     FDecribedScaleArray: TSmallIntDynArray;
     FDecribedTypeArray: TSmallIntDynArray;
@@ -213,8 +214,8 @@ function CreateIBResultSet(const SQL: string; const Statement: IZStatement;
 {Interbase6 Connection Functions}
 function GenerateDPB(Info: TStrings; var FDPBLength, Dialect: Word): PAnsiChar;
 function GenerateTPB(Params: TStrings; var Handle: TISC_DB_HANDLE): PISC_TEB;
-function GetInterbase6DatabaseParamNumber(const Value: String): word;
-function GetInterbase6TransactionParamNumber(const Value: String): word;
+function GetInterbase6DatabaseParamNumber(const Value: RawByteString): word;
+function GetInterbase6TransactionParamNumber(const Value: RawByteString): word;
 
 { Interbase6 errors functions }
 function GetNameSqlType(Value: Word): RawByteString;
@@ -224,10 +225,8 @@ function CheckInterbase6Error(const PlainDriver: IZInterbasePlainDriver;
   SQL: RawByteString = '') : Integer;
 
 { Interbase information functions}
-function GetISC_StringInfo(const PlainDriver: IZInterbasePlainDriver;
-  Handle: PISC_DB_HANDLE; isc_info: Byte; ConSettings: PZConSettings): String;
-function GetFB_ISC_IntegerInfo(const PlainDriver: IZInterbasePlainDriver;
-  Handle: PISC_DB_HANDLE; isc_info: Byte; ConSettings: PZConSettings): LongInt;
+function GetVersion(const PlainDriver: IZInterbasePlainDriver;
+  const Handle: PISC_DB_HANDLE; const ConSettings: PZConSettings): String;
 function GetDBImplementationNo(const PlainDriver: IZInterbasePlainDriver;
   const Handle: PISC_DB_HANDLE; const ConSettings: PZConSettings): LongInt;
 function GetDBImplementationClass(const PlainDriver: IZInterbasePlainDriver;
@@ -254,11 +253,11 @@ procedure PrepareParameters(const PlainDriver: IZInterbasePlainDriver;
   const SQL: RawByteString; const Dialect: Word; var StmtHandle: TISC_STMT_HANDLE;
   const ParamSqlData: IZParamsSQLDA; const ConSettings: PZConSettings);
 procedure BindSQLDAInParameters(const ClientVarManager: IZClientVariantManager;
-  const InParamValues: TZVariantDynArray;  const InParamCount: Integer;
+  InParamValues: TZVariantDynArray;  const InParamCount: Integer;
   const ParamSqlData: IZParamsSQLDA; const ConSettings: PZConSettings;
   const CodePageArray: TWordDynArray; ArrayOffSet, ArrayItersCount: Integer); overload;
 procedure BindSQLDAInParameters(const ClientVarManager: IZClientVariantManager;
-  const InParamValues: TZVariantDynArray; const InParamTypes: TZSQLTypeArray;
+  InParamValues: TZVariantDynArray; const InParamTypes: TZSQLTypeArray;
   const InParamCount: Integer; const ParamSqlData: IZParamsSQLDA;
   const ConSettings: PZConSettings; const CodePageArray: TWordDynArray); overload;
 procedure FreeStatement(PlainDriver: IZInterbasePlainDriver;
@@ -287,9 +286,7 @@ function GetExecuteBlockString(const ParamsSQLDA: IZParamsSQLDA;
   const CurrentSQLTokens: TRawByteStringDynArray;
   const PlainDriver: IZInterbasePlainDriver;
   var MemPerRow, PreparedRowsOfArray: Integer;
-  var TypeTokens: TRawByteStringDynArray;
-  InitialStatementType: TZIbSqlStatementType;
-  const XSQLDAMaxSize: LongWord): RawByteString;
+  var TypeTokens: TRawByteStringDynArray): RawByteString;
 
 const
   { Default Interbase blob size for reading }
@@ -388,35 +385,28 @@ const
   );
 
   { count transaction parameters }
-  MAX_TPB_PARAMS = 24;
+  MAX_TPB_PARAMS = 16;
   { prefix transaction parameters names it used in paramters scann procedure }
-  TPBPrefix = 'isc_tpb_';
+  TPBPrefix = RawByteString('isc_tpb_');
   { list transaction parameters and their apropriate numbers }
-  TransactionParams: array [0..MAX_TPB_PARAMS-1]of TZIbParam = (
+  TransactionParams: array [0..MAX_TPB_PARAMS]of TZIbParam = (
     (Name:'isc_tpb_version1';         Number: isc_tpb_version1),
     (Name:'isc_tpb_version3';         Number: isc_tpb_version3),
     (Name:'isc_tpb_consistency';      Number: isc_tpb_consistency),
     (Name:'isc_tpb_concurrency';      Number: isc_tpb_concurrency),
+    (Name:'isc_tpb_exclusive';        Number: isc_tpb_exclusive),
     (Name:'isc_tpb_shared';           Number: isc_tpb_shared),
     (Name:'isc_tpb_protected';        Number: isc_tpb_protected),
-    (Name:'isc_tpb_exclusive';        Number: isc_tpb_exclusive),
     (Name:'isc_tpb_wait';             Number: isc_tpb_wait),
     (Name:'isc_tpb_nowait';           Number: isc_tpb_nowait),
     (Name:'isc_tpb_read';             Number: isc_tpb_read),
     (Name:'isc_tpb_write';            Number: isc_tpb_write),
-    (Name:'isc_tpb_lock_read';        Number: isc_tpb_lock_read),
-    (Name:'isc_tpb_lock_write';       Number: isc_tpb_lock_write),
-    (Name:'isc_tpb_verb_time';        Number: isc_tpb_verb_time),
-    (Name:'isc_tpb_commit_time';      Number: isc_tpb_commit_time),
     (Name:'isc_tpb_ignore_limbo';     Number: isc_tpb_ignore_limbo),
     (Name:'isc_tpb_read_committed';   Number: isc_tpb_read_committed),
-    (Name:'isc_tpb_autocommit';       Number: isc_tpb_autocommit),
     (Name:'isc_tpb_rec_version';      Number: isc_tpb_rec_version),
     (Name:'isc_tpb_no_rec_version';   Number: isc_tpb_no_rec_version),
-    (Name:'isc_tpb_restart_requests'; Number: isc_tpb_restart_requests),
-    (Name:'isc_tpb_no_auto_undo';     Number: isc_tpb_no_auto_undo),
-    (Name:'isc_tpb_no_savepoint';     Number: isc_tpb_no_savepoint),// Since IB75+
-    (Name:'isc_tpb_lock_timeout';     Number: isc_tpb_lock_timeout) // Since FB20+
+    (Name:'isc_tpb_lock_read';        Number: isc_tpb_lock_read),
+    (Name:'isc_tpb_lock_write';       Number: isc_tpb_lock_write)
     );
 
 implementation
@@ -476,8 +466,8 @@ function GenerateDPB(Info: TStrings; var FDPBLength, Dialect: Word): PAnsiChar;
 var
   I, Pos, PValue: Integer;
   ParamNo: Word;
-  ParamName, Buffer: String;
-  DPB, ParamValue: RawByteString;
+  Buffer: String;
+  DPB, ParamName, ParamValue: RawByteString;
 begin
   FDPBLength := 1;
   DPB := AnsiChar(isc_dpb_version1);
@@ -486,7 +476,7 @@ begin
   begin
     Buffer := Info.Strings[I];
     Pos := FirstDelimiter(' ='#9#10#13, Buffer);
-    ParamName := Copy(Buffer, 1, Pos - 1);
+    ParamName := AnsiString(Copy(Buffer, 1, Pos - 1));
     Delete(Buffer, 1, Pos);
     ParamValue := RawByteString(Buffer);
     ParamNo := GetInterbase6DatabaseParamNumber(ParamName);
@@ -561,13 +551,13 @@ begin
   { Prepare transaction parameters string }
   for I := 0 to Params.Count - 1 do
   begin
-    ParamNo := GetInterbase6TransactionParamNumber(Params.Strings[I]);
+    ParamValue := RawbyteString(Params.Strings[I]);
+    ParamNo := GetInterbase6TransactionParamNumber(ParamValue);
 
     case ParamNo of
       0: Continue;
       isc_tpb_lock_read, isc_tpb_lock_write:
         begin
-          ParamValue := {$IFDEF UNICODE}RawbyteString{$ENDIF}(Params.Strings[I]);
           TempStr := TempStr + AnsiChar(ParamNo) + AnsiChar(Length(ParamValue)) + ParamValue;
           Inc(TPBLength, Length(ParamValue) + 2);
         end;
@@ -621,14 +611,14 @@ end;
   @param Value - a connection parameter name
   @return - connection parameter number
 }
-function GetInterbase6DatabaseParamNumber(const Value: String): Word;
+function GetInterbase6DatabaseParamNumber(const Value: RawByteString): Word;
 var
  I: Integer;
- ParamName: String;
+ ParamName: AnsiString;
 begin
-  ParamName := AnsiLowerCase(Value);
+  ParamName := {$IFDEF WITH_UNITANSISTRINGS}AnsiStrings.{$ENDIF}AnsiLowerCase(Value);
   Result := 0;
-  if ZFastCode.Pos(BPBPrefix, ParamName) = 1 then
+  if System.Pos(BPBPrefix, ParamName) = 1 then
     for I := 1 to MAX_DPB_PARAMS do
     begin
       if ParamName = DatabaseParams[I].Name then
@@ -644,14 +634,14 @@ end;
   @param Value - a transaction parameter name
   @return - transaction parameter number
 }
-function GetInterbase6TransactionParamNumber(const Value: String): Word;
+function GetInterbase6TransactionParamNumber(const Value: RawByteString): Word;
 var
  I: Integer;
- ParamName: String;
+ ParamName: RawByteString;
 begin
-  ParamName := AnsiLowerCase(Value);
+  ParamName := {$IFDEF WITH_UNITANSISTRINGS}AnsiStrings.{$ENDIF}AnsiLowerCase(Value);
   Result := 0;
-  if ZFastCode.Pos(TPBPrefix, ParamName) = 1 then
+  if System.Pos(TPBPrefix, ParamName) = 1 then
     for I := 1 to MAX_TPB_PARAMS do
     begin
       if ParamName = TransactionParams[I].Name then
@@ -672,7 +662,6 @@ end;
 }
 function ConvertInterbase6ToSqlType(const SqlType, SqlSubType, Scale: Integer;
   const CtrlsCPType: TZControlsCodePage): TZSQLType;
-label numeric;
 begin
   Result := ZDbcIntfs.stUnknown;
 
@@ -693,13 +682,7 @@ begin
     blr_blob_id, blr_quad: Result := stLong;
     blr_int64:
       case SqlSubType of
-        RDB_NUMBERS_NONE:
-          { weired bug! We need to check scale too!
-            see: http://sourceforge.net/p/zeoslib/tickets/106/ }
-          if Scale = 0 then
-            Result := stLong
-          else
-            goto numeric;
+        RDB_NUMBERS_NONE: Result := stLong;
         RDB_NUMBERS_NUMERIC: Result := stDouble;
         RDB_NUMBERS_DECIMAL:
           if Scale = 0 then
@@ -718,7 +701,7 @@ begin
           if Scale = 0 then
             Result := stInteger
           else
-numeric:    if Abs(Scale) <= 4 then
+            if Abs(Scale) <= 4 then
               Result := stCurrency
             else
               Result := stBigDecimal;
@@ -748,8 +731,6 @@ numeric:    if Abs(Scale) <= 4 then
         isc_blob_tra: Result := stAsciiStream;
         isc_blob_extfile: Result := stAsciiStream;
         isc_blob_debug_info: Result := stBinaryStream;
-        else //http://sourceforge.net/p/zeoslib/tickets/111/
-          Result := stBinaryStream;
       end;
     else
       Result := ZDbcIntfs.stUnknown;
@@ -1020,7 +1001,7 @@ begin
 end;
 
 procedure BindSQLDAInParameters(const ClientVarManager: IZClientVariantManager;
-  const InParamValues: TZVariantDynArray; const InParamTypes: TZSQLTypeArray;
+  InParamValues: TZVariantDynArray; const InParamTypes: TZSQLTypeArray;
   const InParamCount: Integer; const ParamSqlData: IZParamsSQLDA;
   const ConSettings: PZConSettings; const CodePageArray: TWordDynArray);
 var
@@ -1130,7 +1111,7 @@ begin
 end;
 
 procedure BindSQLDAInParameters(const ClientVarManager: IZClientVariantManager;
-  const InParamValues: TZVariantDynArray;  const InParamCount: Integer;
+  InParamValues: TZVariantDynArray;  const InParamCount: Integer;
   const ParamSqlData: IZParamsSQLDA; const ConSettings: PZConSettings;
   const CodePageArray: TWordDynArray; ArrayOffSet, ArrayItersCount: Integer);
 var
@@ -1177,8 +1158,9 @@ begin
     begin
       ZData := InParamValues[I].VArray.VIsNullArray;
       if (ZData = nil) then
-        IsNull := False
+        ParamSqlData.UpdateNull(ParamIndex, False)
       else
+      begin
         case TZSQLType(InParamValues[I].VArray.VIsNullArrayType) of
           stBoolean: IsNull := ZBooleanArray[J];
           stByte: IsNull := ZByteArray[J] <> 0;
@@ -1225,100 +1207,101 @@ begin
             raise EZIBConvertError.Create(SUnsupportedParameterType);
         end;
 
-      ZData := InParamValues[I].VArray.VArray;
-      if (ZData = nil) or (IsNull) then
-        ParamSqlData.UpdateNull(ParamIndex, True)
-      else
-        case TZSQLType(InParamValues[I].VArray.VArrayType) of
-          stBoolean: ParamSqlData.UpdateBoolean(ParamIndex, ZBooleanArray[J]);
-          stByte: ParamSqlData.UpdateSmall(ParamIndex, ZByteArray[J]);
-          stShort: ParamSqlData.UpdateSmall(ParamIndex, ZShortIntArray[J]);
-          stWord: ParamSqlData.UpdateInt(ParamIndex, ZWordArray[J]);
-          stSmall: ParamSqlData.UpdateSmall(ParamIndex, ZSmallIntArray[J]);
-          stLongWord: ParamSqlData.UpdateLong(ParamIndex, ZLongWordArray[J]);
-          stInteger: ParamSqlData.UpdateInt(ParamIndex, ZIntegerArray[J]);
-          stLong: ParamSqlData.UpdateLong(ParamIndex, ZInt64Array[J]);
-          stULong: ParamSqlData.UpdateLong(ParamIndex, ZUInt64Array[J]);
-          stFloat: ParamSqlData.UpdateFloat(ParamIndex, ZSingleArray[J]);
-          stDouble: ParamSqlData.UpdateDouble(ParamIndex, ZDoubleArray[J]);
-          stCurrency: ParamSqlData.UpdateBigDecimal(ParamIndex, ZCurrencyArray[J]);
-          stBigDecimal: ParamSqlData.UpdateBigDecimal(ParamIndex, ZExtendedArray[J]);
-          stGUID:
-            begin
-              Value := EncodeRawByteString({$IFDEF UNICODE}UnicodeStringToASCII7{$ENDIF}(GUIDToString(ZGUIDArray[j])));
-              goto ProcString;
-            end;
-          stString, stUnicodeString:
-            begin
-              case InParamValues[i].VArray.VArrayVariantType of
-                vtString: Value := EncodeString(ZStringArray[j]);
-                vtAnsiString: Value := EncodeAnsiString(ZAnsiStringArray[j]);
-                vtUTF8String: Value := EncodeUTF8String(ZUTF8StringArray[j]);
-                vtRawByteString: Value := EncodeRawByteString(ZRawByteStringArray[j]);
-                vtUnicodeString: Value := EncodeUnicodeString(ZUnicodeStringArray[j]);
-                vtCharRec: Value := EncodeCharRec(ZCharRecArray[j]);
-                else
-                  raise Exception.Create('Unsupported String Variant');
-              end;
-ProcString:     CP := ParamSqlData.GetIbSqlType(ParamIndex);
-              case CP of
-                SQL_TEXT, SQL_VARYING:
-                  begin
-                    CP := ParamSqlData.GetIbSqlSubType(ParamIndex);  //get code page
-                    if CP = CS_BINARY then
-                      CharRec := ClientVarManager.GetAsCharRec(Value)
-                    else
-                      if CP > High(CodePageArray) then
-                        CharRec := ClientVarManager.GetAsCharRec(Value, ConSettings^.ClientCodePage^.CP)
-                      else
-                        CharRec := ClientVarManager.GetAsCharRec(Value, CodePageArray[CP]);
-                  end
-                else
-                  CharRec := ClientVarManager.GetAsCharRec(Value);
-              end;
-              ParamSqlData.UpdatePAnsiChar(ParamIndex, CharRec.P, CharRec.Len);
-            end;
-          stBytes:
-            ParamSqlData.UpdateBytes(ParamIndex, ZBytesArray[j]);
-          stDate:
-            ParamSqlData.UpdateDate(ParamIndex, ZDateTimeArray[j]);
-          stTime:
-            ParamSqlData.UpdateTime(ParamIndex, ZDateTimeArray[j]);
-          stTimestamp:
-            ParamSqlData.UpdateTimestamp(ParamIndex, ZDateTimeArray[j]);
-          stAsciiStream,
-          stUnicodeStream,
-          stBinaryStream:
-            begin
-              TempBlob := ZInterfaceArray[j] as IZBlob;
-              if not TempBlob.IsEmpty then
+        ZData := InParamValues[I].VArray.VArray;
+        if (ZData = nil) or (IsNull) then
+          ParamSqlData.UpdateNull(ParamIndex, True)
+        else
+          case TZSQLType(InParamValues[I].VArray.VArrayType) of
+            stBoolean: ParamSqlData.UpdateBoolean(ParamIndex, ZBooleanArray[J]);
+            stByte: ParamSqlData.UpdateSmall(ParamIndex, ZByteArray[J]);
+            stShort: ParamSqlData.UpdateSmall(ParamIndex, ZShortIntArray[J]);
+            stWord: ParamSqlData.UpdateInt(ParamIndex, ZWordArray[J]);
+            stSmall: ParamSqlData.UpdateSmall(ParamIndex, ZSmallIntArray[J]);
+            stLongWord: ParamSqlData.UpdateLong(ParamIndex, ZLongWordArray[J]);
+            stInteger: ParamSqlData.UpdateInt(ParamIndex, ZIntegerArray[J]);
+            stLong: ParamSqlData.UpdateLong(ParamIndex, ZInt64Array[J]);
+            stULong: ParamSqlData.UpdateLong(ParamIndex, ZUInt64Array[J]);
+            stFloat: ParamSqlData.UpdateFloat(ParamIndex, ZSingleArray[J]);
+            stDouble: ParamSqlData.UpdateDouble(ParamIndex, ZDoubleArray[J]);
+            stCurrency: ParamSqlData.UpdateBigDecimal(ParamIndex, ZCurrencyArray[J]);
+            stBigDecimal: ParamSqlData.UpdateBigDecimal(ParamIndex, ZExtendedArray[J]);
+            stGUID:
               begin
-                if (ParamSqlData.GetFieldSqlType(ParamIndex) in [stUnicodeStream, stAsciiStream] ) then
-                  if TempBlob.IsClob then
-                  begin
-                    Buffer := TempBlob.GetPAnsiChar(ConSettings^.ClientCodePage^.CP);
-                    Len := TempBlob.Length;
-                  end
+                Value := EncodeRawByteString({$IFDEF UNICODE}UnicodeStringToASCII7{$ENDIF}(GUIDToString(ZGUIDArray[j])));
+                goto ProcString;
+              end;
+            stString, stUnicodeString:
+              begin
+                case InParamValues[i].VArray.VArrayVariantType of
+                  vtString: Value := EncodeString(ZStringArray[j]);
+                  vtAnsiString: Value := EncodeAnsiString(ZAnsiStringArray[j]);
+                  vtUTF8String: Value := EncodeUTF8String(ZUTF8StringArray[j]);
+                  vtRawByteString: Value := EncodeRawByteString(ZRawByteStringArray[j]);
+                  vtUnicodeString: Value := EncodeUnicodeString(ZUnicodeStringArray[j]);
+                  vtCharRec: Value := EncodeCharRec(ZCharRecArray[j]);
+                  else
+                    raise Exception.Create('Unsupported String Variant');
+                end;
+ProcString:     CP := ParamSqlData.GetIbSqlType(ParamIndex);
+                case CP of
+                  SQL_TEXT, SQL_VARYING:
+                    begin
+                      CP := ParamSqlData.GetIbSqlSubType(ParamIndex);  //get code page
+                      if CP = CS_BINARY then
+                        CharRec := ClientVarManager.GetAsCharRec(Value)
+                      else
+                        if CP > High(CodePageArray) then
+                          CharRec := ClientVarManager.GetAsCharRec(Value, ConSettings^.ClientCodePage^.CP)
+                        else
+                          CharRec := ClientVarManager.GetAsCharRec(Value, CodePageArray[CP]);
+                    end
+                  else
+                    CharRec := ClientVarManager.GetAsCharRec(Value);
+                end;
+                ParamSqlData.UpdatePAnsiChar(ParamIndex, CharRec.P, CharRec.Len);
+              end;
+            stBytes:
+              ParamSqlData.UpdateBytes(ParamIndex, ZBytesArray[j]);
+            stDate:
+              ParamSqlData.UpdateDate(ParamIndex, ZDateTimeArray[j]);
+            stTime:
+              ParamSqlData.UpdateTime(ParamIndex, ZDateTimeArray[j]);
+            stTimestamp:
+              ParamSqlData.UpdateTimestamp(ParamIndex, ZDateTimeArray[j]);
+            stAsciiStream,
+            stUnicodeStream,
+            stBinaryStream:
+              begin
+                TempBlob := ZInterfaceArray[j] as IZBlob;
+                if not TempBlob.IsEmpty then
+                begin
+                  if (ParamSqlData.GetFieldSqlType(ParamIndex) in [stUnicodeStream, stAsciiStream] ) then
+                    if TempBlob.IsClob then
+                    begin
+                      Buffer := TempBlob.GetPAnsiChar(ConSettings^.ClientCodePage^.CP);
+                      Len := TempBlob.Length;
+                    end
+                    else
+                    begin
+                      RawTemp := GetValidatedAnsiStringFromBuffer(TempBlob.GetBuffer, TempBlob.Length, ConSettings);
+                      Len := Length(RawTemp);
+                      if Len = 0 then
+                        Buffer := PEmptyAnsiString
+                      else
+                        Buffer := Pointer(RawTemp);
+                    end
                   else
                   begin
-                    RawTemp := GetValidatedAnsiStringFromBuffer(TempBlob.GetBuffer, TempBlob.Length, ConSettings);
-                    Len := Length(RawTemp);
-                    if Len = 0 then
-                      Buffer := PEmptyAnsiString
-                    else
-                      Buffer := Pointer(RawTemp);
-                  end
-                else
-                begin
-                  Buffer := TempBlob.GetBuffer;
-                  Len := TempBlob.Length;
+                    Buffer := TempBlob.GetBuffer;
+                    Len := TempBlob.Length;
+                  end;
+                  if Buffer <> nil then
+                    ParamSqlData.WriteLobBuffer(ParamIndex, Buffer, Len);
                 end;
-                if Buffer <> nil then
-                  ParamSqlData.WriteLobBuffer(ParamIndex, Buffer, Len);
-              end;
-            end
-          else
-            raise EZIBConvertError.Create(SUnsupportedParameterType);
+              end
+            else
+              raise EZIBConvertError.Create(SUnsupportedParameterType);
+          end;
         end;
       Inc(ParamIndex);
     end;
@@ -1410,7 +1393,10 @@ begin
   SegmentLenght := BlobInfo.MaxSegmentSize;
 
   { Allocates a blob buffer }
-  Buffer := AllocMem(BlobSize+Ord(not Binary)); //left space for leading #0 terminator
+  if Binary then
+    Buffer := AllocMem(BlobSize)
+  else
+    Buffer := AllocMem(BlobSize+1); //left space for leading #0 terminator
 
   TempBuffer := Buffer;
 
@@ -1427,8 +1413,6 @@ begin
     Inc(TempBuffer, BytesRead);
     BytesRead := 0;
   end;
-  if not Binary then
-    (PAnsiChar(Buffer)+Size)^ := #0;
 
   { close blob handle }
   PlainDriver.isc_close_blob(@StatusVector, @BlobHandle);
@@ -1439,48 +1423,21 @@ end;
    Return interbase server version string
    @param PlainDriver a interbase plain driver
    @param Handle the database connection handle
-   @param isc_info a ISC_INFO_XXX number
-   @param ConSettings then PZConSettings of active connection
-   @return ISC_INFO string
+   @return interbase version string
 }
-function GetISC_StringInfo(const PlainDriver: IZInterbasePlainDriver;
-  Handle: PISC_DB_HANDLE; isc_info: Byte; ConSettings: PZConSettings): String;
+function GetVersion(const PlainDriver: IZInterbasePlainDriver;
+  const Handle: PISC_DB_HANDLE; const ConSettings: PZConSettings): String;
 var
+  DatabaseInfoCommand: AnsiChar;
   StatusVector: TARRAY_ISC_STATUS;
   Buffer: array[0..IBBigLocalBufferLength - 1] of AnsiChar;
 begin
-  PlainDriver.isc_database_info(@StatusVector, Handle, 1, @isc_info,
+  DatabaseInfoCommand := AnsiChar(isc_info_version);
+  PlainDriver.isc_database_info(@StatusVector, Handle, 1, @DatabaseInfoCommand,
     IBBigLocalBufferLength, Buffer);
   CheckInterbase6Error(PlainDriver, StatusVector, ConSettings);
-  {$IFDEF UNICODE}
-  Result := PRawToUnicode(PAnsiChar(@Buffer[5]),Integer(Buffer[4]), ConSettings^.ClientCodePage^.CP);
-  {$ELSE}
-  SetString(Result, PAnsiChar(@Buffer[5]),Integer(Buffer[4]));
-  {$ENDIF}
-  //Buffer[5 + Integer(Buffer[4])] := #0;
-  //result := ConSettings^.ConvFuncs.ZRawToString(PAnsiChar(@Buffer[5]), ConSettings^.ClientCodePage^.CP, ConSettings^.CTRL_CP);
-end;
-
-{**
-   Return interbase server version string
-   @param PlainDriver a interbase plain driver
-   @param Handle the database connection handle
-   @param isc_info a ISC_INFO_XXX number
-   @param ConSettings then PZConSettings of active connection
-   @return ISC_INFO Integer
-}
-function GetFB_ISC_IntegerInfo(const PlainDriver: IZInterbasePlainDriver;
-  Handle: PISC_DB_HANDLE; isc_info: Byte; ConSettings: PZConSettings): LongInt;
-var
-  StatusVector: TARRAY_ISC_STATUS;
-  Buffer: array[0..63] of AnsiChar;
-  Len: Integer;
-begin
-  PlainDriver.isc_database_info(@StatusVector, Handle, 1, @isc_info,
-    IBLocalBufferLength, Buffer);
-  CheckInterbase6Error(PlainDriver, StatusVector, ConSettings);
-  Len := Integer(PlainDriver.isc_portable_integer(@Buffer[1], 2));
-  Result := Integer(PlainDriver.isc_portable_integer(@Buffer[3], Smallint(Len)));
+  Buffer[5 + Integer(Buffer[4])] := #0;
+  result := ConSettings^.ConvFuncs.ZRawToString(PAnsiChar(@Buffer[5]), ConSettings^.ClientCodePage^.CP, ConSettings^.CTRL_CP);
 end;
 
 {**
@@ -1709,15 +1666,8 @@ function TZSQLDA.GetFieldAliasName(const Index: Word): String;
 begin
   CheckRange(Index);
   {$R-}
-  {$IFDEF UNICODE}
-  Result := PRawToUnicode(@FXSQLDA.sqlvar[Index].aliasname[0], FXSQLDA.sqlvar[Index].aliasname_length, ConSettings^.ClientCodePage^.CP);
-  {$ELSE}
-    if (not ConSettings^.AutoEncode) or ZCompatibleCodePages(ConSettings^.ClientCodePage^.CP, ConSettings^.CTRL_CP) then
-      SetString(Result, PAnsiChar(@FXSQLDA.sqlvar[Index].aliasname[0]), FXSQLDA.sqlvar[Index].aliasname_length)
-    else
-      Result := ZUnicodeToString(PRawToUnicode(@FXSQLDA.sqlvar[Index].aliasname[0],
-        FXSQLDA.sqlvar[Index].aliasname_length, ConSettings^.ClientCodePage^.CP), ConSettings^.CTRL_CP);
-  {$ENDIF}
+  SetString(Temp, FXSQLDA.sqlvar[Index].aliasname, FXSQLDA.sqlvar[Index].aliasname_length);
+  Result := ConSettings^.ConvFuncs.ZRawToString(Temp, ConSettings^.ClientCodePage^.CP, ConSettings^.CTRL_CP);
   {$IFOPT D+}
 {$R+}
 {$ENDIF}
@@ -1860,17 +1810,15 @@ function TZSQLDA.GetFieldOwnerName(const Index: Word): String;
 begin
   CheckRange(Index);
   {$R-}
-  {$IFDEF UNICODE}
-  Result := PRawToUnicode(@FXSQLDA.sqlvar[Index].OwnName[0], FXSQLDA.sqlvar[Index].OwnName_length, ConSettings^.ClientCodePage^.CP);
+  {$IFDEF WITH_RAWBYTESTRING}
+  SetLength(Temp, FXSQLDA.sqlvar[Index].OwnName_length);
+  System.Move(FXSQLDA.sqlvar[Index].OwnName, PAnsiChar(Temp)^, FXSQLDA.sqlvar[Index].OwnName_length);
   {$ELSE}
-    if (not ConSettings^.AutoEncode) or ZCompatibleCodePages(ConSettings^.ClientCodePage^.CP, ConSettings^.CTRL_CP) then
-      SetString(Result, PAnsiChar(@FXSQLDA.sqlvar[Index].OwnName[0]), FXSQLDA.sqlvar[Index].OwnName_length)
-    else
-      Result := ZUnicodeToString(PRawToUnicode(@FXSQLDA.sqlvar[Index].OwnName[0],
-        FXSQLDA.sqlvar[Index].OwnName_length, ConSettings^.ClientCodePage^.CP), ConSettings^.CTRL_CP);
+  SetString(Temp, FXSQLDA.sqlvar[Index].OwnName, FXSQLDA.sqlvar[Index].OwnName_length);
   {$ENDIF}
+  Result := ConSettings^.ConvFuncs.ZRawToString(Temp, ConSettings^.ClientCodePage^.CP, ConSettings^.CTRL_CP);
   {$IFOPT D+}
-    {$R+}
+{$R+}
 {$ENDIF}
 end;
 
@@ -1883,15 +1831,13 @@ function TZSQLDA.GetFieldRelationName(const Index: Word): String;
 begin
   CheckRange(Index);
   {$R-}
-  {$IFDEF UNICODE}
-  Result := PRawToUnicode(@FXSQLDA.sqlvar[Index].RelName[0], FXSQLDA.sqlvar[Index].RelName_length, ConSettings^.ClientCodePage^.CP);
-  {$ELSE}
-    if (not ConSettings^.AutoEncode) or ZCompatibleCodePages(ConSettings^.ClientCodePage^.CP, ConSettings^.CTRL_CP) then
-      SetString(Result, PAnsiChar(@FXSQLDA.sqlvar[Index].RelName[0]), FXSQLDA.sqlvar[Index].RelName_length)
-    else
-      Result := ZUnicodeToString(PRawToUnicode(@FXSQLDA.sqlvar[Index].RelName[0],
-        FXSQLDA.sqlvar[Index].RelName_length, ConSettings^.ClientCodePage^.CP), ConSettings^.CTRL_CP);
-  {$ENDIF}
+    {$IFDEF WITH_RAWBYTESTRING}
+    SetLength(Temp, FXSQLDA.sqlvar[Index].RelName_length);
+    System.Move(FXSQLDA.sqlvar[Index].RelName, PAnsiChar(Temp)^, FXSQLDA.sqlvar[Index].RelName_length);
+    {$ELSE}
+    SetString(Temp, FXSQLDA.sqlvar[Index].RelName, FXSQLDA.sqlvar[Index].RelName_length);
+    {$ENDIF}
+    Result := ConSettings^.ConvFuncs.ZRawToString(Temp, ConSettings^.ClientCodePage^.CP, ConSettings^.CTRL_CP);
   {$IFOPT D+}
 {$R+}
 {$ENDIF}
@@ -1921,15 +1867,13 @@ function TZSQLDA.GetFieldSqlName(const Index: Word): String;
 begin
   CheckRange(Index);
   {$R-}
-  {$IFDEF UNICODE}
-  Result := PRawToUnicode(@FXSQLDA.sqlvar[Index].sqlname[0], FXSQLDA.sqlvar[Index].sqlname_length, ConSettings^.ClientCodePage^.CP);
-  {$ELSE}
-    if (not ConSettings^.AutoEncode) or ZCompatibleCodePages(ConSettings^.ClientCodePage^.CP, ConSettings^.CTRL_CP) then
-      SetString(Result, PAnsiChar(@FXSQLDA.sqlvar[Index].sqlname[0]), FXSQLDA.sqlvar[Index].sqlname_length)
-    else
-      Result := ZUnicodeToString(PRawToUnicode(@FXSQLDA.sqlvar[Index].sqlname[0],
-        FXSQLDA.sqlvar[Index].sqlname_length, ConSettings^.ClientCodePage^.CP), ConSettings^.CTRL_CP);
-  {$ENDIF}
+    {$IFDEF WITH_RAWBYTESTRING}
+    SetLength(Temp, FXSQLDA.sqlvar[Index].sqlname_length);
+    System.Move(FXSQLDA.sqlvar[Index].sqlname, PAnsiChar(Temp)^, FXSQLDA.sqlvar[Index].sqlname_length);
+    {$ELSE}
+    SetString(Temp, FXSQLDA.sqlvar[Index].sqlname, FXSQLDA.sqlvar[Index].sqlname_length);
+    {$ENDIF}
+    Result := ConSettings^.ConvFuncs.ZRawToString(Temp, ConSettings^.ClientCodePage^.CP, ConSettings^.CTRL_CP);
   {$IFOPT D+}
 {$R+}
 {$ENDIF}
@@ -2105,6 +2049,8 @@ begin
   begin
     if not FDecribedTypeArray[Index] = sqltype then
       SetFieldType(Index, FDecribedLengthArray[Index], FDecribedTypeArray[Index], FDecribedScaleArray[Index]);
+    if (sqlind <> nil) and (sqlind^ = -1) then
+       Exit;
 
     SQLCode := (sqltype and not(1));
 
@@ -2157,7 +2103,8 @@ begin
   begin
     if not FDecribedTypeArray[Index] = sqltype then
       SetFieldType(Index, FDecribedLengthArray[Index], FDecribedTypeArray[Index], FDecribedScaleArray[Index]);
-    {if (sqlind <> nil) and (sqlind^ = -1) then Exit;}
+    if (sqlind <> nil) and (sqlind^ = -1) then
+       Exit;
     SQLCode := (sqltype and not(1));
 
     if (sqlscale < 0)  then
@@ -2179,7 +2126,7 @@ begin
         SQL_LONG      : PInteger(sqldata)^ := ord(Value);
         SQL_FLOAT     : PSingle(sqldata)^ := ord(Value);
         SQL_BOOLEAN   : PWordBool(sqldata)^ := Value;
-        SQL_BOOLEAN_FB: PByte(sqldata)^ := Ord(Value);
+        SQL_BOOLEAN_FB: PBoolean(sqldata)^ := Value;
         SQL_SHORT     : PSmallint(sqldata)^ := ord(Value);
         SQL_INT64     : PInt64(sqldata)^ := ord(Value);
         SQL_TEXT      : EncodeString(SQL_TEXT, Index, IntToRaw(ord(Value)));
@@ -2205,22 +2152,25 @@ var
  SQLCode: SmallInt;
 begin
   CheckRange(Index);
+//  SetFieldType(Index, Length(Value) + 1, SQL_TEXT + 1, 0);
   {$R-}
   with FXSQLDA.sqlvar[Index] do
   begin
     if not FDecribedTypeArray[Index] = sqltype then
       SetFieldType(Index, FDecribedLengthArray[Index], FDecribedTypeArray[Index], FDecribedScaleArray[Index]);
+    if (sqlind <> nil) and (sqlind^ = -1) then
+         Exit;
     SQLCode := (sqltype and not(1));
     case SQLCode of
       SQL_TEXT      : EncodePData(SQL_TEXT, Index, Pointer(Value), Length(Value));
       SQL_VARYING   : EncodePData(SQL_VARYING, Index, Pointer(Value), Length(Value));
-      SQL_LONG      : PInteger (sqldata)^ := Round(RawToFloat(PAnsiChar(Pointer(Value)), '.') * IBScaleDivisor[sqlscale]); //AVZ
-      SQL_SHORT     : PSmallint(sqldata)^ := RawToInt(BytesToStr(Value));
+      SQL_LONG      : PInteger (sqldata)^ := Round(RawToFloat(BytesToStr(Value)) * IBScaleDivisor[sqlscale]); //AVZ
+      SQL_SHORT     : PInteger (sqldata)^ := RawToInt(BytesToStr(Value));
       SQL_TYPE_DATE : EncodeString(SQL_DATE, Index, BytesToStr(Value));
       SQL_D_FLOAT,
-      SQL_DOUBLE    : PDouble (sqldata)^ := RawToFloat(PAnsiChar(Pointer(Value)), '.')  * IBScaleDivisor[sqlscale]; //AVZ
-      SQL_FLOAT     : PSingle (sqldata)^ := RawToFloat(PAnsiChar(Pointer(Value)), '.') * IBScaleDivisor[sqlscale];  //AVZ
-      SQL_INT64     : PInt64(sqldata)^ := {$IFDEF USE_FAST_TRUNC}ZFastCode.{$ENDIF}Trunc(RawToFloat(PAnsiChar(Pointer(Value)), '.') * IBScaleDivisor[sqlscale]); //AVZ - INT64 value was not recognized
+      SQL_DOUBLE    : PDouble (sqldata)^ := RawToFloat(BytesToStr(Value)) * IBScaleDivisor[sqlscale]; //AVZ
+      SQL_FLOAT     : PSingle (sqldata)^ := RawToFloat(BytesToStr(Value)) * IBScaleDivisor[sqlscale];  //AVZ
+      SQL_INT64     : PInt64(sqldata)^ := {$IFDEF USE_FAST_TRUNC}ZFastCode.{$ENDIF}Trunc(RawToFloat(BytesToStr(Value)) * IBScaleDivisor[sqlscale]); //AVZ - INT64 value was not recognized
       SQL_BLOB,
       SQL_QUAD      : WriteLobBuffer(Index, Pointer(Value), Length(Value));
     else
@@ -2274,7 +2224,8 @@ begin
     TmpDate.tm_yday := 0;
     TmpDate.tm_isdst := 0;
 
-    {if (sqlind <> nil) and (sqlind^ = -1) then Exit;}
+    if (sqlind <> nil) and (sqlind^ = -1) then
+       Exit;
     SQLCode := (sqltype and not(1));
 
     case SQLCode of
@@ -2314,7 +2265,8 @@ begin
   begin
     if not FDecribedTypeArray[Index] = sqltype then
       SetFieldType(Index, FDecribedLengthArray[Index], FDecribedTypeArray[Index], FDecribedScaleArray[Index]);
-
+    if (sqlind <> nil) and (sqlind^ = -1) then
+         Exit;
     SQLCode := (sqltype and not(1));
 
     if (sqlscale < 0)  then
@@ -2362,13 +2314,14 @@ var
   SQLCode: SmallInt;
 begin
   CheckRange(Index);
-
+  //SetFieldType(Index, sizeof(Single), SQL_FLOAT + 1, 1);
   {$R-}
   with FXSQLDA.sqlvar[Index] do
   begin
     if not FDecribedTypeArray[Index] = sqltype then
       SetFieldType(Index, FDecribedLengthArray[Index], FDecribedTypeArray[Index], FDecribedScaleArray[Index]);
-
+    if (sqlind <> nil) and (sqlind^ = -1) then
+       Exit;
     SQLCode := (sqltype and not(1));
 
     if (sqlscale < 0)  then
@@ -2422,6 +2375,8 @@ begin
   begin
     if not FDecribedTypeArray[Index] = sqltype then
       SetFieldType(Index, FDecribedLengthArray[Index], FDecribedTypeArray[Index], FDecribedScaleArray[Index]);
+    if (sqlind <> nil) and (sqlind^ = -1) then
+       Exit;
     SQLCode := (sqltype and not(1));
 
     if (sqlscale < 0)  then
@@ -2473,7 +2428,8 @@ begin
   begin
     if not FDecribedTypeArray[Index] = sqltype then
       SetFieldType(Index, FDecribedLengthArray[Index], FDecribedTypeArray[Index], FDecribedScaleArray[Index]);
-
+    if (sqlind <> nil) and (sqlind^ = -1) then
+         Exit;
     SQLCode := (sqltype and not(1));
 
     if (sqlscale < 0)  then
@@ -2544,7 +2500,8 @@ begin
   begin
     if not FDecribedTypeArray[Index] = sqltype then
       SetFieldType(Index, FDecribedLengthArray[Index], FDecribedTypeArray[Index], FDecribedScaleArray[Index]);
-
+    if (sqlind <> nil) and (sqlind^ = -1) then
+         Exit;
     SQLCode := (sqltype and not(1));
     case SQLCode of
       SQL_TEXT      :
@@ -2561,8 +2518,8 @@ begin
       SQL_LONG      : PInteger (sqldata)^ := RawToIntDef(Value, 0);
       SQL_SHORT     : PSmallint (sqldata)^ := RawToIntDef(Value, 0);
       SQL_D_FLOAT,
-      SQL_DOUBLE    : SQLStrToFloatDef(Value, 0, PDouble(sqldata)^);
-      SQL_FLOAT     : SQLStrToFloatDef(Value, 0, PSingle (sqldata)^);
+      SQL_DOUBLE    : PDouble (sqldata)^ := SQLStrToFloatDef(Value, 0);
+      SQL_FLOAT     : PSingle (sqldata)^ := SQLStrToFloatDef(Value, 0);
       SQL_INT64     : PInt64(sqldata)^ := {$IFDEF USE_FAST_TRUNC}ZFastCode.{$ENDIF}Trunc(RoundTo(SQLStrToFloatDef(Value, 0, Len) * IBScaleDivisor[sqlscale], 0)); //AVZ - INT64 value was not recognized
       SQL_BLOB, SQL_QUAD: WriteLobBuffer(Index, Value, Len);
       SQL_TYPE_DATE :
@@ -2721,6 +2678,8 @@ begin
   begin
     if not FDecribedTypeArray[Index] = sqltype then
       SetFieldType(Index, FDecribedLengthArray[Index], FDecribedTypeArray[Index], FDecribedScaleArray[Index]);
+    if (sqlind <> nil) and (sqlind^ = -1) then
+       Exit;
     SQLCode := (sqltype and not(1));
 
     if (sqlscale < 0)  then
@@ -2825,9 +2784,7 @@ function GetExecuteBlockString(const ParamsSQLDA: IZParamsSQLDA;
   const CurrentSQLTokens: TRawByteStringDynArray;
   const PlainDriver: IZInterbasePlainDriver;
   var MemPerRow, PreparedRowsOfArray: Integer;
-  var TypeTokens: TRawByteStringDynArray;
-  InitialStatementType: TZIbSqlStatementType;
-  const XSQLDAMaxSize: LongWord): RawByteString;
+  var TypeTokens: TRawByteStringDynArray): RawByteString;
 const
   EBStart = AnsiString('EXECUTE BLOCK(');
   EBBegin =  AnsiString(')AS BEGIN'+LineEnding);
@@ -2837,7 +2794,7 @@ const
 var
   IndexName, ArrayName: RawByteString;
   I, j, BindCount, ParamIndex, ParamNameLen, SingleStmtLength, LastStmLen,
-  HeaderLen, FullHeaderLen, StmtLength, StmtMem, NewParamCount:  Integer;
+  HeaderLen, FullHeaderLen, StmtLength, StmtMem:  Integer;
   CodePageInfo: PZCodePage;
   PStmts, PResult: PAnsiChar;
   ReturningFound: Boolean;
@@ -2952,7 +2909,6 @@ begin
   FullHeaderLen := 0;
   StmtMem := 0;
   ReturningFound := False;
-  NewParamCount := 0;
   for J := 0 to RemainingArrayRows -1 do
   begin
     ParamIndex := 0;
@@ -2983,12 +2939,7 @@ begin
     Inc(SingleStmtLength, 1{;}+Length(LineEnding));
     Inc(StmtLength, HeaderLen+SingleStmtLength);
     Inc(FullHeaderLen, HeaderLen);
-    Inc(NewParamCount, InParamCount);
-    //we run into XSQLDA !update! count limit of 255 see:
-    //http://tracker.firebirdsql.org/browse/CORE-3027?page=com.atlassian.jira.plugin.system.issuetabpanels%3Aall-tabpanel
-    if (LongWord(StmtLength+LBlockLen) > 32*1024{32KB limited Also with FB3}) or
-       (LongWord(StmtMem + MemPerRow) > XSQLDAMaxSize) or
-      ((InitialStatementType <> stInsert) and (NewParamCount > 255)) then
+    if (StmtLength+LBlockLen > 32*1024) or (StmtMem + MemPerRow > 64 *1024) then
     begin
       StmtLength := LastStmLen;
       Dec(FullHeaderLen, HeaderLen);

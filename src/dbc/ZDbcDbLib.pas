@@ -90,7 +90,6 @@ type
     function GetProvider: TDBLibProvider;
     function GetPlainDriver: IZDBLibPlainDriver;
     function GetConnectionHandle: PDBPROCESS;
-    function GetServerAnsiCodePage: Word;
     procedure InternalExecuteStatement(const SQL: RawByteString);
     procedure CheckDBLibError(LogCategory: TZLoggingCategory; const LogMessage: RawByteString);
   end;
@@ -100,7 +99,6 @@ type
   private
     FProvider: TDBLibProvider;
     FFreeTDS: Boolean;
-    FServerAnsiCodePage: Word;
     function FreeTDS: Boolean;
     function GetProvider: TDBLibProvider;
     procedure ReStartTransactionSupport;
@@ -124,7 +122,9 @@ type
     function CreateCallableStatement(const SQL: string; Info: TStrings):
       IZCallableStatement; override;
 
-    procedure SetAutoCommit(Value: Boolean); override;
+    function NativeSQL(const SQL: string): string; override;
+
+    procedure SetAutoCommit(AutoCommit: Boolean); override;
     procedure SetTransactionIsolation(Level: TZTransactIsolationLevel); override;
 
     procedure Commit; override;
@@ -142,7 +142,6 @@ type
     procedure ClearWarnings; override;
     function GetBinaryEscapeString(const Value: TBytes): String; overload; override;
     function GetBinaryEscapeString(const Value: RawByteString): String; overload; override;
-    function GetServerAnsiCodePage: Word;
   end;
 
 var
@@ -208,7 +207,9 @@ end;
 }
 function TZDBLibDriver.GetTokenizer: IZTokenizer;
 begin
-  Result := TZSybaseTokenizer.Create; { thread save! Allways return a new Tokenizer! }
+  if Tokenizer = nil then
+    Tokenizer := TZSybaseTokenizer.Create;
+  Result := Tokenizer;
 end;
 
 {**
@@ -217,7 +218,9 @@ end;
 }
 function TZDBLibDriver.GetStatementAnalyser: IZStatementAnalyser;
 begin
-  Result := TZSybaseStatementAnalyser.Create; { thread save! Allways return a new Analyser! }
+  if Analyser = nil then
+    Analyser := TZSybaseStatementAnalyser.Create;
+  Result := Analyser;
 end;
 
 { TZDBLibConnection }
@@ -346,14 +349,6 @@ begin
         GetPlainDriver.dbsetlpwd(LoginRec, PAnsiChar(AnsiString(Password)));
         LogMessage := LogMessage + ' AS USER "'+ConSettings^.User+'"';
       end;
-
-      if FFreeTDS then begin
-        S := Info.Values['codepage'];
-        if S <> '' then begin
-          GetPlainDriver.dbSetLCharSet(LoginRec, Pointer({$IFDEF UNICODE}UnicodeStringToAscii7{$ENDIF}(S)));
-          CheckCharEncoding(s);
-        end;
-      end;
     end;
 
     //sybase specific parameters
@@ -368,13 +363,8 @@ begin
     end;
 
     CheckDBLibError(lcConnect, LogMessage);
-    s := HostName;
-    // add port number if FreeTDS is used, the port number was specified and no server instance name was given:
-    if FreeTDS and (Port <> 0) and (ZFastCode.Pos('\', HostName) = 0)  then s := s + ':' + ZFastCode.IntToStr(Port);
-    FHandle := GetPlainDriver.dbOpen(LoginRec, PAnsiChar(AnsiString(s)));
+    FHandle := GetPlainDriver.dbOpen(LoginRec, PAnsiChar(AnsiString(HostName)));
     CheckDBLibError(lcConnect, LogMessage);
-    if not Assigned(FHandle) then raise EZSQLException.Create('The connection to the server failed, no proper handle was returned. Insufficient memory, unable to connect for any reason. ');
-
     DriverManager.LogMessage(lcConnect, ConSettings^.Protocol, LogMessage);
   finally
     GetPLainDriver.dbLoginFree(LoginRec);
@@ -449,39 +439,23 @@ begin
 
   inherited Open;
 
-  if (FProvider = dpMsSQL) and (not FreeTDS) then
+  if FProvider = dpMsSQL then
   begin
-  {note: this is a hack from a user-request of synopse project!
-    Purpose is to notify Zeos all Character columns are
-    UTF8-encoded. e.g. N(VAR)CHAR. Initial idea is made for MSSQL where we've NO
-    valid tdsType to determine (Var)Char(Ansi-Encoding) or N(Var)Char(UTF8) encoding
-    So this is stopping all encoding detections and increases the performance in
-    a high rate. If Varchar fields are fetched you Should use a cast to N-Fields!
-    Else all results are invalid!!!!! Just to invoke later questions, reports!}
-    FDisposeCodePage := True;
-    ConSettings^.ClientCodePage := New(PZCodePage);
-    ConSettings^.ClientCodePage^.CP := ZOSCodePage; //need a tempory CP for the SQL preparation
-    ConSettings^.ClientCodePage^.Encoding := ceAnsi;
-    ConSettings^.ClientCodePage^.Name := DetermineMSServerCollation;
-    FServerAnsiCodePage := DetermineMSServerCodePage(ConSettings^.ClientCodePage^.Name);
-    if UpperCase(Info.Values['ResetCodePage']) = 'UTF8' then
+    if FClientCodePage = '' then
     begin
-      ConSettings^.ClientCodePage^.CP := zCP_UTF8;
-      ConSettings^.ClientCodePage^.Encoding := ceUTF8;
-      ConSettings^.ClientCodePage^.IsStringFieldCPConsistent := True;
-    end
-    else
-    begin
-      ConSettings^.ClientCodePage^.CP := FServerAnsiCodePage;
+      FDisposeCodePage := True;
+      ConSettings^.ClientCodePage := New(PZCodePage);
+      ConSettings^.ClientCodePage^.CP := ZDefaultSystemCodePage; //need a tempory CP for the SQL preparation
+      ConSettings^.ClientCodePage^.Encoding := ceAnsi;
+      ConSettings^.ClientCodePage^.Name := DetermineMSServerCollation;
       ConSettings^.ClientCodePage^.IsStringFieldCPConsistent := False;
+      ConSettings^.ClientCodePage^.CP := DetermineMSServerCodePage(ConSettings^.ClientCodePage^.Name);
+      SetConvertFunctions(ConSettings);
     end;
-    ConSettings^.AutoEncode := True; //Must be set because we can't determine a column-codepage! e.g NCHAR vs. CHAR Fields
-    SetConvertFunctions(ConSettings);
     DetermineMSDateFormat;
   end
   else
   begin
-    FServerAnsiCodePage := ConSettings^.ClientCodePage^.CP;
     ConSettings^.ReadFormatSettings.DateFormat := 'yyyy/mm/dd';
     ConSettings^.ReadFormatSettings.DateTimeFormat := ConSettings^.ReadFormatSettings.DateFormat+' '+ConSettings^.ReadFormatSettings.TimeFormat;
   end;
@@ -600,6 +574,21 @@ begin
 end;
 
 {**
+  Converts the given SQL statement into the system's native SQL grammar.
+  A driver may convert the JDBC sql grammar into its system's
+  native SQL grammar prior to sending it; this method returns the
+  native form of the statement that the driver would have sent.
+
+  @param sql a SQL statement that may contain one or more '?'
+    parameter placeholders
+  @return the native form of this statement
+}
+function TZDBLibConnection.NativeSQL(const SQL: string): string;
+begin
+  Result := SQL;
+end;
+
+{**
   Sets this connection's auto-commit mode.
   If a connection is in auto-commit mode, then all its SQL
   statements will be executed and committed as individual
@@ -619,10 +608,10 @@ end;
 
   @param autoCommit true enables auto-commit; false disables auto-commit.
 }
-procedure TZDBLibConnection.SetAutoCommit(Value: Boolean);
+procedure TZDBLibConnection.SetAutoCommit(AutoCommit: Boolean);
 begin
-  if AutoCommit = Value then  Exit;
-  if not Closed and Value then InternalExecuteStatement('commit');
+  if GetAutoCommit = AutoCommit then  Exit;
+  if not Closed and AutoCommit then InternalExecuteStatement('commit');
   inherited;
   ReStartTransactionSupport;
 end;
@@ -683,7 +672,7 @@ begin
     {$IFDEF UNICODE}
     Result := USASCII7ToUnicodeString(PAnsiChar(GetPlainDriver.dbdata(FHandle, 1)), GetPlainDriver.dbDatLen(FHandle, 1));
     {$ELSE}
-    ZSetString(PAnsiChar(GetPlainDriver.dbdata(FHandle, 1)), GetPlainDriver.dbDatLen(FHandle, 1), Result{%H-});
+    ZSetString(PAnsiChar(GetPlainDriver.dbdata(FHandle, 1)), GetPlainDriver.dbDatLen(FHandle, 1), Result);
     {$ENDIF}
   GetPlainDriver.dbCancel(FHandle);
 end;
@@ -706,7 +695,7 @@ begin
   else
   begin
     ZSetString(PAnsiChar(GetPlainDriver.dbdata(FHandle, 1)), GetPlainDriver.dbDatLen(FHandle, 1), Tmp);
-    Result := RawToIntDef(Tmp, High(Word)); //see: http://sourceforge.net/p/zeoslib/tickets/119/
+    Result := RawToInt(Tmp);
   end;
   GetPlainDriver.dbCancel(FHandle);
 end;
@@ -909,10 +898,6 @@ begin
     Result := GetDriver.GetTokenizer.GetEscapeString(Result)
 end;
 
-function TZDBLibConnection.GetServerAnsiCodePage: Word;
-begin
-  Result := FServerAnsiCodePage;
-end;
 
 initialization
   DBLibDriver := TZDBLibDriver.Create;

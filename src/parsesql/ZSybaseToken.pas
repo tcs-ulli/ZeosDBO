@@ -121,30 +121,43 @@ var
   FloatPoint: Boolean;
   LastChar: Char;
 
-  procedure ReadHexDigits;
+  function ReadHexDigits: string;
   begin
+    Result := '';
     LastChar := #0;
     while Stream.Read(LastChar, SizeOf(Char)) > 0 do
-      if CharInSet(LastChar, ['0'..'9','a'..'f','A'..'F']) then begin
-        ToBuf(LastChar, Result.Value);
+    begin
+      if CharInSet(LastChar, ['0'..'9','a'..'f','A'..'F']) then
+      begin
+        Result := Result + LastChar;
+        HexDecimal := HexDecimal or CharInSet(LastChar, ['a'..'f','A'..'F']);
         LastChar := #0;
-      end else begin
+      end
+      else
+      begin
         Stream.Seek(-SizeOf(Char), soFromCurrent);
         Break;
       end;
+    end;
   end;
 
-  procedure ReadDecDigits;
+  function ReadDecDigits: string;
   begin
+    Result := '';
     LastChar := #0;
     while Stream.Read(LastChar, SizeOf(Char)) > 0 do
-      if CharInSet(LastChar, ['0'..'9']) then begin
-        ToBuf(LastChar, Result.Value);
+    begin
+      if CharInSet(LastChar, ['0'..'9']) then
+      begin
+        Result := Result + LastChar;
         LastChar := #0;
-      end else begin
+      end
+      else
+      begin
         Stream.Seek(-SizeOf(Char), soFromCurrent);
         Break;
       end;
+    end;
   end;
 
 begin
@@ -152,63 +165,64 @@ begin
   FloatPoint := FirstChar = '.';
   LastChar := #0;
 
-  Result.Value := '';
-  InitBuf(FirstChar);
+  Result.Value := FirstChar;
   Result.TokenType := ttUnknown;
 
   { Reads the first part of the number before decimal point }
   if not FloatPoint then
   begin
-    ReadDecDigits;
-    FloatPoint := (LastChar = '.');
+    Result.Value := Result.Value + ReadDecDigits;
+    FloatPoint := (LastChar = '.') and not HexDecimal;
     if FloatPoint then
     begin
       Stream.Read(LastChar, SizeOf(Char));
-      ToBuf(LastChar, Result.Value);
+      Result.Value := Result.Value + LastChar;
     end;
   end;
 
   { Reads the second part of the number after decimal point }
   if FloatPoint then
-    ReadDecDigits;
+    Result.Value := Result.Value + ReadDecDigits;
 
   { Reads a power part of the number }
-  if (Ord(LastChar) or $20) = ord('e') then //CharInSet(LastChar, ['e','E']) then
+  if not HexDecimal and CharInSet(LastChar, ['e','E']) then
   begin
     Stream.Read(LastChar, SizeOf(Char));
-    ToBuf(LastChar, Result.Value);
+    Result.Value := Result.Value + LastChar;
     FloatPoint := True;
 
     Stream.Read(LastChar, SizeOf(Char));
-    if CharInSet(LastChar, ['0'..'9','-','+']) then begin
-      ToBuf(LastChar, Result.Value);
-      ReadDecDigits;
-    end else begin
-      FlushBuf(Result.Value);
+    if CharInSet(LastChar, ['0'..'9','-','+']) then
+      Result.Value := Result.Value + LastChar + ReadDecDigits
+    else
+    begin
       Result.Value := Copy(Result.Value, 1, Length(Result.Value) - 1);
       Stream.Seek(-2*SizeOf(Char), soFromCurrent);
     end;
   end;
 
   { Reads the nexdecimal number }
-  if (Result.Value = '') and (FirstChar = '0') and ((Ord(LastChar) or $20) = ord('x')) then //CharInSet(LastChar, ['x','X']) then
+  if (Result.Value = '0') and CharInSet(LastChar, ['x','X']) then
   begin
     Stream.Read(LastChar, SizeOf(Char));
-    ToBuf(LastChar, Result.Value);
-    ReadHexDigits;
+    Result.Value := Result.Value + LastChar + ReadHexDigits;
     HexDecimal := True;
   end;
-  FlushBuf(Result.Value);
 
   { Prepare the result }
-  if Result.Value = '.' then begin
+  if Result.Value = '.' then
+  begin
     if Tokenizer.SymbolState <> nil then
       Result := Tokenizer.SymbolState.NextToken(Stream, FirstChar, Tokenizer);
-  end else if HexDecimal then
-    Result.TokenType := ttHexDecimal
-  else if FloatPoint then
-    Result.TokenType := ttFloat
-  else Result.TokenType := ttInteger;
+  end
+  else
+  begin
+    if HexDecimal then
+      Result.TokenType := ttHexDecimal
+    else if FloatPoint then
+      Result.TokenType := ttFloat
+    else Result.TokenType := ttInteger;
+  end;
 end;
 
 { TZSybaseQuoteState }
@@ -226,8 +240,7 @@ var
   ReadChar: Char;
   LastChar: Char;
 begin
-  Result.Value := '';
-  InitBuf(FirstChar);
+  Result.Value := FirstChar;
   LastChar := #0;
   while Stream.Read(ReadChar{%H-}, SizeOf(Char)) > 0 do
   begin
@@ -237,12 +250,11 @@ begin
       Stream.Seek(-SizeOf(Char), soFromCurrent);
       Break;
     end;
-    ToBuf(ReadChar, Result.Value);
+    Result.Value := Result.Value + ReadChar;
     if (LastChar = FirstChar) and (ReadChar = FirstChar) then
       LastChar := #0
     else LastChar := ReadChar;
   end;
-  FlushBuf(Result.Value);
 
   if CharInSet(FirstChar, ['"', '[']) then
     Result.TokenType := ttWord
@@ -301,37 +313,40 @@ var
   ReadChar: Char;
   ReadNum: Integer;
 begin
-  InitBuf(FirstChar);
-  Result.Value := '';
+  Result.Value := FirstChar;
   Result.TokenType := ttUnknown;
 
   if FirstChar = '-' then
   begin
     ReadNum := Stream.Read(ReadChar{%H-}, SizeOf(Char));
-    if (ReadNum > 0) and (ReadChar = '-') then begin
+    if (ReadNum > 0) and (ReadChar = '-') then
+    begin
       Result.TokenType := ttComment;
-      ToBuf(ReadChar, Result.Value);
-      GetSingleLineComment(Stream, Result.Value);
-    end else begin
+      Result.Value := '--' + GetSingleLineComment(Stream);
+    end
+    else
+    begin
       if ReadNum > 0 then
         Stream.Seek(-SizeOf(Char), soFromCurrent);
     end;
-  end else if FirstChar = '/' then begin
+  end
+  else if FirstChar = '/' then
+  begin
     ReadNum := Stream.Read(ReadChar, SizeOf(Char));
-    if (ReadNum > 0) and (ReadChar = '*') then begin
+    if (ReadNum > 0) and (ReadChar = '*') then
+    begin
       Result.TokenType := ttComment;
-      ToBuf(ReadChar, Result.Value);
-      GetMultiLineComment(Stream, Result.Value);
-    end else begin
+      Result.Value := '/*' + GetMultiLineComment(Stream);
+    end
+    else
+    begin
       if ReadNum > 0 then
         Stream.Seek(-SizeOf(Char), soFromCurrent);
     end;
   end;
 
   if (Result.TokenType = ttUnknown) and (Tokenizer.SymbolState <> nil) then
-    Result := Tokenizer.SymbolState.NextToken(Stream, FirstChar, Tokenizer)
-  else
-    FlushBuf(Result.Value);
+    Result := Tokenizer.SymbolState.NextToken(Stream, FirstChar, Tokenizer);
 end;
 
 { TZSybaseSymbolState }

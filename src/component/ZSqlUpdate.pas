@@ -261,11 +261,7 @@ begin
   FInsertSQL.Free;
   FModifySQL.Free;
   FRefreshSQL.Free;
-  {keep track we notify a possible opened DataSet.CachedResultSet about destruction
-   else IntfAssign of FPC fails to clear the cached resolver of the CachedResultSet}
-  if Assigned(FDataSet) and (FDataSet is TZAbstractDataset) then
-    TZAbstractDataset(DataSet).UpdateObject := nil;
-
+  
   inherited Destroy;
 end;
 
@@ -564,7 +560,7 @@ begin
     end;
 
     ColumnIndex := ResultSet.FindColumn(ParamName);
-    if ColumnIndex >= FirstDbcIndex then
+    if ColumnIndex {$IFDEF GENERIC_INDEX}>={$ELSE}>{$ENDIF} 0 then
     begin
       if OldParam then
         RowAccessor := OldRowAccessor
@@ -666,16 +662,11 @@ var
   RefreshColumnName: String;
   RefreshColumnType: TZSQLType;
   Len: NativeUInt;
-Label CheckColumnType;
 begin
   if Assigned(RefreshResultSet) then begin
-    if (RefreshResultSet.GetType = rtForwardOnly) then
-    begin
-      if not RefreshResultSet.Next then
-        raise EZDatabaseError.Create(SUpdateSQLNoResult);
-    end
-    else if not (RefreshResultSet.GetType = rtForwardOnly) and  not RefreshResultSet.First then
-        raise EZDatabaseError.Create(SUpdateSQLNoResult);
+    if not RefreshResultSet.First then begin
+      raise EZDatabaseError.Create(SUpdateSQLNoResult);
+    end;
     for I := FirstDbcIndex to RefreshResultSet.GetMetadata.GetColumnCount{$IFDEF GENERIC_INDEX}-1{$ENDIF} do
     begin
       RefreshColumnName := RefreshResultSet.GetMetadata.GetColumnLabel(I); // What Column from Resultset should be updated
@@ -686,13 +677,12 @@ begin
       else
       begin
         RefreshColumnType  := RefreshResultSet.GetMetadata.GetColumnType(I); // Type of Column ?
-CheckColumnType:
         case RefreshColumnType of
           stBoolean: RefreshRowAccessor.SetBoolean(RefreshColumnIndex, RefreshResultSet.GetBoolean(I));
           stByte: RefreshRowAccessor.SetByte(RefreshColumnIndex, RefreshResultSet.GetByte(I));
           stShort: RefreshRowAccessor.SetShort(RefreshColumnIndex, RefreshResultSet.GetShort(I));
           stWord: RefreshRowAccessor.SetWord(RefreshColumnIndex, RefreshResultSet.GetWord(I));
-          stSmall: RefreshRowAccessor.SetSmall(RefreshColumnIndex, RefreshResultSet.GetSmall(I));
+          stSmall: RefreshRowAccessor.SetShort(RefreshColumnIndex, RefreshResultSet.GetSmall(I));
           stLongWord: RefreshRowAccessor.SetUInt(RefreshColumnIndex, RefreshResultSet.GetUInt(I));
           stInteger: RefreshRowAccessor.SetInt(RefreshColumnIndex, RefreshResultSet.GetInt(I));
           stULong: RefreshRowAccessor.SetULong(RefreshColumnIndex, RefreshResultSet.GetULong(I));
@@ -702,7 +692,7 @@ CheckColumnType:
           stCurrency: RefreshRowAccessor.SetCurrency(RefreshColumnIndex, RefreshResultSet.GetCurrency(I));
           stBigDecimal: RefreshRowAccessor.SetBigDecimal(RefreshColumnIndex, RefreshResultSet.GetBigDecimal(I));
           stString, stUnicodeString:
-            if RefreshRowAccessor is TZRawRowAccessor then
+            if Sender.GetConSettings^.ClientCodePage^.IsStringFieldCPConsistent then
               RefreshRowAccessor.SetPAnsiChar(RefreshColumnIndex, RefreshResultSet.GetPAnsiChar(I, Len), @Len)
             else
               RefreshRowAccessor.SetPWideChar(RefreshColumnIndex, RefreshResultSet.GetPWideChar(I, Len), @Len);
@@ -711,17 +701,7 @@ CheckColumnType:
           stTime: RefreshRowAccessor.SetTime(RefreshColumnIndex, RefreshResultSet.GetTime(I));
           stTimestamp: RefreshRowAccessor.SetTimestamp(RefreshColumnIndex, RefreshResultSet.GetTimestamp(I));
           stAsciiStream, stUnicodeStream, stBinaryStream:
-            {handle possible different column_type using a native RS
-             e.g. SQLite with joins we get stream types for string/bytes etc. coulmns
-             because SQLite sadly doesn't retrieve ColunmType infos
-             All conversion can be made by RowAccessor but not the lob-columns!}
-            if RefreshRowAccessor.GetColumnType(RefreshColumnIndex) in [stAsciiStream, stUnicodeStream, stBinaryStream] then
-              RefreshRowAccessor.SetBlob(RefreshColumnIndex, RefreshResultSet.GetBlob(I))
-            else
-            begin
-              RefreshColumnType := RefreshRowAccessor.GetColumnType(RefreshColumnIndex);
-              goto CheckColumnType;
-            end;
+            RefreshRowAccessor.SetBlob(RefreshColumnIndex, RefreshResultSet.GetBlob(I));
         end;
       end;
     end;
@@ -804,24 +784,25 @@ begin
       ExecuteStatement := true;
       UpdateAutoIncFields := false;
       case UpdateType of
-        utDeleted: DoBeforeDeleteSQLStatement(Self, I, ExecuteStatement);
-        utInserted: DoBeforeInsertSQLStatement(Self, I, ExecuteStatement);
-        utModified: DoBeforeModifySQLStatement(Self, I, ExecuteStatement);
+        utDeleted:
+          DoBeforeDeleteSQLStatement(Self, I, ExecuteStatement);
+        utInserted:
+          DoBeforeInsertSQLStatement(Self, I, ExecuteStatement);
+        utModified:
+          DoBeforeModifySQLStatement(Self, I, ExecuteStatement);
       end;
       if ExecuteStatement then
       begin
-        // if Property ValidateUpdateCount isn't set : assume it's true
-        lValidateUpdateCount := (Sender.GetStatement.GetParameters.IndexOfName('ValidateUpdateCount') = -1)
-                              or StrToBoolEx(Sender.GetStatement.GetParameters.Values['ValidateUpdateCount']);
+        lValidateUpdateCount := StrToBoolEx(
+          Sender.GetStatement.GetParameters.Values['ValidateUpdateCount']);
 
         lUpdateCount := Statement.ExecuteUpdatePrepared;
-        {$IFDEF WITH_VALIDATE_UPDATE_COUNT}
-        if  (lValidateUpdateCount) and (lUpdateCount <> 1   ) then
+        if  (lValidateUpdateCount) and (lUpdateCount <> 1) then
           raise EZSQLException.Create(Format(SInvalidUpdateCount, [lUpdateCount]));
-        {$ENDIF}
 
         case UpdateType of
-          utDeleted: DoAfterDeleteSQLStatement(Self, I);
+          utDeleted:
+            DoAfterDeleteSQLStatement(Self, I);
           utInserted:
             begin
              DoAfterInsertSQLStatement(Self, I, UpdateAutoIncFields);
@@ -829,7 +810,8 @@ begin
                 UpdateAutoIncrementFields(Sender, UpdateType,
                                           OldRowAccessor, NewRowAccessor, Self);
             end;
-          utModified: DoAfterModifySQLStatement(Self,I);
+          utModified:
+            DoAfterModifySQLStatement(Self,I);
         end;
       end;
       {END of PATCH [1185969]: Do tasks after posting updates. ie: Updating AutoInc fields in MySQL }
@@ -870,9 +852,12 @@ begin
   end;
 
   case UpdateType of
-    utInserted: DoAfterInsertSQL;
-    utDeleted: DoAfterDeleteSQL;
-    utModified: DoAfterModifySQL;
+    utInserted:
+      DoAfterInsertSQL;
+    utDeleted:
+      DoAfterDeleteSQL;
+    utModified:
+      DoAfterModifySQL;
   end;
 end;
 

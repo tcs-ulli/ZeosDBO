@@ -54,10 +54,9 @@ unit ZDbcAdoUtils;
 interface
 
 {$I ZDbc.inc}
-{$IFDEF ENABLE_ADO}
 
-uses Windows, Classes, {$IFDEF MSEgui}mclasses,{$ENDIF} SysUtils, ActiveX,
-  ZDbcIntfs, ZCompatibility, ZPlainAdo, ZDbcAdo, ZVariant;
+uses Windows, Classes, SysUtils, ActiveX,
+  ZDbcIntfs, ZCompatibility, ZPlainAdo, ZDbcAdo, ZVariant, ZDbcStatement;
 
 type
   PDirectionTypes = ^TDirectionTypes;
@@ -90,7 +89,11 @@ function ConvertSqlTypeToAdo(FieldType: TZSQLType): Integer;
   @param VT Variant datatype.
   @return a ADO datatype.
 }
+{$IFDEF FPC}
+function ConvertVariantToAdo(VT: Integer): Integer;
+{$ELSE}
 function ConvertVariantToAdo(VT: TVarType): Integer;
+{$ENDIF}
 
 {**
   Converts a TZResultSetType type into ADO cursor type.
@@ -138,11 +141,6 @@ procedure ADOSetInParam(AdoCommand: ZPlainAdo.Command; Connection: IZConnection;
   const SQLType: TZSQLType; const Value: TZVariant;
   const ParamDirection: ParameterDirectionEnum);
 
-function ADOBindArrayParams(AdoCommand: ZPlainAdo.Command; Connection: IZConnection;
-  ConSettings: PZConSettings; const InParamValues: TZVariantDynArray;
-  ParamDirection: ParameterDirectionEnum{note: should be an array later!!};
-  ArrayCount: Integer): Integer;
-
 procedure RefreshParameters(AdoCommand: ZPlainAdo.Command; DirectionTypes: PDirectionTypes = nil);
 
 var
@@ -154,9 +152,8 @@ var
 implementation
 
 uses
-  ComObj, {$IFDEF FPC}ZOleDB{$ELSE}OleDB{$ENDIF}, Variants, Types, Math,
-  ZSysUtils, ZDbcAdoResultSet, ZDbcCachedResultSet, ZDbcResultSet, ZDbcUtils,
-  ZMessages, ZEncoding, ZFastCode;
+  ComObj, OleDB, Variants,
+  ZSysUtils, ZDbcAdoResultSet, ZDbcCachedResultSet, ZDbcResultSet, ZDbcUtils;
 
 {**
   Converts an ADO native types into string related.
@@ -248,9 +245,8 @@ begin
     adGUID: Result := stGUID;
     adEmpty, AdArray, adChapter,
     adPropVariant, adUserDefined: Result := stString;
-    adVariant: Result := stString;
   else
-    {adIDispatch, adIUnknown: reserved, nut used tpyes}Result := stUnknown
+    {adIDispatch, adIUnknown, adVariant: reserved, nut used tpyes}Result := stUnknown
   end;
   if CtrlsCPType = cCP_UTF16 then
     case Result of
@@ -267,23 +263,23 @@ end;
 function ConvertSqlTypeToAdo(FieldType: TZSQLType): Integer;
 begin
   case FieldType of
-    stString, stUnicodeString: Result := adVarWChar;
+    stString: Result := adVarChar;
+    stUnicodeString: Result := adVarWChar;
     stBoolean: Result := adBoolean;
-    stByte: Result := adUnsignedTinyInt;
-    stShort: Result := adTinyInt;
-    stWord: Result := adUnsignedSmallInt;
+    stByte: Result := adTinyInt;
     stSmall: Result := adSmallInt;
-    stLongWord: Result := adUnsignedInt;
     stInteger: Result := adInteger;
-    stULong: Result := adUnsignedBigInt;
     stLong: Result := adBigInt;
-    stCurrency: Result := adCurrency;
+    stBigDecimal: Result := adDecimal;
     stFloat: Result := adSingle;
-    stDouble, stBigDecimal: Result := adDouble;
-    stDate, stTime, stTimestamp: Result := adDate;
+    stDouble: Result := adDouble;
+    stDate: Result := adDBDate;
+    stTime: Result := adDBTime;
+    stTimestamp: Result := adDBTimeStamp;
     stBytes: Result := adVarBinary;
     stGUID: Result := adGUID;
-    stAsciiStream, stUnicodeStream: Result := adLongVarWChar;
+    stAsciiStream: Result := adLongVarChar;
+    stUnicodeStream: Result := adLongVarWChar;
     stBinaryStream: Result := adLongVarBinary;
   else
     Result := adEmpty;
@@ -295,7 +291,11 @@ end;
   @param VT Variant datatype.
   @return a ADO datatype.
 }
+{$IFDEF FPC}
+function ConvertVariantToAdo(VT: Integer): Integer;
+{$ELSE}
 function ConvertVariantToAdo(VT: TVarType): Integer;
+{$ENDIF}
 begin
   case VT and varTypeMask of
     varEmpty: Result := adEmpty;
@@ -311,7 +311,7 @@ begin
     varError: Result := adError;
     varBoolean: Result := adBoolean;
     varVariant: Result := adVariant;
-    varUnknown: Result := adIUnknown ;
+    varUnknown: Result := adIUnknown;
 {$IFNDEF FPC}
     varShortInt: Result := adTinyInt;
 {$ENDIF}
@@ -426,7 +426,7 @@ begin
   DataInit := CreateComObject(CLSID_DataLinks) as IDataInitialize;
   if InitialString <> '' then
     DataInit.GetDataSource(nil, CLSCTX_INPROC_SERVER,
-      PWideChar(InitialString), IUnknown, DataSource{%H-});
+      PWideChar(InitialString), IUnknown, DataSource);
   DBPrompt := CreateComObject(CLSID_DataLinks) as IDBPromptInitialize;
   if Succeeded(DBPrompt.PromptDataSource(nil, Handle,
     DBPROMPTOPTIONS_PROPERTYSHEET, 0, nil, nil, IUnknown, DataSource)) then
@@ -477,7 +477,7 @@ procedure ADOSetInParam(AdoCommand: ZPlainAdo.Command; Connection: IZConnection;
 var
   S: Integer;
   B: IZBlob;
-  V: OleVariant;
+  V: Variant;
   T: Integer;
   P: ZPlainAdo.Parameter;
   RetValue: TZVariant;
@@ -530,32 +530,7 @@ begin
     vtNull: V := Null;
     vtBoolean: V := SoftVarManager.GetAsBoolean(RetValue);
     vtBytes: V := SoftVarManager.GetAsBytes(RetValue);
-    vtInteger: //V := SoftVarManager.GetAsInteger(RetValue);
-      if ParameterIndex <= ParamCount then
-      begin //Hacking the IDE variant: Not all IDE's support
-        P := AdoCommand.Parameters.Item[ParameterIndex - 1];
-        P.Direction := ParamDirection;
-        P.Type_ :=  adBigInt;
-        P.Value := SoftVarManager.GetAsInteger(RetValue);
-        Exit;
-      end
-      else
-        AdoCommand.Parameters.Append(AdoCommand.CreateParameter(
-          'P' + ZFastCode.IntToUnicode(ParameterIndex), adBigInt, ParamDirection,
-            0, SoftVarManager.GetAsInteger(RetValue)));
-    vtUInteger: //V := SoftVarManager.GetAsInteger(RetValue);
-      if ParameterIndex <= ParamCount then
-      begin //Hacking the IDE variant: Not all IDE's support
-        P.Direction := ParamDirection;
-        P.Type_ :=  adUnsignedBigInt;
-        P := AdoCommand.Parameters.Item[ParameterIndex - 1];
-        P.Value := SoftVarManager.GetAsUInteger(RetValue);
-        Exit;
-      end
-      else
-        AdoCommand.Parameters.Append(AdoCommand.CreateParameter(
-          'P' + ZFastCode.IntToUnicode(ParameterIndex), adUnsignedBigInt,
-            ParamDirection, 0, SoftVarManager.GetAsUInteger(RetValue)));
+    vtInteger: V := Integer(SoftVarManager.GetAsInteger(RetValue));
     vtFloat: V := SoftVarManager.GetAsFloat(RetValue);
     vtUnicodeString, vtString, vtAnsiString, vtUTF8String, vtRawByteString, vtCharRec:
     begin
@@ -595,211 +570,12 @@ begin
       P.Type_ := T;
       P.Size := S;
     end;
-    //if VarIsClear(P.Value) or (P.Value <> V) or (TmpSQLType = stBytes) then //Check if Param is cleared, unasigned or different
+    if VarIsClear(P.Value) or (P.Value <> V) or (TmpSQLType = stBytes) then //Check if Param is cleared, unasigned or different
       P.Value := V;
   end
   else
     AdoCommand.Parameters.Append(AdoCommand.CreateParameter(
-      'P' + ZFastCode.IntToUnicode(ParameterIndex), T, ParamDirection, S, V));
-end;
-
-function ADOBindArrayParams(AdoCommand: ZPlainAdo.Command; Connection: IZConnection;
-  ConSettings: PZConSettings; const InParamValues: TZVariantDynArray;
-  ParamDirection: ParameterDirectionEnum{note: should be an array later!!};
-  ArrayCount: Integer): Integer;
-var
-  P: ZPlainAdo.Parameter;
-  I, J: Integer;
-  TempBlob: IZBlob;
-  UniTemp: WideString;
-  IsNull: Boolean;
-  RC: OleVariant;
-  SQLType: TZSQLType;
-
-  { array DML bindings }
-  ZData: Pointer; //array entry
-  {using mem entry of ZData is faster then casting}
-  ZBooleanArray: TBooleanDynArray absolute ZData;
-  ZByteArray: TByteDynArray absolute ZData;
-  ZShortIntArray: TShortIntDynArray absolute ZData;
-  ZWordArray: TWordDynArray absolute ZData;
-  ZSmallIntArray: TSmallIntDynArray absolute ZData;
-  ZLongWordArray: TLongWordDynArray absolute ZData;
-  ZIntegerArray: TIntegerDynArray absolute ZData;
-  ZInt64Array: TInt64DynArray absolute ZData;
-  ZUInt64Array: TUInt64DynArray absolute ZData;
-  ZSingleArray: TSingleDynArray absolute ZData;
-  ZDoubleArray: TDoubleDynArray absolute ZData;
-  ZCurrencyArray: TCurrencyDynArray absolute ZData;
-  ZExtendedArray: TExtendedDynArray absolute ZData;
-  ZDateTimeArray: TDateTimeDynArray absolute ZData;
-  ZRawByteStringArray: TRawByteStringDynArray absolute ZData;
-  ZAnsiStringArray: TAnsiStringDynArray absolute ZData;
-  ZUTF8StringArray: TUTF8StringDynArray absolute ZData;
-  ZStringArray: TStringDynArray absolute ZData;
-  ZUnicodeStringArray: TUnicodeStringDynArray absolute ZData;
-  ZCharRecArray: TZCharRecDynArray absolute ZData;
-  ZBytesArray: TBytesDynArray absolute ZData;
-  ZInterfaceArray: TInterfaceDynArray absolute ZData;
-  ZGUIDArray: TGUIDDynArray absolute ZData;
-  label ProcString;
-begin
-  Result := 0;
-  for J := 0 to ArrayCount-1 do
-  begin
-    for i := 0 to High(InParamValues) do
-    begin
-      P := AdoCommand.Parameters.Item[i];
-      P.Direction := ParamDirection;
-      ZData := InParamValues[I].VArray.VIsNullArray;
-      if (ZData = nil) then
-        IsNull := True
-      else
-        case TZSQLType(InParamValues[I].VArray.VIsNullArrayType) of
-          stBoolean: IsNull := ZBooleanArray[J];
-          stByte: IsNull := ZByteArray[J] <> 0;
-          stShort: IsNull := ZShortIntArray[J] <> 0;
-          stWord: IsNull := ZWordArray[J] <> 0;
-          stSmall: IsNull := ZSmallIntArray[J] <> 0;
-          stLongWord: IsNull := ZLongWordArray[J] <> 0;
-          stInteger: IsNull := ZIntegerArray[J] <> 0;
-          stLong: IsNull := ZInt64Array[J] <> 0;
-          stULong: IsNull := ZUInt64Array[J] <> 0;
-          stFloat: IsNull := ZSingleArray[J] <> 0;
-          stDouble: IsNull := ZDoubleArray[J] <> 0;
-          stCurrency: IsNull := ZCurrencyArray[J] <> 0;
-          stBigDecimal: IsNull := ZExtendedArray[J] <> 0;
-          stGUID:
-            IsNull := True;
-          stString, stUnicodeString:
-            begin
-              case InParamValues[i].VArray.VIsNullArrayVariantType of
-                vtString: IsNull := StrToBoolEx(ZStringArray[j]);
-                vtAnsiString: IsNull := StrToBoolEx(ZAnsiStringArray[j]);
-                vtUTF8String: IsNull := StrToBoolEx(ZUTF8StringArray[j]);
-                vtRawByteString: IsNull := StrToBoolEx(ZRawByteStringArray[j]);
-                vtUnicodeString: IsNull := StrToBoolEx(ZUnicodeStringArray[j]);
-                vtCharRec:
-                  if ZCompatibleCodePages(ZCharRecArray[j].CP, zCP_UTF16) then
-                    IsNull := StrToBoolEx(PWideChar(ZCharRecArray[j].P))
-                  else
-                    IsNull := StrToBoolEx(PAnsiChar(ZCharRecArray[j].P));
-                vtNull: IsNull := True;
-                else
-                  raise Exception.Create('Unsupported String Variant');
-              end;
-            end;
-          stBytes:
-            IsNull := ZBytesArray[j] = nil;
-          stDate, stTime, stTimestamp:
-            IsNull := ZDateTimeArray[j] <> 0;
-          stAsciiStream,
-          stUnicodeStream,
-          stBinaryStream:
-            IsNull := ZInterfaceArray[j] = nil;
-          else
-            raise EZSQLException.Create(SUnsupportedParameterType);
-        end;
-
-        ZData := InParamValues[I].VArray.VArray;
-        if (ZData = nil) or (IsNull) then
-          P.Value := null
-        else
-        begin
-          SQLType := TZSQLType(InParamValues[I].VArray.VArrayType);
-          P.Type_ := ConvertSQLTypeToADO(SQLType);
-          case SQLType of
-            stBoolean:    P.Value := ZBooleanArray[J];
-            stByte:       P.Value := ZByteArray[J];
-            stShort:      P.Value := ZShortIntArray[J];
-            stWord:       P.Value := ZWordArray[J];
-            stSmall:      P.Value := ZSmallIntArray[J];
-            stLongWord:   P.Value := ZLongWordArray[J];
-            stInteger:    P.Value := ZIntegerArray[J];
-            stLong:       P.Value := ZInt64Array[J];
-            stULong:      P.Value := ZUInt64Array[J];
-            stFloat:      P.Value := ZSingleArray[J];
-            stDouble:     P.Value := ZDoubleArray[J];
-            stCurrency:   P.Value := ZCurrencyArray[J];
-            stBigDecimal: P.Value := ZExtendedArray[J];
-            stGUID:
-              begin
-                P.Type_ := adGUID;
-                P.Size := 38;
-                P.Value := {$IFNDEF UNICODE}ASCII7ToUnicodeString{$ENDIF}(GUIDToString(ZGUIDArray[j]));
-              end;
-            stString, stUnicodeString:
-              begin
-                case InParamValues[i].VArray.VArrayVariantType of
-                  vtString:
-                      {$IFDEF UNICODE}
-                      UniTemp := ZStringArray[j];
-                      {$ELSE}
-                      UniTemp := ConSettings^.ConvFuncs.ZStringToUnicode(ZStringArray[j], ConSettings^.CTRL_CP);
-                      {$ENDIF}
-                  vtAnsiString: UniTemp := ZWideString(ZAnsiStringArray[j]);
-                  vtUTF8String: UniTemp := PRawToUnicode(Pointer(ZUTF8StringArray[j]), Length(ZUTF8StringArray[j]), zCP_UTF8);
-                  vtRawByteString: UniTemp := ConSettings^.ConvFuncs.ZRawToUnicode(ZRawByteStringArray[j], ConSettings^.CTRL_CP);
-                  vtUnicodeString: UniTemp := ZUnicodeStringArray[j];
-                  vtCharRec:
-                    if ZCompatibleCodePages(ZCharRecArray[j].CP, zCP_UTF16) then
-                      SetString(UniTemp, PWideChar(ZCharRecArray[j].P), ZCharRecArray[j].Len)
-                    else
-                      UniTemp := PRawToUnicode(ZCharRecArray[j].P, ZCharRecArray[j].Len, ZCharRecArray[j].CP);
-                  else
-                    raise Exception.Create('Unsupported String Variant');
-                end;
-                P.Precision := Max(P.Precision, Length(UniTemp));
-                P.Size := Max(1, Length(UniTemp) shl 1);
-                P.Value := UniTemp;
-              end;
-            stBytes:
-              begin
-                P.Size := Length(ZBytesArray[j]);
-                P.Value := ZBytesArray[j];
-              end;
-            stDate, stTime, stTimestamp: P.Value := ZDateTimeArray[j];
-            stAsciiStream,
-            stUnicodeStream:
-              begin
-                TempBlob := ZInterfaceArray[j] as IZBlob;
-                if TempBlob.IsEmpty then
-                  P.Value := null
-                else
-                  if TempBlob.IsClob then
-                  begin
-ProcString:         UniTemp := TempBlob.GetUnicodeString;
-                    P.Size := Max(1, Length(UniTemp) shl 1);
-                    P.Value := UniTemp;
-                  end
-                  else
-                  begin
-                    TempBlob := TZAbstractClob.CreateWithStream(GetValidatedUnicodeStream(TempBlob.GetBuffer, TempBlob.Length, Connection.GetConSettings, False), zCP_UTF16, Connection.GetConSettings);
-                    goto ProcString;
-                  end;
-              end;
-            stBinaryStream:
-              begin
-                TempBlob := ZInterfaceArray[j] as IZBlob;
-                if TempBlob.IsEmpty then
-                  P.Value := null
-                else
-                begin
-                  P.Size := TempBlob.Length;
-                  P.Value := TempBlob.GetBytes;
-                end;
-              end
-            else
-              raise EZSQLException.Create(IntToStr(Ord(SQLType))+' '+SUnsupportedParameterType);
-          end;
-        end;
-      end;
-    if J < ArrayCount -1 then
-    begin
-      AdoCommand.Execute(RC, EmptyParam, adExecuteNoRecords); {left space for last execution}
-      Result := Result + RC;
-    end;
-  end;
+      'P' + IntToStr(ParameterIndex), T, ParamDirection, S, V));
 end;
 
 procedure RefreshParameters(AdoCommand: ZPlainAdo.Command;
@@ -809,7 +585,7 @@ procedure RefreshParameters(AdoCommand: ZPlainAdo.Command;
     I: Integer;
     ParamCount: NativeUInt;
     ParamInfo: PDBParamInfoArray;
-    NamesBuffer: PPOleStr;
+    NamesBuffer: POleStr;
     Name: WideString;
     Parameter: _Parameter;
     Direction: ParameterDirectionEnum;
@@ -827,13 +603,13 @@ procedure RefreshParameters(AdoCommand: ZPlainAdo.Command;
       try
         OLEDBCommand.QueryInterface(ICommandPrepare, CommandPrepare);
         if Assigned(CommandPrepare) then CommandPrepare.Prepare(0);
-        if OLEDBParameters.GetParameterInfo(ParamCount{%H-}, PDBPARAMINFO(ParamInfo), NamesBuffer) = S_OK then
+        if OLEDBParameters.GetParameterInfo(ParamCount, PDBPARAMINFO(ParamInfo), @NamesBuffer) = S_OK then
           for I := 0 to ParamCount - 1 do
             with ParamInfo[I] do
             begin
               { When no default name, fabricate one like ADO does }
               if pwszName = nil then
-                Name := 'Param' + ZFastCode.IntToUnicode(I+1) else { Do not localize }
+                Name := 'Param' + IntToStr(I+1) else { Do not localize }
                 Name := pwszName;
               { ADO maps DBTYPE_BYTES to adVarBinary }
               if wType = DBTYPE_BYTES then wType := adVarBinary;
@@ -898,11 +674,6 @@ initialization
   OleCheck(CoGetMalloc(1, ZAdoMalloc));
 finalization
   ZAdoMalloc := nil;
-
-{$ELSE}
-implementation
-{$ENDIF ENABLE_ADO}
 end.
-
 
 

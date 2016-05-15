@@ -296,16 +296,15 @@ var
   ReadNum: Integer;
 begin
   Result.TokenType := ttUnknown;
-  InitBuf(Firstchar);
-  Result.Value := '';
+  Result.Value := FirstChar;
 
   if FirstChar = '/' then
   begin
     ReadNum := Stream.Read(ReadChar{%H-}, SizeOf(Char));
-    if (ReadNum > 0) and (ReadChar = '*') then begin
+    if (ReadNum > 0) and (ReadChar = '*') then
+    begin
       Result.TokenType := ttComment;
-      ToBuf(ReadChar, Result.Value);
-      GetMultiLineComment(Stream, Result.Value);
+      Result.Value := '/*' + GetMultiLineComment(Stream);
     end
     else
     begin
@@ -315,9 +314,7 @@ begin
   end;
 
   if (Result.TokenType = ttUnknown) and (Tokenizer.SymbolState <> nil) then
-    Result := Tokenizer.SymbolState.NextToken(Stream, FirstChar, Tokenizer)
-  else
-    FlushBuf(Result.Value);
+    Result := Tokenizer.SymbolState.NextToken(Stream, FirstChar, Tokenizer);
 end;
 
 { TZExpressionSymbolState }

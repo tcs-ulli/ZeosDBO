@@ -30,6 +30,7 @@ package ZComponentDesign;
 {$LIBSUFFIX '210'}
 {$DESIGNONLY}
 {$IMPLICITBUILD OFF}
+{$I ZPackages.inc}
 
 requires
   dbrtl,

@@ -54,7 +54,6 @@ unit ZAdoToken;
 interface
 
 {$I ZParseSql.inc}
-{$IFDEF ENABLE_ADO}
 
 uses
   Classes, SysUtils, ZTokenizer, ZGenericSqlToken, ZCompatibility;
@@ -76,9 +75,7 @@ type
     procedure CreateTokenStates; override;
   end;
 
-{$ENDIF ENABLE_ADO}
 implementation
-{$IFDEF ENABLE_ADO}
 
 { TZAdoSQLQuoteState }
 
@@ -95,8 +92,7 @@ var
   ReadChar: Char;
   LastChar: Char;
 begin
-  Result.Value := '';
-  InitBuf(FirstChar);
+  Result.Value := FirstChar;
   LastChar := #0;
   while Stream.Read(ReadChar, SizeOf(Char)) > 0 do
   begin
@@ -106,14 +102,13 @@ begin
       Stream.Seek(-SizeOf(Char), soFromCurrent);
       Break;
     end;
-    ToBuf(ReadChar, Result.Value);
+    Result.Value := Result.Value + ReadChar;
     if (LastChar = FirstChar) and (ReadChar = FirstChar) then
       LastChar := #0
     else LastChar := ReadChar;
   end;
-  FlushBuf(Result.Value);
 
-  if (FirstChar = '"') or (FirstChar='[') then
+  if CharInSet(FirstChar, ['"', '[']) then
     Result.TokenType := ttQuotedIdentifier
   else Result.TokenType := ttQuoted;
 end;
@@ -195,5 +190,4 @@ begin
   SetCharacterState('/', '/', CommentState);
 end;
 
-{$ENDIF ENABLE_ADO}
 end.

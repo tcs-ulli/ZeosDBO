@@ -143,12 +143,11 @@ type
   TZOracleParams = array of TZOracleParam;
 
 type
-  {$A-}
   TOraDate = record
     Cent, Year, Month, Day, Hour, Min, Sec: Byte;
   end;
   POraDate = ^TOraDate;
-  {$A+}
+
 {**
   Allocates memory for Oracle SQL Variables.
   @param Variables a pointer to array of variables.
@@ -623,10 +622,7 @@ begin
       Variable^.oIndicatorArray^[0] := 0;
       case Variable^.TypeCode of
         SQLT_INT:
-          if Variable^.Length = 8 then
-            PInt64(Variable^.Data)^ := ClientVarManager.GetAsInteger(Value)
-          else
-            PLongInt(Variable^.Data)^ := ClientVarManager.GetAsInteger(Value);
+          PLongInt(Variable^.Data)^ := ClientVarManager.GetAsInteger(Value);
         SQLT_FLT:
           PDouble(Variable^.Data)^ := ClientVarManager.GetAsFloat(Value);
         SQLT_STR:
@@ -803,7 +799,7 @@ begin
           else
             for i := 0 to Iteration -1 do {%H-}PDouble({%H-}NativeUInt(Variable^.Data)+I*SizeOf(Double))^ := ZLongWordArray[I];
         stInteger: { no conversion required }
-          System.Move(ZIntegerArray[0], Variable^.Data^, Iteration*SizeOf(LongInt));
+          for i := 0 to Iteration -1 do {%H-}PLongInt({%H-}NativeUInt(Variable^.Data)+I*SizeOf(LongInt))^ := ZIntegerArray[I];
         stULong: //we use String types here
           for i := 0 to Iteration -1 do
           begin
@@ -814,13 +810,13 @@ begin
         stLong: //conversion required below 11.2
           //since 11.2 we can use Int64 types too
           if Connection.GetClientVersion >= 11002000 then
-            System.Move(ZInt64Array[0], Variable^.Data^, Iteration*SizeOf(Int64))
+            for i := 0 to Iteration -1 do {%H-}PInt64({%H-}NativeUInt(Variable^.Data)+I*SizeOf(Int64))^ := ZInt64Array[I]
           else
             for i := 0 to Iteration -1 do {%H-}PDouble({%H-}NativeUInt(Variable^.Data)+I*SizeOf(Double))^ := ZInt64Array[I];
         stFloat: //conversion required
           for i := 0 to Iteration -1 do {%H-}PDouble({%H-}NativeUInt(Variable^.Data)+I*SizeOf(Double))^ := ZSingleArray[I];
         stDouble: //no conversion required
-          System.Move(ZDoubleArray[0], Variable^.Data^, Iteration*SizeOf(Double));
+          for i := 0 to Iteration -1 do {%H-}PDouble({%H-}NativeUInt(Variable^.Data)+I*SizeOf(Double))^ := ZDoubleArray[I];
         stCurrency: //conversion required
           for i := 0 to Iteration -1 do {%H-}PDouble({%H-}NativeUInt(Variable^.Data)+I*SizeOf(Double))^ := ZCurrencyArray[I];
         stBigDecimal: //conversion required
@@ -948,7 +944,7 @@ begin
             else
             begin
               {%H-}PInteger({%H-}NativeUInt(Variable^.Data)+I*Variable^.Length)^ := Math.Min(System.Length(ZBytesArray[I]), Variable^.oDataSize);
-              System.Move(Pointer(ZBytesArray[I])^, {%H-}Pointer({%H-}NativeUInt(Variable^.Data)+I*Variable^.Length+SizeOf(Integer))^,{%H-}PInteger({%H-}NativeUInt(Variable^.Data)+I*Variable^.Length)^);
+              System.Move(Pointer(ZBytesArray[I])^, {%H-}Pointer({%H-}NativeUInt(Variable^.Data)+I*Variable^.Length+SizeOf(Integer))^,{%H-} {%H-}PInteger(NativeUInt(Variable^.Data)+I*Variable^.Length)^);
             end;
         stGUID: //AFAIK OCI doesn't support GUID fields so let's convert them to stings
           for i := 0 to Iteration -1 do

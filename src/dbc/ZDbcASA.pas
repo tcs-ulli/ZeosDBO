@@ -1,7 +1,7 @@
 {*********************************************************}
 {                                                         }
 {                 Zeos Database Objects                   }
-{         Sybase SQL Anywhere Connectivity Classes        }
+{         Interbase Database Connectivity Classes         }
 {                                                         }
 {        Originally written by Sergey Merkuriev           }
 {                                                         }
@@ -93,6 +93,8 @@ type
   protected
     procedure InternalCreate; override;
   public
+    destructor Destroy; override;
+
     function GetDBHandle: PZASASQLCA;
     function GetPlainDriver: IZASAPlainDriver;
 //    procedure CreateNewDatabase(SQL: String);
@@ -198,7 +200,9 @@ end;
 }
 function TZASADriver.GetTokenizer: IZTokenizer;
 begin
-  Result := TZSybaseTokenizer.Create; { thread save! Allways return a new Tokenizer! }
+  if Tokenizer = nil then
+    Tokenizer := TZSybaseTokenizer.Create;
+  Result := Tokenizer;
 end;
 
 {**
@@ -207,7 +211,9 @@ end;
 }
 function TZASADriver.GetStatementAnalyser: IZStatementAnalyser;
 begin
-  Result := TZSybaseStatementAnalyser.Create; { thread save! Allways return a new Analyser! }
+  if Analyser = nil then
+    Analyser := TZSybaseStatementAnalyser.Create;
+  Result := Analyser;
 end;
 
 { TZASAConnection }
@@ -362,7 +368,18 @@ function TZASAConnection.CreateRegularStatement(
 begin
   if IsClosed then
      Open;
-  Result := TZASAPreparedStatement.Create(Self, Info);
+  Result := TZASAStatement.Create(Self, Info);
+end;
+
+{**
+  Destroys this object and cleanups the memory.
+}
+destructor TZASAConnection.Destroy;
+begin
+  if not Closed then
+    Close;
+
+  inherited;
 end;
 
 {**

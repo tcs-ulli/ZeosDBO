@@ -104,7 +104,7 @@ function SQLTypeToPostgreSQL(SQLType: TZSQLType; IsOidAsBlob: Boolean): string;
   @param Value a binary stream.
   @return a string in PostgreSQL binary string escape format.
 }
-function EncodeBinaryString(SrcBuffer: PAnsiChar; Len: Integer; Quoted: Boolean = False): RawByteString;
+function EncodeBinaryString(const Value: AnsiString): AnsiString;
 
 {**
   Encode string which probably consists of multi-byte characters.
@@ -113,8 +113,8 @@ function EncodeBinaryString(SrcBuffer: PAnsiChar; Len: Integer; Quoted: Boolean 
   @param Value the regular string.
   @return the encoded string.
 }
-function PGEscapeString(SrcBuffer: PAnsiChar; SrcLength: Integer;
-    ConSettings: PZConSettings; Quoted: Boolean): RawByteString;
+function PGEscapeString({%H-}Handle: Pointer; const Value: RawByteString;
+    ConSettings: PZConSettings; {%H-}WasEncoded: Boolean = False): RawByteString;
 
 {**
   Converts an string from escape PostgreSQL format.
@@ -151,8 +151,9 @@ function GetMinorVersion(const Value: string): Word;
   @return a string representation of the parameter.
 }
 function PGPrepareAnsiSQLParam(Value: TZVariant; ClientVarManager: IZClientVariantManager;
-  Connection: IZPostgreSQLConnection; const ChunkSize: Cardinal; const InParamType: TZSQLType;
-  const oidasblob, DateTimePrefix, QuotedNumbers: Boolean;
+  Connection: IZPostgreSQLConnection;
+  PlainDriver: IZPostgreSQLPlainDriver; const ChunkSize: Cardinal;
+  const InParamType: TZSQLType; const oidasblob, DateTimePrefix, QuotedNumbers: Boolean;
   ConSettings: PZConSettings): RawByteString;
 
 implementation
@@ -338,12 +339,12 @@ end;
   @param Value the regular string.
   @return the encoded string.
 }
-function PGEscapeString(SrcBuffer: PAnsiChar; SrcLength: Integer;
-    ConSettings: PZConSettings; Quoted: Boolean): RawByteString;
+function PGEscapeString(Handle: Pointer; const Value: RawByteString;
+    ConSettings: PZConSettings; WasEncoded: Boolean = False): RawByteString;
 var
   I, LastState: Integer;
-  DestLength: Integer;
-  DestBuffer: PAnsiChar;
+  SrcLength, DestLength: Integer;
+  SrcBuffer, DestBuffer: PAnsiChar;
 
   function pg_CS_stat(stat: integer; character: integer;
           CharactersetCode: TZPgCharactersetType): integer;
@@ -485,27 +486,26 @@ var
   end;
 
 begin
-  DestBuffer := SrcBuffer; //safe entry
-  DestLength := Ord(Quoted) shl 1;
+  SrcLength := Length(Value);
+  SrcBuffer := PAnsiChar(Value);
+  DestLength := 2;
   LastState := 0;
   for I := 1 to SrcLength do
   begin
     LastState := pg_CS_stat(LastState,integer(SrcBuffer^),
       TZPgCharactersetType(ConSettings.ClientCodePage.ID));
-    if (SrcBuffer^ in [#0, '''']) or ((SrcBuffer^ = '\') and (LastState = 0)) then
+    if CharInSet(SrcBuffer^, [#0, '''']) or ((SrcBuffer^ = '\') and (LastState = 0)) then
       Inc(DestLength, 4)
     else
       Inc(DestLength);
     Inc(SrcBuffer);
   end;
 
-  SrcBuffer := DestBuffer; //restore entry
+  SrcBuffer := PAnsiChar(Value);
   SetLength(Result, DestLength);
-  DestBuffer := Pointer(Result);
-  if Quoted then begin
-    DestBuffer^ := '''';
-    Inc(DestBuffer);
-  end;
+  DestBuffer := PAnsiChar(Result);
+  DestBuffer^ := '''';
+  Inc(DestBuffer);
 
   LastState := 0;
   for I := 1 to SrcLength do
@@ -527,8 +527,7 @@ begin
     end;
     Inc(SrcBuffer);
   end;
-  if Quoted then
-    DestBuffer^ := '''';
+  DestBuffer^ := '''';
 end;
 
 
@@ -541,35 +540,35 @@ end;
   @param Value a binary stream.
   @return a string in PostgreSQL binary string escape format.
 }
-function EncodeBinaryString(SrcBuffer: PAnsiChar; Len: Integer; Quoted: Boolean = False): RawByteString;
+function EncodeBinaryString(const Value: AnsiString): AnsiString;
 var
   I: Integer;
-  DestLength: Integer;
-  DestBuffer: PAnsiChar;
+  SrcLength, DestLength: Integer;
+  SrcBuffer, DestBuffer: PAnsiChar;
 begin
-  DestBuffer := SrcBuffer; //save entry
-  DestLength := Ord(Quoted) shl 1;
-  for I := 1 to Len do
+  SrcLength := Length(Value);
+  SrcBuffer := PAnsiChar(Value);
+  DestLength := 2;
+  for I := 1 to SrcLength do
   begin
     if (Byte(SrcBuffer^) < 32) or (Byte(SrcBuffer^) > 126)
-    or (SrcBuffer^ in ['''', '\']) then
+    or CharInSet(SrcBuffer^, ['''', '\']) then
       Inc(DestLength, 5)
     else
       Inc(DestLength);
     Inc(SrcBuffer);
   end;
-  SrcBuffer := DestBuffer; //restore
 
+  SrcBuffer := PAnsiChar(Value);
   SetLength(Result, DestLength);
-  DestBuffer := Pointer(Result);
-  if Quoted then begin
-    DestBuffer^ := '''';
-    Inc(DestBuffer);
-  end;
+  DestBuffer := PAnsiChar(Result);
+  DestBuffer^ := '''';
+  Inc(DestBuffer);
 
-  for I := 1 to Len do
+  for I := 1 to SrcLength do
   begin
-    if (Byte(SrcBuffer^) < 32) or (Byte(SrcBuffer^) > 126) or (SrcBuffer^ in ['''', '\']) then
+    if (Byte(SrcBuffer^) < 32) or (Byte(SrcBuffer^) > 126)
+    or CharInSet(SrcBuffer^, ['''', '\']) then
     begin
       DestBuffer[0] := '\';
       DestBuffer[1] := '\';
@@ -585,8 +584,7 @@ begin
     end;
     Inc(SrcBuffer);
   end;
-  if Quoted then
-    DestBuffer^ := '''';
+  DestBuffer^ := '''';
 end;
 
 {**
@@ -699,7 +697,7 @@ begin
         0, ErrorMessage);
     end;
 
-    if ResultHandle <> nil then PlainDriver.PQclear(ResultHandle);
+    if ResultHandle <> nil then PlainDriver.Clear(ResultHandle);
 
     if not ( ConnectionLost and ( LogCategory = lcUnprepStmt ) ) then
       if not (Result = '42P18') then
@@ -732,13 +730,12 @@ end;
   @return a string representation of the parameter.
 }
 function PGPrepareAnsiSQLParam(Value: TZVariant; ClientVarManager: IZClientVariantManager;
-  Connection: IZPostgreSQLConnection; const ChunkSize: Cardinal;
-  const InParamType: TZSQLType; const oidasblob, DateTimePrefix, QuotedNumbers: Boolean;
-  ConSettings: PZConSettings): RawByteString;
+  Connection: IZPostgreSQLConnection; PlainDriver: IZPostgreSQLPlainDriver;
+  const ChunkSize: Cardinal; const InParamType: TZSQLType; const oidasblob,
+  DateTimePrefix, QuotedNumbers: Boolean; ConSettings: PZConSettings): RawByteString;
 var
   TempBlob: IZBlob;
   WriteTempBlob: IZPostgreSQLOidBlob;
-  CharRec: TZCharRec;
 begin
   if ClientVarManager.IsNull(Value)  then
     Result := 'NULL'
@@ -757,11 +754,14 @@ begin
           if QuotedNumbers then Result := #39+Result+#39;
         end;
       stBytes:
-        Result := Connection.EncodeBinary(SoftVarManager.GetAsBytes(Value), True);
-      stString, stUnicodeString: begin
-          CharRec := ClientVarManager.GetAsCharRec(Value, ConSettings.ClientCodePage^.CP);
-          Result := Connection.EscapeString(CharRec.P, CharRec.Len, True);
-        end;
+        Result := Connection.EncodeBinary(SoftVarManager.GetAsBytes(Value));
+      stString, stUnicodeString:
+        if PlainDriver.SupportsStringEscaping(Connection.ClientSettingsChanged) then
+          Result :=  PlainDriver.EscapeString(Connection.GetConnectionHandle,
+            ClientVarManager.GetAsRawByteString(Value), ConSettings, True)
+        else
+          Result := ZDbcPostgreSqlUtils.PGEscapeString(Connection.GetConnectionHandle,
+            ClientVarManager.GetAsRawByteString(Value), ConSettings, True);
       stDate:
         if DateTimePrefix then
           Result := DateTimeToRawSQLDate(ClientVarManager.GetAsDateTime(Value),
@@ -793,7 +793,7 @@ begin
                 if (Connection.IsOidAsBlob) or oidasblob then
                 begin
                   try
-                    WriteTempBlob := TZPostgreSQLOidBlob.Create(Connection.GetPlainDriver, nil, 0,
+                    WriteTempBlob := TZPostgreSQLOidBlob.Create(PlainDriver, nil, 0,
                       Connection.GetConnectionHandle, 0, ChunkSize);
                     WriteTempBlob.WriteBuffer(TempBlob.GetBuffer, TempBlob.Length);
                     Result := IntToRaw(WriteTempBlob.GetBlobOid);
@@ -802,14 +802,30 @@ begin
                   end;
                 end
                 else
-                  Result := Connection.EncodeBinary(TempBlob.GetBuffer, TempBlob.Length, True);
+                  Result := Connection.EncodeBinary(TempBlob.GetString);
               stAsciiStream, stUnicodeStream:
-                if TempBlob.IsClob then begin
-                  CharRec.P := TempBlob.GetPAnsiChar(ConSettings^.ClientCodePage^.CP);
-                  Result := Connection.EscapeString(CharRec.P, TempBlob.Length, True)
-                end else
-                  Result := Connection.EscapeString(GetValidatedAnsiStringFromBuffer(TempBlob.GetBuffer,
-                    TempBlob.Length, ConSettings));
+                if TempBlob.IsClob then
+                  if PlainDriver.SupportsStringEscaping(Connection.ClientSettingsChanged) then
+                    Result := PlainDriver.EscapeString(
+                      Connection.GetConnectionHandle, TempBlob.GetRawByteString,
+                        ConSettings, True)
+                  else
+                    Result := ZDbcPostgreSqlUtils.PGEscapeString(
+                      Connection.GetConnectionHandle, TempBlob.GetRawByteString,
+                        ConSettings, True)
+                else
+                  if PlainDriver.SupportsStringEscaping(Connection.ClientSettingsChanged) then
+                    Result := PlainDriver.EscapeString(
+                      Connection.GetConnectionHandle,
+                      GetValidatedAnsiStringFromBuffer(TempBlob.GetBuffer,
+                        TempBlob.Length, ConSettings),
+                        ConSettings, True)
+                  else
+                    Result := ZDbcPostgreSqlUtils.PGEscapeString(
+                      Connection.GetConnectionHandle,
+                      GetValidatedAnsiStringFromBuffer(TempBlob.GetBuffer,
+                        TempBlob.Length, ConSettings),
+                        ConSettings, True);
             end; {case..}
           end
           else

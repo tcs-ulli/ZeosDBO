@@ -1,16 +1,16 @@
-{ This file was automatically created by Lazarus. Do not edit!
-  This source is only used to compile and install the package.
+{ Dit bestand is automatisch aangemaakt door Lazarus. Niet wijzigen!
+Deze broncode is alleen gebruikt voor compilatie en installatie.
  }
 
-unit zparsesql;
+unit zparsesql; 
 
 interface
 
 uses
   ZSybaseToken, ZGenericSqlAnalyser, ZGenericSqlToken, ZInterbaseAnalyser, 
-  ZInterbaseToken, ZMySqlAnalyser, ZMySqlToken, ZOracleAnalyser, ZOracleToken, 
-  ZPostgreSqlAnalyser, ZPostgreSqlToken, ZScriptParser, ZSelectSchema, 
-  ZSqLiteAnalyser, ZSqLiteToken, ZSybaseAnalyser, ZAdoToken;
+    ZInterbaseToken, ZMySqlAnalyser, ZMySqlToken, ZOracleAnalyser, 
+    ZOracleToken, ZPostgreSqlAnalyser, ZPostgreSqlToken, ZScriptParser, 
+    ZSelectSchema, ZSqLiteAnalyser, ZSqLiteToken, ZSybaseAnalyser; 
 
 implementation
 

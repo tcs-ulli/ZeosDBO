@@ -919,7 +919,6 @@ var
   ResultSet: IZResultSet;
   Metadata: IZResultSetMetadata;
   Current: TZResolverParameter;
-  Len: NativeUInt;
 begin
   if not FCalcDefaults then
      Exit;
@@ -969,10 +968,10 @@ begin
               stBigDecimal:
                 RowAccessor.SetBigDecimal(Current.ColumnIndex, ResultSet.GetBigDecimal(I));
               stString, stAsciiStream, stUnicodeString, stUnicodeStream:
-                if RowAccessor is TZRawRowAccessor then
-                  RowAccessor.SetPAnsiChar(Current.ColumnIndex, ResultSet.GetPAnsiChar(I, Len), @Len)
+                if FConnection.GetConSettings^.ClientCodePage^.IsStringFieldCPConsistent then
+                  RowAccessor.SetRawByteString(Current.ColumnIndex, ResultSet.GetRawByteString(I))
                 else
-                  RowAccessor.SetPWideChar(Current.ColumnIndex, ResultSet.GetPWideChar(I, Len), @Len);
+                  RowAccessor.SetUnicodeString(Current.ColumnIndex, ResultSet.GetUnicodeString(I));
               stBytes, stGUID:
                 RowAccessor.SetBytes(Current.ColumnIndex, ResultSet.GetBytes(I));
               stDate:

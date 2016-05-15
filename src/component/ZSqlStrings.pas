@@ -106,7 +106,6 @@ type
     procedure Changed; override;
     function FindParam(const ParamName: string): Integer;
     procedure RebuildAll;
-    procedure SetTextStr(const Value: string); override;
   public
     constructor Create;
     destructor Destroy; override;
@@ -233,28 +232,30 @@ end;
 
 function TZSQLStrings.GetTokenizer: IZTokenizer;
 var
+  Tokenizer: IZTokenizer;
   Driver: IZDriver;
 begin
   { Defines a SQL specific tokenizer object. }
-  Result := nil;
+  Tokenizer := CommonTokenizer;
   if FDataset is TZAbstractRODataset then
   begin
     if Assigned(TZAbstractRODataset(FDataset).Connection) then
     begin
       Driver := TZAbstractRODataset(FDataset).Connection.DbcDriver;
       if Assigned(Driver) then
-        Result := Driver.GetTokenizer;
+        Tokenizer := Driver.GetTokenizer;
     end;
   end
   else if FDataset is TZSQLProcessor then
+  begin
     if Assigned(TZSQLProcessor(FDataset).Connection) then
     begin
       Driver := TZSQLProcessor(FDataset).Connection.DbcDriver;
       if Assigned(Driver) then
-        Result := Driver.GetTokenizer;
+        Tokenizer := Driver.GetTokenizer;
     end;
-  if Result = nil then
-    Result := TZGenericSQLTokenizer.Create; { thread save! Allways return a new Tokenizer! }
+  end;
+  Result:=Tokenizer;
 end;
 
 {**
@@ -280,12 +281,6 @@ begin
   end;
 end;
 
-procedure TZSQLStrings.SetTextStr(const Value: string);
-begin
-  if Value <> Text then //prevent rebuildall if nothing changed see:
-    inherited SetTextStr(Value);
-end;
-
 {**
   Sets a new ParamChar value.
   @param Value a new ParamCheck value.
@@ -295,7 +290,7 @@ begin
   if FParamChar <> Value then
   begin
     If not(GetTokenizer.GetCharacterState(Value) is TZSymbolstate) Then
-      raise EZDatabaseError.Create(cSIncorrectParamChar+' : '+Value);
+      raise EZDatabaseError.Create('Ongeldige ParamChar waarde : '+Value);
     FParamChar := Value;
     RebuildAll;
   end;

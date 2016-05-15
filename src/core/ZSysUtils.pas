@@ -147,19 +147,31 @@ function EndsWith(const Str, SubStr: RawByteString): Boolean; overload;
 function EndsWith(const Str, SubStr: ZWideString): Boolean; overload;
 
 {**
+  Converts SQL AnsiString/RawByteString into float value.
+  Possible is SQLFloat, Float, Hex, Money+Suffix and ThousandSeparators
+  @param Str an SQL AnsiString/RawByteString with comma or dot delimiter.
+  @param Def a default value if the string can not be converted.
+  @return a converted value or Def if conversion did fail.
+}
+function SQLStrToFloatDef(const Str: RawByteString; const Def: Extended): Extended; overload;
+
+{**
   Converts SQL PAnsiChar into float value.
   Possible is SQLFloat, Float, Hex, Money+Suffix and ThousandSeparators
   @param Str an SQL PAnsiChar with comma or dot delimiter.
   @param Def a default value if the PAnsiChar can not be converted.
   @return a converted value or Def if conversion did fail.
 }
-function SQLStrToFloatDef(Value: PAnsiChar; const Def: Extended; Len: Integer = 0): Extended; overload;
-procedure SQLStrToFloatDef(Value: PAnsiChar; const Def: Extended; var Result: Extended; Len: Integer = 0); overload;
-procedure SQLStrToFloatDef(Value: PAnsiChar; const Def: Currency; var Result: Currency; Len: Integer = 0); overload;
-{$IF defined(DELPHI) or defined(FPC_HAS_TYPE_EXTENDED)}
-procedure SQLStrToFloatDef(Value: PAnsiChar; const Def: Double; var Result: Double; Len: Integer = 0); overload;
-{$IFEND}
-procedure SQLStrToFloatDef(Value: PAnsiChar; const Def: Single; var Result: Single; Len: Integer = 0); overload;
+function SQLStrToFloatDef(Buffer: PAnsiChar; const Def: Extended; Len: Integer = 0): Extended; overload;
+
+{**
+  Converts SQL WideString/Unicodestring into float value.
+  Possible is SQLFloat, Float, Hex, Money+Suffix and ThousandSeparators
+  @param Str an SQL WideString/Unicodestring with comma or dot delimiter.
+  @param Def a default value if the string can not be converted.
+  @return a converted value or Def if conversion did fail.
+}
+function SQLStrToFloatDef(const Str: ZWideString; const Def: Extended): Extended; overload;
 
 {**
   Converts SQL PWideChar into float value.
@@ -168,13 +180,7 @@ procedure SQLStrToFloatDef(Value: PAnsiChar; const Def: Single; var Result: Sing
   @param Def a default value if the string can not be converted.
   @return a converted value or Def if conversion did fail.
 }
-function SQLStrToFloatDef(Value: PWideChar; const Def: Extended; Len: Integer = 0): Extended; overload;
-procedure SQLStrToFloatDef(Value: PWideChar; const Def: Extended; var Result: Extended; Len: Integer = 0); overload;
-procedure SQLStrToFloatDef(Value: PWideChar; const Def: Currency; var Result: Currency; Len: Integer = 0); overload;
-{$IF defined(DELPHI) or defined(FPC_HAS_TYPE_EXTENDED)}
-procedure SQLStrToFloatDef(Value: PWideChar; const Def: Double; var Result: Double; Len: Integer = 0); overload;
-{$IFEND}
-procedure SQLStrToFloatDef(Value: PWideChar; const Def: Single; var Result: Single; Len: Integer = 0); overload;
+function SQLStrToFloatDef(Buffer: PWideChar; const Def: Extended; Len: Integer = 0): Extended; overload;
 
 {**
   Converts a character buffer into pascal string.
@@ -818,458 +824,204 @@ end;
 
 {**
   Converts SQL AnsiString/RawByteString into float value.
+  Possible is Hex, Money+Suffix and ThousandSeparators
+  @param Str an SQL AnsiString/RawByteString with comma or dot delimiter.
+  @param Def a default value if the string can not be converted.
+  @return a converted value or Def if conversion was failt.
+}
+function SQLStrToFloatDef(const Str: RawByteString; const Def: Extended): Extended;
+begin
+  Result := Def;
+  if not (Str = '') then
+    Result := SQLStrToFloatDef(PAnsiChar(Str), Def);
+end;
+
+{**
+  Converts SQL AnsiString/RawByteString into float value.
   Possible is SQLFloat, Float, Hex, Money+Suffix and ThousandSeparators
   @param Str an SQL AnsiString/RawByteString with comma or dot delimiter.
   @param Def a default value if the string can not be converted.
   @return a converted value or Def if conversion was failt.
 }
-function SQLStrToFloatDef(Value: PAnsiChar; const Def: Extended;
+function SQLStrToFloatDef(Buffer: PAnsiChar; const Def: Extended;
   Len: Integer = 0): Extended;
-begin
-  SQLStrToFloatDef(Value, Def, Result{%H-}, Len);
-end;
-
-function CurrToRawBuff(Value: PAnsiChar; Buf: PByteArray; Len: Integer): Boolean;
 var
   I, ValidCount, InvalidPos, DotPos, CommaPos: Integer;
-label Fail;
+  Value: TBytes;
 begin
-  Result := True;
-  DotPos := 0; CommaPos := 0; ValidCount := 0; InvalidPos := 0;
-  FillChar(Buf^, Len+1, {$IFDEF Use_FastCodeFillChar}#0{$ELSE}0{$ENDIF});
-  for i := 0 to Len-1 do
-    case (Value+i)^ of
-      '0'..'9':
-        begin
-          Buf[ValidCount] := Ord((Value+i)^);
-          Inc(ValidCount);
-        end;
-      ',':
-        if ((I-InvalidPos-DotPos) = 3) or ((DotPos=0) and (ValidCount > 0)) then //all others are invalid!
-        begin
-          CommaPos := I;
-          if DotPos = 0 then
-            Inc(ValidCount)
-          else //align result four Byte block and overwrite last ThousandSeparator
-            PLongWord(@Buf[DotPos-1])^ := PLongWord(@Buf[DotPos])^;
-          Buf[ValidCount-1] := Ord('.');
-        end
-        else
-          Goto Fail;
-      '-', '+':
-        begin
-          Buf[ValidCount] := Ord((Value+i)^);
-          Inc(ValidCount);
-        end;
-      '.':
-        begin
-          if DotPos > 0 then //previously init so commapos can't be an issue here
-          begin
-            if (I-InvalidPos-DotPos) = 3 then //all others are invalid!
-            begin
-              PLongWord(@Buf[DotPos-1])^ := PLongWord(@Buf[DotPos])^;
-              Buf[ValidCount-1] := Ord('.');
-              Inc(InvalidPos);
-            end
+  Result := Def;
+  if Assigned(Buffer) then
+  begin
+    Result := ValRawExt(Buffer, '.', InvalidPos{%H-});
+    if InvalidPos <> 0 then //posible MoneyType
+      if (Buffer+InvalidPos-1)^ = ',' then  //nope no money. Just a comma instead of dot.
+        Result := RawToFloatDef(Buffer, ',', Def)
+      else
+      begin
+        Result := Def;
+        if Len = 0 then Len := ZFastCode.StrLen(Buffer);
+        SetLength(Value, Len+1);
+        DotPos := 0; CommaPos := 0; ValidCount := 0; InvalidPos := 0;
+        FillChar(Pointer(Value)^, Len+1, {$IFDEF Use_FastCodeFillChar}#0{$ELSE}0{$ENDIF});
+        for i := 0 to Len-1 do
+          case (Buffer+i)^ of
+            '0'..'9':
+              begin
+                Value[ValidCount] := Ord((Buffer+i)^);
+                Inc(ValidCount);
+              end;
+            ',':
+              if (I-InvalidPos-DotPos-1) = 3 then //all others are invalid!
+              begin
+                CommaPos := I;
+                if DotPos = 0 then
+                  Inc(ValidCount)
+                else //align result four Byte block and overwrite last ThousandSeparator
+                  PLongWord(@Value[DotPos-1])^ := PLongWord(@Value[DotPos])^;
+                Value[ValidCount-1] := Ord('.');
+              end
+              else
+                Exit;
+            '-', '+':
+              begin
+                Value[ValidCount] := Ord((Buffer+i)^);
+                Inc(ValidCount);
+              end;
+            '.':
+              begin
+                if DotPos > 0 then //previously init so commapos can't be an issue here
+                begin
+                  if (I-InvalidPos-DotPos-1) = 3 then //all others are invalid!
+                  begin
+                    PLongWord(@Value[DotPos-1])^ := PLongWord(@Value[DotPos])^;
+                    Value[ValidCount-1] := Ord('.');
+                    Inc(InvalidPos);
+                  end
+                  else
+                    Exit;
+                end
+                else
+                  if I < CommaPos then
+                    Exit
+                  else
+                  begin
+                    Value[ValidCount] := Ord('.');
+                    Inc(ValidCount);
+                  end;
+                DotPos := ValidCount;
+              end;
             else
-              Goto Fail;
-          end
-          else
-            if I < CommaPos then
-              Goto Fail
-            else
-            begin
-              Buf[ValidCount] := Ord('.');
-              Inc(ValidCount);
-            end;
-          DotPos := ValidCount;
-        end;
-      else
-        if (ValidCount > 0) then
-          if (Value+i)^ = ' ' then //641,22 $ f.e.
-            Break
-          else
-            Goto Fail
-        else
-          InvalidPos := i+1;
-    end;
-  Exit;
-Fail:
-  Result := False;
-end;
-
-procedure SQLStrToFloatDef(Value: PAnsiChar; const Def: Extended;
-  var Result: Extended; Len: Integer = 0);
-var
-  InvalidPos: Integer;
-  DynBuf: TBytes;
-  StatBuf: Array[0..32] of Byte;
-  PBuf: PByteArray;
-begin
-  Result := Def;
-  if Assigned(Value) then
-  begin
-    Result := ValRawExt(Pointer(Value), '.', InvalidPos{%H-});
-    if InvalidPos <> 0 then //posible MoneyType
-      if ((Value+InvalidPos-1)^ = ',') and ((Value+Len*Ord(Len>0)-1)^ in ['0'..'9']) then  //nope no money. Just a comma instead of dot.
-        RawToFloatDef(Value, ',', Def, Result)
-      else
-      begin
-        if Len = 0 then
-          Len := ZFastCode.StrLen(Value);
-        if (InvalidPos > 1) and ((Value+InvalidPos-1)^ = ' ') then
-          Exit;//fixed width str
-        if Len > SizeOf(StatBuf)-1 then begin
-          SetLength(DynBuf, Len+1);
-          PBuf := Pointer(DynBuf);
-        end else
-          PBuf := @StatBuf[0];
-        if CurrToRawBuff(Value, PBuf, Len) then
-          RawToFloatDef(PAnsiChar(PBuf), '.', Def, Result)
-        else
-          Result := Def;
-      end;
-  end;
-end;
-
-procedure SQLStrToFloatDef(Value: PAnsiChar; const Def: Currency;
-  var Result: Currency; Len: Integer = 0);
-var
-  InvalidPos: Integer;
-  DynBuf: TBytes;
-  StatBuf: Array[0..32] of Byte;
-  PBuf: PByteArray;
-begin
-  Result := Def;
-  if Assigned(Value) then
-  begin
-    Result := ValRawDbl(Pointer(Value), '.', InvalidPos{%H-});
-    if InvalidPos <> 0 then //posible MoneyType
-      if ((Value+InvalidPos-1)^ = ',') and ((Value+Len*Ord(Len>0)-1)^ in ['0'..'9']) then  //nope no money. Just a comma instead of dot.
-        RawToFloatDef(Value, ',', Def, Result)
-      else
-      begin
-        if Len = 0 then
-          Len := ZFastCode.StrLen(Value);
-        if (InvalidPos > 1) and ((Value+InvalidPos-1)^ = ' ') then
-          Exit;//fixed width str
-        if Len > SizeOf(StatBuf)-1 then begin
-          SetLength(DynBuf, Len+1);
-          PBuf := Pointer(DynBuf);
-        end else
-          PBuf := @StatBuf[0];
-        if CurrToRawBuff(Value, PBuf, Len) then
-          RawToFloatDef(PAnsiChar(PBuf), '.', Def, Result)
-        else
-          Result := Def;
-      end;
-  end;
-end;
-
-{$IF defined(DELPHI) or defined(FPC_HAS_TYPE_EXTENDED)}
-procedure SQLStrToFloatDef(Value: PAnsiChar; const Def: Double;
-  var Result: Double; Len: Integer = 0);
-var
-  InvalidPos: Integer;
-  DynBuf: TBytes;
-  StatBuf: Array[0..32] of Byte;
-  PBuf: PByteArray;
-begin
-  Result := Def;
-  if Assigned(Value) then
-  begin
-    Result := ValRawDbl(Pointer(Value), '.', InvalidPos{%H-});
-    if InvalidPos <> 0 then //posible MoneyType
-      if ((Value+InvalidPos-1)^ = ',') and ((Value+Len*Ord(Len>0)-1)^ in ['0'..'9']) then  //nope no money. Just a comma instead of dot.
-        RawToFloatDef(Value, ',', Def, Result)
-      else
-      begin
-        if Len = 0 then
-          Len := ZFastCode.StrLen(Value);
-        if (InvalidPos > 1) and ((Value+InvalidPos-1)^ = ' ') then
-          Exit;//fixed width str
-        if Len > SizeOf(StatBuf)-1 then begin
-          SetLength(DynBuf, Len+1);
-          PBuf := Pointer(DynBuf);
-        end else
-          PBuf := @StatBuf[0];
-        if CurrToRawBuff(Value, PBuf, Len) then
-          RawToFloatDef(PAnsiChar(PBuf), '.', Def, Result)
-        else
-          Result := Def;
-      end;
-  end;
-end;
-{$IFEND}
-
-procedure SQLStrToFloatDef(Value: PAnsiChar; const Def: Single;
-  var Result: Single; Len: Integer = 0);
-var
-  InvalidPos: Integer;
-  DynBuf: TBytes;
-  StatBuf: Array[0..32] of Byte;
-  PBuf: PByteArray;
-begin
-  Result := Def;
-  if Assigned(Value) then
-  begin
-    Result := ValRawSin(Pointer(Value), '.', InvalidPos{%H-});
-    if InvalidPos <> 0 then //posible MoneyType
-      if ((Value+InvalidPos-1)^ = ',') and ((Value+Len*Ord(Len>0)-1)^ in ['0'..'9']) then  //nope no money. Just a comma instead of dot.
-        RawToFloatDef(Value, ',', Def, Result)
-      else
-      begin
-        if Len = 0 then
-          Len := ZFastCode.StrLen(Value);
-        if (InvalidPos > 1) and ((Value+InvalidPos-1)^ = ' ') then
-          Exit;//fixed width str
-        if Len > SizeOf(StatBuf)-1 then begin
-          SetLength(DynBuf, Len+1);
-          PBuf := Pointer(DynBuf);
-        end else
-          PBuf := @StatBuf[0];
-        if CurrToRawBuff(Value, PBuf, Len) then
-          RawToFloatDef(PAnsiChar(PBuf), '.', Def, Result)
-        else
-          Result := Def;
+              if ValidCount > 0 then
+                Exit
+              else
+                InvalidPos := i;
+          end;
+        Result := RawToFloatDef(PAnsiChar(Value), '.', Def);
       end;
   end;
 end;
 
 {**
-  Converts SQL Unicode String into float value.
+  Converts SQL AnsiString/RawByteString into float value.
   Possible is SQLFloat, Float, Hex, Money+Suffix and ThousandSeparators
   @param Str an SQL AnsiString/RawByteString with comma or dot delimiter.
   @param Def a default value if the string can not be converted.
   @return a converted value or Def if conversion was failt.
 }
-function SQLStrToFloatDef(Value: PWideChar; const Def: Extended;
+function SQLStrToFloatDef(Buffer: PWideChar; const Def: Extended;
   Len: Integer = 0): Extended;
-begin
-  SQLStrToFloatDef(Value, Def, Result{%H-}, Len);
-end;
-
-function CurrToUnicodeBuf(Value: PWideChar; Buffer: PWordArray; CodePoints: Integer): Boolean;
 var
   I, ValidCount, InvalidPos, DotPos, CommaPos: Integer;
-label Fail;
+  Value: array of WideChar;
 begin
-  Result := True;
-  DotPos := 0; CommaPos := 0; ValidCount := 0; InvalidPos := 0;
-  FillChar(Pointer(Buffer)^, (CodePoints+1) shl 1, {$IFDEF Use_FastCodeFillChar}#0{$ELSE}0{$ENDIF});
-  for i := 0 to CodePoints-1 do
-    case (Value+i)^ of
-      '0'..'9':
-        begin
-          Buffer[ValidCount] := Ord((Value+i)^);
-          Inc(ValidCount);
-        end;
-      ',':
-        if ((I-InvalidPos-DotPos) = 3) or ((DotPos=0) and (ValidCount > 0)) then //all others are invalid!
-        begin
-          CommaPos := I;
-          if DotPos = 0 then
-            Inc(ValidCount)
-          else //align result eight Byte block and overwrite last ThousandSeparator
-          begin
-            PLongWord(@Buffer[DotPos-1])^ := PLongWord(@Buffer[DotPos])^; //Move first four byte block
-            PLongWord(@Buffer[DotPos+1])^ := PLongWord(@Buffer[DotPos+2])^; //Move second four byte block
+  Result := Def;
+  if Assigned(Buffer) then
+  begin
+    Result := ValUnicodeExt(Buffer, WideChar('.'), InvalidPos{%H-});
+    if InvalidPos <> 0 then //posible MoneyType
+      if (Buffer+InvalidPos-1)^ = ',' then  //nope no money. Just a comma instead of dot.
+        Result := UnicodeToFloatDef(Buffer, WideChar(','), Def)
+      else
+      begin
+        Result := Def;
+        if Len = 0 then
+        {$IFDEF WITH_PWIDECHAR_STRLEN}
+        Len := SysUtils.StrLen(Buffer);
+        {$ELSE}
+        Len := Length(Buffer);
+        {$ENDIF}
+        SetLength(Value, Len+1);
+        DotPos := 0; CommaPos := 0; ValidCount := 0; InvalidPos := 0;
+        FillChar(Pointer(Value)^, (Len+1)*2, {$IFDEF Use_FastCodeFillChar}#0{$ELSE}0{$ENDIF});
+        for i := 0 to Len-1 do
+          case (Buffer+i)^ of
+            '0'..'9':
+              begin
+                Value[ValidCount] := WideChar((Buffer+i)^);
+                Inc(ValidCount);
+              end;
+            ',':
+              if (I-InvalidPos-DotPos-1) = 3 then //all others are invalid!
+              begin
+                CommaPos := I;
+                if DotPos = 0 then
+                  Inc(ValidCount)
+                else //align result eight Byte block and overwrite last ThousandSeparator
+                begin
+                  PLongWord(@Value[DotPos-1])^ := PLongWord(@Value[DotPos])^; //Move first four byte block
+                  PLongWord(@Value[DotPos+1])^ := PLongWord(@Value[DotPos+2])^; //Move second four byte block
+                end;
+                Value[ValidCount-1] := WideChar('.');
+              end
+              else
+                Exit;
+            '-', '+':
+              begin
+                Value[ValidCount] := WideChar((Buffer+i)^);
+                Inc(ValidCount);
+              end;
+            '.':
+              begin
+                if DotPos > 0 then //previously init so commapos can't be an issue here
+                  if (I-InvalidPos-DotPos-1) = 3 then //all others are invalid!
+                  begin
+                    PLongWord(@Value[DotPos-1])^ := PLongWord(@Value[DotPos])^; //Move first four byte block
+                    PLongWord(@Value[DotPos+1])^ := PLongWord(@Value[DotPos+2])^; //Move second four byte block
+                    Value[ValidCount-1] := WideChar('.');
+                    Inc(InvalidPos);
+                  end
+                  else
+                    Exit
+                else
+                  if I < CommaPos then
+                    Exit
+                  else
+                  begin
+                    Value[ValidCount] := WideChar('.');
+                    Inc(ValidCount);
+                  end;
+                DotPos := ValidCount;
+              end;
+            else
+              if ValidCount > 0 then
+                Exit
+              else
+                InvalidPos := i;
           end;
-          Buffer[ValidCount-1] := Ord('.');
-        end
-        else
-          goto Fail;
-      '-', '+':
-        begin
-          Buffer[ValidCount] := Ord((Value+i)^);
-          Inc(ValidCount);
-        end;
-      '.':
-        begin
-          if DotPos > 0 then //previously init so commapos can't be an issue here
-            if (I-InvalidPos-DotPos) = 3 then //all others are invalid!
-            begin
-              PLongWord(@Buffer[DotPos-1])^ := PLongWord(@Buffer[DotPos])^; //Move first four byte block
-              PLongWord(@Buffer[DotPos+1])^ := PLongWord(@Buffer[DotPos+2])^; //Move second four byte block
-              Buffer[ValidCount-1] := Ord('.');
-              Inc(InvalidPos);
-            end
-            else
-              goto Fail
-          else
-            if I < CommaPos then
-              goto Fail
-            else
-            begin
-              Buffer[ValidCount] := Ord('.');
-              Inc(ValidCount);
-            end;
-          DotPos := ValidCount;
-        end;
-      else
-        if (ValidCount > 0) then
-          if (Value+i)^ = ' ' then //641,22 $ f.e. (PostgreSQL)
-            Break
-          else
-            goto Fail
-        else
-          InvalidPos := i+1;
-    end;
-  Exit;
-Fail:
-  Result := False;
-end;
-
-procedure SQLStrToFloatDef(Value: PWideChar; const Def: Extended;
-  var Result: Extended; Len: Integer = 0);
-var
-  InvalidPos: Integer;
-  DynBuf: TWordDynArray;
-  StatBuf: Array[0..32] of Word;
-  PBuf: PWordArray;
-begin
-  Result := Def;
-  if Assigned(Value) then
-  begin
-    Result := ValUnicodeExt(PWordArray(Value), WideChar('.'), InvalidPos{%H-});
-    if InvalidPos <> 0 then //posible MoneyType
-      if ((Value+InvalidPos-1)^ = ',') and (AnsiChar((Value+Len*Ord(Len>0)-1)^) in ['0'..'9']) then  //nope no money. Just a comma instead of dot.
-        UnicodeToFloatDef(Value, WideChar(','), Def, Result)
-      else
-      begin
-        if Len = 0 then
-          {$IFDEF WITH_PWIDECHAR_STRLEN}
-          Len := SysUtils.StrLen(Value)
-          {$ELSE}
-          Len := Length(Value)
-          {$ENDIF}
-        else
-          if (Len < InvalidPos) and ((Value+InvalidPos-1)^ = ' ') then Exit;//fixed width str
-        if Len > SizeOf(StatBuf)-1 then begin
-          SetLength(DynBuf, Len+1);
-          PBuf := Pointer(DynBuf);
-        end else
-          PBuf := @StatBuf[0];
-        if CurrToUnicodeBuf(Value, PBuf, Len) then
-          UnicodeToFloatDef(PWideChar(PBuf), WideChar('.'), Def, Result)
-        else
-          Result := Def;
+        Result := UnicodeToFloatDef(PWideChar(Value), WideChar('.'), Def);
       end;
   end;
 end;
 
-procedure SQLStrToFloatDef(Value: PWideChar; const Def: Currency;
-  var Result: Currency; Len: Integer = 0);
-var
-  InvalidPos: Integer;
-  DynBuf: TWordDynArray;
-  StatBuf: Array[0..32] of Word;
-  PBuf: PWordArray;
+{**
+  Converts SQL WideString/UnicodeString into float value.
+  @param Str an SQL WideString/UnicodeString with comma delimiter.
+  @param Def a default value if the string can not be converted.
+  @return a converted value or Def if conversion was failt.
+}
+function SQLStrToFloatDef(const Str: ZWideString; const Def: Extended): Extended;
 begin
-  Result := Def;
-  if Assigned(Value) then
-  begin
-    Result := ValUnicodeDbl(PWordArray(Value), WideChar('.'), InvalidPos{%H-});
-    if InvalidPos <> 0 then //posible MoneyType
-      if ((Value+InvalidPos-1)^ = ',') and (AnsiChar((Value+Len*Ord(Len>0)-1)^) in ['0'..'9']) then  //nope no money. Just a comma instead of dot.
-        UnicodeToFloatDef(Value, WideChar(','), Def, Result)
-      else
-      begin
-        if Len = 0 then
-          {$IFDEF WITH_PWIDECHAR_STRLEN}
-          Len := SysUtils.StrLen(Value);
-          {$ELSE}
-          Len := Length(Value);
-          {$ENDIF}
-        if (InvalidPos > 1) and ((Value+InvalidPos-1)^ = ' ') then
-          Exit;//fixed width str
-        if Len > SizeOf(StatBuf)-1 then begin
-          SetLength(DynBuf, Len+1);
-          PBuf := Pointer(DynBuf);
-        end else
-          PBuf := @StatBuf[0];
-        if CurrToUnicodeBuf(Value, PBuf, Len) then
-          UnicodeToFloatDef(PWideChar(PBuf), WideChar('.'), Def, Result)
-        else
-          Result := Def;
-      end;
-  end;
-end;
-
-{$IF defined(DELPHI) or defined(FPC_HAS_TYPE_EXTENDED)}
-procedure SQLStrToFloatDef(Value: PWideChar; const Def: Double;
-  var Result: Double; Len: Integer = 0);
-var
-  InvalidPos: Integer;
-  DynBuf: TWordDynArray;
-  StatBuf: Array[0..32] of Word;
-  PBuf: PWordArray;
-begin
-  Result := Def;
-  if Assigned(Value) then
-  begin
-    Result := ValUnicodeDbl(PWordArray(Value), WideChar('.'), InvalidPos{%H-});
-    if InvalidPos <> 0 then //posible MoneyType
-      if ((Value+InvalidPos-1)^ = ',') and (AnsiChar((Value+Len*Ord(Len>0)-1)^) in ['0'..'9']) then  //nope no money. Just a comma instead of dot.
-        UnicodeToFloatDef(Value, WideChar(','), Def, Result)
-      else
-      begin
-        if Len = 0 then
-          {$IFDEF WITH_PWIDECHAR_STRLEN}
-          Len := SysUtils.StrLen(Value);
-          {$ELSE}
-          Len := Length(Value);
-          {$ENDIF}
-        if (InvalidPos > 1) and ((Value+InvalidPos-1)^ = ' ') then
-          Exit;//fixed width str
-        Result := Def;
-        if Len > SizeOf(StatBuf)-1 then begin
-          SetLength(DynBuf, Len+1);
-          PBuf := Pointer(DynBuf);
-        end else
-          PBuf := @StatBuf[0];
-        if CurrToUnicodeBuf(Value, PBuf, Len) then
-          UnicodeToFloatDef(PWideChar(PBuf), WideChar('.'), Def, Result);
-      end;
-  end;
-end;
-{$IFEND}
-
-procedure SQLStrToFloatDef(Value: PWideChar; const Def: Single;
-  var Result: Single; Len: Integer = 0);
-var
-  InvalidPos: Integer;
-  DynBuf: TWordDynArray;
-  StatBuf: Array[0..32] of Word;
-  PBuf: PWordArray;
-begin
-  Result := Def;
-  if Assigned(Value) then
-  begin
-    Result := ValUnicodeSin(PWordArray(Value), WideChar('.'), InvalidPos{%H-});
-    if InvalidPos <> 0 then //posible MoneyType
-      if ((Value+InvalidPos-1)^ = ',') and (AnsiChar((Value+Len*Ord(Len>0)-1)^) in ['0'..'9']) then  //nope no money. Just a comma instead of dot.
-        UnicodeToFloatDef(Value, WideChar(','), Def, Result)
-      else
-      begin
-        if Len = 0 then
-          {$IFDEF WITH_PWIDECHAR_STRLEN}
-          Len := SysUtils.StrLen(Value);
-          {$ELSE}
-          Len := Length(Value);
-          {$ENDIF}
-        if (InvalidPos > 1) and ((Value+InvalidPos-1)^ = ' ') then
-          Exit;//fixed width str
-        Result := Def;
-        if Len > SizeOf(StatBuf)-1 then begin
-          SetLength(DynBuf, Len+1);
-          PBuf := Pointer(DynBuf);
-        end else
-          PBuf := @StatBuf[0];
-        if CurrToUnicodeBuf(Value, PBuf, Len) then
-          UnicodeToFloatDef(PWideChar(Value), WideChar('.'), Def, Result);
-      end;
-  end;
+  Result := SQLStrToFloatDef(PWideChar(Str), Def);
 end;
 
 { Convert string buffer into pascal string }
@@ -2032,7 +1784,7 @@ var
       end;
       if MPos > 2 then //float ValueTmp
       begin
-        Result := {$IFDEF USE_FAST_TRUNC}ZFastCode.{$ENDIF}Trunc(ValRawExt(Pointer(Value), '.', Code{%H-}));
+        Result := {$IFDEF USE_FAST_TRUNC}ZFastCode.{$ENDIF}Trunc(ValRawExt(Value, '.', Code{%H-}));
         Failed := Code <> 0;
         if Failed then  Exit;
       end;
@@ -2054,7 +1806,7 @@ var
           end
           else
           begin
-            Result := {$IFDEF USE_FAST_TRUNC}ZFastCode.{$ENDIF}Trunc(ValRawExt(Pointer(Value), '.', Code));
+            Result := {$IFDEF USE_FAST_TRUNC}ZFastCode.{$ENDIF}Trunc(ValRawExt(Value, '.', Code));
             if Code <> 0 then
               Result := 0;
             Exit;
@@ -2064,7 +1816,7 @@ var
         try
           Result := EncodeDate(Year, Month, Day);
         except
-          Result := {$IFDEF USE_FAST_TRUNC}ZFastCode.{$ENDIF}Trunc(ValRawExt(Pointer(Value), '.', Code));
+          Result := {$IFDEF USE_FAST_TRUNC}ZFastCode.{$ENDIF}Trunc(ValRawExt(Value, '.', Code));
           Failed := Code <> 0;
           if Failed then Result := 0;
         end;
@@ -2204,7 +1956,7 @@ var
       end;
       if NPos > 2 then //float value
       begin
-        Result := Frac(ValRawExt(Pointer(Value), '.', Code));
+        Result := Frac(ValRawExt(Value, '.', Code));
         Failed := Code <> 0;
         if Failed then
           Result := 0;
@@ -2241,7 +1993,7 @@ var
             end
             else
             begin
-              Result := Frac(ValRawExt(Pointer(Value), '.', Code));
+              Result := Frac(ValRawExt(Value, '.', Code));
               Failed := Code <> 0;
               if Failed then Result := 0;
               Exit;
@@ -2250,7 +2002,7 @@ var
       try
         Result := EncodeTime(Hour, Minute, Sec, MSec);
       except
-        Result := Frac(ValRawExt(Pointer(Value), '.', Code));
+        Result := Frac(ValRawExt(Value, '.', Code));
         Failed := Code <> 0;
         if Failed then Result := 0;
       end;
@@ -2496,7 +2248,7 @@ var
 
       if (MPos > 2) and ( DotCount = 1) then //float value
       begin
-        Result := ValRawExt(Pointer(Value), '.', Code{%H-});
+        Result := ValRawExt(Value, '.', Code{%H-});
         Failed := Code <> 0;
         if Failed then
           Result := 0;
@@ -2573,7 +2325,7 @@ var
           else
             if (DotCount = 1) or (DotCount = 0 ) then
             begin
-              Result := ValRawExt(Pointer(Value), '.', Code);
+              Result := ValRawExt(Value, '.', Code);
               Failed := ( Code <> 0 );
               if Failed then Result := 0;
               Exit;
@@ -2614,40 +2366,52 @@ begin
 end;
 
 procedure PrepareDateTimeStr(const Quoted: Boolean; const Suffix: ZWideString;
-  const Len: LengthInt; var Value: ZWideString); overload;
+  const Len: LengthInt; var Value: ZWideString; out P: PWideChar); overload;
 var
   SLen: LengthInt;
-  P: PWideChar;
+  OrdQuoted: ShortInt;
 begin
   SLen := Length(Suffix);
+  OrdQuoted := Ord(Quoted);
   { prepare Value if required }
-  ZSetString(nil, len+(2*Ord(Quoted))+Slen, Value);
+  if Length(Value) <> len+(2*OrdQuoted)+Slen then
+    ZSetString(nil, len+(2*OrdQuoted)+Slen, Value);
   P := Pointer(Value);
-  if Quoted then begin
+  if Quoted then
+  begin
     P^ := #39; //starting quote
-    (P+Len+1)^ := #39; //leading quote
-    if SLen > 0 then //move suffix after leading quote
-      System.Move(Pointer(Suffix)^, (P+Len+2)^, Slen shl 1);
-  end else
+    Inc(P, OrdQuoted); //skip first quote
+    (P+Len)^ := #39; //leading quote
+  end;
   if SLen > 0 then //move suffix after leading quote
-    System.Move(Pointer(Suffix)^, (P+Len)^, Slen shl 1);
+    System.Move(Pointer(Suffix)^, (P+Len+OrdQuoted)^, Slen shl 1);
 end;
 
-procedure PrepareDateTimeStr(const Quoted: Boolean; const Suffix: RawByteString;
-  const Len: LengthInt; var Value: RawByteString); overload;
-var
-  SLen: LengthInt;
-  P: PAnsiChar;
+procedure PrepareDateTimeStr(const Quoted: Boolean;
+  const Suffix: RawByteString; const Len: LengthInt; var Value: RawByteString; out P: PAnsiChar); overload;
+var SLen: LengthInt;
 begin
   SLen := Length(Suffix);
   { prepare Value if required }
-  ZSetString(nil, len+(2*Ord(Quoted))+Slen, Value);
+  if (Pointer(Value) = nil) or//empty
+     ({%H-}PRefCntInt(NativeUInt(Value) - StringRefCntOffSet)^ <> 1) or { unique string ? }
+     (LengthInt(len+(2*Ord(Quoted))+Slen) <> {%H-}PLengthInt(NativeUInt(Value) - StringLenOffSet)^) then { length as expected ? }
+    {$IFDEF MISS_RBS_SETSTRING_OVERLOAD}
+    begin
+      Value := '';
+      SetLength(Value, len+(2*Ord(Quoted))+Slen);
+    end;
+    {$ELSE}
+    SetString(Value, nil, len+(2*Ord(Quoted))+Slen);
+    {$ENDIF}
   P := Pointer(Value);
-  if Quoted then begin
+  if Quoted then
+  begin
     P^ := #39; //starting quote
-    (P+Len+1)^ := #39; //leading quote
+    Inc(P); //skip first quote
+    (P+Len)^ := #39; //leading quote
     if SLen > 0 then //move suffix after leading quote
-      System.Move(Pointer(Suffix)^, (P+Len+2)^, Slen);
+      System.Move(Pointer(Suffix)^, (P+Len+1)^, Slen);
   end
   else
     if SLen > 0 then
@@ -2671,9 +2435,7 @@ var
 begin
   DecodeDateTime(Value, AYear, AMonth, ADay, AHour, AMinute, ASecond, AMilliSecond);
   YearSet := False;
-  PrepareDateTimeStr(Quoted, Suffix, ConFormatSettings.DateFormatLen, Result{%H-});
-  PA := Pointer(Result);
-  Inc(PA, Ord(Quoted));
+  PrepareDateTimeStr(Quoted, Suffix, ConFormatSettings.DateFormatLen, Result{%H-}, PA);
 
   I := ConFormatSettings.DateFormatLen-1;
   DateFormat := Pointer(ConFormatSettings.DateFormat);
@@ -2726,9 +2488,7 @@ var
 begin
   DecodeDateTime(Value, AYear, AMonth, ADay, AHour, AMinute, ASecond, AMilliSecond);
   YearSet := False;
-  PrepareDateTimeStr(Quoted, Suffix, ConFormatSettings.DateFormatLen, Result{%H-});
-  PW := Pointer(Result);
-  Inc(PW, Ord(Quoted));
+  PrepareDateTimeStr(Quoted, Suffix, ConFormatSettings.DateFormatLen, Result{%H-}, PW);
 
   I := ConFormatSettings.DateFormatLen-1;
   DateFormat := Pointer(ConFormatSettings.DateFormat);
@@ -2782,10 +2542,8 @@ var
 begin
   {need fixed size to read from back to front}
   DecodeDateTime(Value, AYear, AMonth, ADay, AHour, AMinute, ASecond, AMilliSecond);
-  PrepareDateTimeStr(Quoted, Suffix, ConFormatSettings.TimeFormatLen, Result{%H-});
+  PrepareDateTimeStr(Quoted, Suffix, ConFormatSettings.TimeFormatLen, Result{%H-}, PA);
   ZSet := False;
-  PA := Pointer(Result);
-  Inc(PA, Ord(Quoted));
 
   I := ConFormatSettings.TimeFormatLen-1;
   TimeFormat := Pointer(ConFormatSettings.TimeFormat);
@@ -2844,10 +2602,8 @@ var
 begin
   {need fixed size to read from back to front}
   DecodeDateTime(Value, AYear, AMonth, ADay, AHour, AMinute, ASecond, AMilliSecond);
-  PrepareDateTimeStr(Quoted, Suffix, ConFormatSettings.TimeFormatLen, Result{%H-});
+  PrepareDateTimeStr(Quoted, Suffix, ConFormatSettings.TimeFormatLen, Result{%H-}, PW);
   ZSet := False;
-  PW := Pointer(Result);
-  Inc(PW, Ord(Quoted));
 
   I := ConFormatSettings.TimeFormatLen-1;
   TimeFormat := Pointer(ConFormatSettings.TimeFormat);
@@ -2907,11 +2663,9 @@ var
 begin
   {need fixed size to read from back to front}
   DecodeDateTime(Value, AYear, AMonth, ADay, AHour, AMinute, ASecond, AMilliSecond);
-  PrepareDateTimeStr(Quoted, Suffix, ConFormatSettings.DateTimeFormatLen, Result{%H-});
+  PrepareDateTimeStr(Quoted, Suffix, ConFormatSettings.DateTimeFormatLen, Result{%H-}, PA);
   ZSet := False;
   YearSet := False;
-  PA := Pointer(Result);
-  Inc(PA, Ord(Quoted));
 
   I := ConFormatSettings.DateTimeFormatLen-1;
   TimeStampFormat := Pointer(ConFormatSettings.DateTimeFormat);
@@ -2991,11 +2745,9 @@ var
 begin
   {need fixed size to read from back to front}
   DecodeDateTime(Value, AYear, AMonth, ADay, AHour, AMinute, ASecond, AMilliSecond);
-  PrepareDateTimeStr(Quoted, Suffix, ConFormatSettings.DateTimeFormatLen, Result{%H-});
+  PrepareDateTimeStr(Quoted, Suffix, ConFormatSettings.DateTimeFormatLen, Result{%H-}, PW);
   ZSet := False;
   YearSet := False;
-  PW := Pointer(Result);
-  Inc(PW, Ord(Quoted));
 
   I := ConFormatSettings.DateTimeFormatLen-1;
   TimeStampFormat := Pointer(ConFormatSettings.DateTimeFormat);
@@ -3424,15 +3176,11 @@ begin
 end;
 
 function ASCII7ToUnicodeString(const Src: RawByteString): ZWideString;
-var I: Integer;
 begin
   if Pointer(Src) = nil then
     Result := ''
-  else begin
-    System.SetString(Result, nil, {%H-}PLengthInt(NativeUInt(Src) - StringLenOffSet)^);
-    for i := 0 to {%H-}PLengthInt(NativeUInt(Src) - StringLenOffSet)^-1 do
-      PWordArray(Result)[i] := PByteArray(Src)[i]; //0..255 equals to widechars
-  end;
+  else
+    ZSetString(Pointer(Src), {%H-}PLengthInt(NativeUInt(Src) - StringLenOffSet)^, Result);
 end;
 
 function ASCII7ToUnicodeString(Src: PAnsiChar; const Len: LengthInt): ZWideString;

@@ -1,7 +1,7 @@
 {*********************************************************}
 {                                                         }
 {                 Zeos Database Objects                   }
-{         Sybase SQL Anywhere Connectivity Classes        }
+{         Interbase Database Connectivity Classes         }
 {                                                         }
 {        Originally written by Sergey Merkuriev           }
 {                                                         }
@@ -208,9 +208,7 @@ type
     FASAConnection: TZASAConnection;
     function ComposeObjectString(const S: String; Const NullText: String = 'null';
       QuoteChar: Char = #39): String;
-    function ConvertEscapes(Pattern: String): String;
   protected
-    function DecomposeObjectString(const S: String): String; override;
     function CreateDatabaseInfo: IZDatabaseInfo; override; // technobot 2008-06-28
 
     function UncachedGetTables(const Catalog: string; const SchemaPattern: string;
@@ -1202,29 +1200,6 @@ end;
 
 { TZASADatabaseMetadata }
 
-function TZASADatabaseMetadata.ConvertEscapes(Pattern: String): String;
-var
-  EscapeChar: Char;
-  P: PChar;
-begin
-  Result := '';
-  if Length(Pattern) = 0 then Exit;
-  EscapeChar := GetDatabaseInfo.GetSearchStringEscape[1];
-  P := Pointer(Pattern);
-  ClearBuf;
-  while P^ <> #0 do begin
-    if (P^ = EscapeChar) and (((P+1)^ = WildcardsArray[0]) or ((P+1)^=WildcardsArray[1])) then begin
-      ToBuf('[', Result);
-      Inc(P);
-      ToBuf(P^, Result);
-      ToBuf(']', Result);
-    end else
-      ToBuf(P^, Result);
-    Inc(P);
-  end;
-  FlushBuf(Result);
-end;
-
 {**
   Constructs this object and assignes the main properties.
   @param Connection a database connection object.
@@ -1250,11 +1225,11 @@ function TZASADatabaseMetadata.ComposeObjectString(const S: String;
 begin
   if S = '' then
     Result := NullText
-  else begin
-    Result := ConvertEscapes(S);
-    if not IC.IsQuoted(Result) then
-      Result := AnsiQuotedStr(Result, QuoteChar);
-  end;
+  else
+    if IC.IsQuoted(s) then
+      Result := S
+    else
+      Result := AnsiQuotedStr(S, QuoteChar);
 end;
 
 {**
@@ -1265,11 +1240,6 @@ end;
 function TZASADatabaseMetadata.CreateDatabaseInfo: IZDatabaseInfo;
 begin
   Result := TZASADatabaseInfo.Create(Self);
-end;
-
-function TZASADatabaseMetadata.DecomposeObjectString(const S: String): String;
-begin
-  Result := AnsiQuotedStr(Inherited DecomposeObjectString(S), #39);
 end;
 
 {**
@@ -1610,13 +1580,6 @@ function TZASADatabaseMetadata.UncachedGetColumns(const Catalog: string;
   const SchemaPattern: string; const TableNamePattern: string;
   const ColumnNamePattern: string): IZResultSet;
 var Len: NativeUInt;
-  function ObjectToSearchString(const S, LikePattern: String): String;
-  begin
-    if S='' then
-      Result := LikePattern
-    else
-      Result := DeComposeObjectString(S)+' ESCAPE '''+GetDataBaseInfo.GetSearchStringEscape+''''
-  end;
 begin
   Result:=inherited UncachedGetColumns(Catalog, SchemaPattern, TableNamePattern, ColumnNamePattern);
 
@@ -1659,12 +1622,18 @@ begin
     Close;
   end;
   Result.First;
-  with GetStatement.ExecuteQuery('select c.column_id,c.nulls '+
+  with GetStatement.ExecuteQuery(
+      Format('select c.column_id,c.nulls '+
         'from SYS.SYSCOLUMN as c join SYS.SYSTABLE as t on c.table_id=t.table_id '+
-        'where t.table_name like '+ObjectToSearchString(TableNamePattern, 'NULL')+' and '+
-        'USER_NAME(t.creator) like '+ObjectToSearchString(SchemaPattern, '''%''')+' and '+
-        'c.column_name like '+ObjectToSearchString(ColumnNamePattern, '''%''')+' and c.column_type=''C'' '+
-        'order by USER_NAME(t.creator) asc,t.table_name asc,c.column_id asc') do
+        'where t.table_name like ''%s'' escape ''\'' and '+
+        //'where t.table_name like %s escape ''\'' and '+
+        'USER_NAME(t.creator) like %s escape ''\'' and '+
+        'c.column_name like %s escape ''\'' and c.column_type=''C'' '+
+        'order by USER_NAME(t.creator) asc,t.table_name asc,c.column_id asc',
+        [DeComposeObjectString(TableNamePattern),//, '''%'''),
+        //[ComposeObjectString(TableNamePattern), '''%'''),
+         ComposeObjectString(SchemaPattern, '''%'''),
+         ComposeObjectString(ColumnNamePattern, '''%''')])) do
   begin
     while Next do
     begin

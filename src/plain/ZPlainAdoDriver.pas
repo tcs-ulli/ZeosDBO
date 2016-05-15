@@ -54,14 +54,13 @@ unit ZPlainAdoDriver;
 interface
 
 {$I ZPlain.inc}
-{$IFDEF ENABLE_ADO}
 
 uses ZClasses, ZPlainDriver;
 
 type
   TZAdoPlainDriver = class (TZAbstractPlainDriver, IZPlainDriver)
   protected
-    function GetUnicodeCodePageName: String; override;
+    function IsAnsiDriver: Boolean; override;
   public
     constructor Create;
 
@@ -72,15 +71,18 @@ type
     function Clone: IZPlainDriver; override;
   end;
 
-{$ENDIF ENABLE_ADO}
 implementation
-{$IFDEF ENABLE_ADO}
 
-uses ZCompatibility, ZEncoding, Windows;
+uses ZCompatibility, ZEncoding;
 
 procedure TZAdoPlainDriver.LoadCodePages;
 begin
-  AddCodePage('CP_UTF16', 0, ceUTF16, GetACP,'', 1, True);
+  AddCodePage('CP_ADO', 0, ceAnsi, ZDefaultSystemCodePage,'',1, False);
+end;
+
+function TZAdoPlainDriver.IsAnsiDriver: Boolean;
+begin
+  Result := False;
 end;
 
 constructor TZAdoPlainDriver.Create;
@@ -91,11 +93,6 @@ end;
 function TZAdoPlainDriver.GetProtocol: string;
 begin
   Result := 'ado';
-end;
-
-function TZAdoPlainDriver.GetUnicodeCodePageName: String;
-begin
-  Result := 'CP_UTF16';
 end;
 
 function TZAdoPlainDriver.GetDescription: string;
@@ -112,6 +109,5 @@ begin
   Result := Self;
 end;
 
-{$ENDIF ENABLE_ADO}
 end.
 

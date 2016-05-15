@@ -83,7 +83,6 @@ unit ZPlainAdo;
 interface
 
 {$I ZPlain.inc}
-{$IFDEF ENABLE_ADO}
 
 uses Windows, Classes, ActiveX;
 
@@ -1709,15 +1708,18 @@ type
     class function CreateRemote(const MachineName: string): _Parameter;
   end;
 
-{$ENDIF ENABLE_ADO}
 implementation
-{$IFDEF ENABLE_ADO}
 
 uses ComObj;
 
 class function CoConnection.Create: Connection15;
 begin
-  Result := CreateComObject(CLASS_Connection) as Connection15;
+  try
+    Result := CreateComObject(CLASS_Connection) as Connection15;
+  except
+    CoInitialize(nil);
+    Result := CreateComObject(CLASS_Connection) as Connection15;
+  end;
 end;
 
 class function CoConnection.CreateRemote(const MachineName: string): Connection15;
@@ -1775,6 +1777,5 @@ begin
   Result := CreateRemoteComObject(MachineName, CLASS_Parameter) as _Parameter;
 end;
 
-{$ENDIF ENABLE_ADO}
 end.
 

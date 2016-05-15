@@ -107,15 +107,7 @@ type
     tokenizer argument.
   }
   TZTokenizerState = class (TObject)
-  private
-    fCurrentBufIndex: Byte;
-    fBuf: Array[Byte] of Char;
-  protected
   public
-    procedure InitBuf(FirstChar: Char); {$IFDEF WITH_INLINE}inline;{$ENDIF}
-    procedure ClearBuf; {$IFDEF WITH_INLINE}inline;{$ENDIF}
-    procedure FlushBuf(var Value: String); {$IFDEF WITH_INLINE}inline;{$ENDIF}
-    procedure ToBuf(C: Char; var Value: String); {$IFDEF WITH_INLINE}inline;{$ENDIF}
     function NextToken(Stream: TStream; FirstChar: Char;
       Tokenizer: TZTokenizer): TZToken; virtual; abstract;
   end;
@@ -203,8 +195,8 @@ type
   }
   TZCppCommentState = class (TZCommentState)
   protected
-    procedure GetMultiLineComment(Stream: TStream; var Result: String); virtual;
-    procedure GetSingleLineComment(Stream: TStream; var Result: String); virtual;
+    function GetMultiLineComment(Stream: TStream): string; virtual;
+    function GetSingleLineComment(Stream: TStream): string; virtual;
   public
     function NextToken(Stream: TStream; FirstChar: Char;
       Tokenizer: TZTokenizer): TZToken; override;
@@ -678,13 +670,15 @@ var
   AbsorbedDot: Boolean;
   GotAdigit: Boolean;
 
-  procedure AbsorbDigits;
+  function AbsorbDigits: string;
   begin
-    while (Ord(FirstChar) >= Ord('0')) and (Ord(FirstChar) <= Ord('9')) do begin
-      ToBuf(FirstChar, Result.Value);
+    Result := '';
+    while CharInSet(FirstChar, ['0'..'9']) do
+    begin
       GotAdigit := True;
+      Result := Result + FirstChar;
       ReadNum := Stream.Read(FirstChar, SizeOf(Char));
-      if (ReadNum = 0) then
+      if ReadNum = 0 then
         Break;
     end;
   end;
@@ -702,22 +696,21 @@ begin
   { Parses left part of the number. }
   if FirstChar = '-' then
   begin
-    InitBuf(FirstChar);
     ReadNum := Stream.Read(FirstChar, SizeOf(Char));
+    Result.Value := '-';
     AbsorbedLeadingMinus := True;
-  end else ClearBuf;
-  AbsorbDigits;
+  end;
+  Result.Value := Result.Value + AbsorbDigits;
 
   { Parses right part of the number. }
   if FirstChar = '.' then
   begin
     AbsorbedDot := True;
-    ToBuf(FirstChar, Result.Value);
+    Result.Value := Result.Value + '.';
     ReadNum := Stream.Read(FirstChar, SizeOf(Char));
     if ReadNum > 0 then
-      AbsorbDigits;
+      Result.Value := Result.Value + AbsorbDigits;
   end;
-  FlushBuf(Result.Value);
 
   { Pushback wrong symbols. }
   Stream.Seek(-ReadNum, soFromCurrent);
@@ -725,18 +718,25 @@ begin
   { Gets a token result. }
   if not GotAdigit then
   begin
-    if AbsorbedLeadingMinus and AbsorbedDot then begin
+    if AbsorbedLeadingMinus and AbsorbedDot then
+    begin
       Stream.Seek(-SizeOf(Char), soFromCurrent);
       if Tokenizer.SymbolState <> nil then
         Result := Tokenizer.SymbolState.NextToken(Stream, '-', Tokenizer);
-    end else if AbsorbedLeadingMinus then begin
+    end
+    else if AbsorbedLeadingMinus then
+    begin
       if Tokenizer.SymbolState <> nil then
       Result := Tokenizer.SymbolState.NextToken(Stream, '-', Tokenizer)
-    end else if AbsorbedDot then begin
+    end
+    else if AbsorbedDot then
+    begin
       if Tokenizer.SymbolState <> nil then
         Result := Tokenizer.SymbolState.NextToken(Stream, '.', Tokenizer);
     end;
-  end else begin
+  end
+  else
+  begin
     if AbsorbedDot then
       Result.TokenType := ttFloat
     else
@@ -757,17 +757,17 @@ function TZQuoteState.NextToken(Stream: TStream; FirstChar: Char;
   Tokenizer: TZTokenizer): TZToken;
 var
   TempChar: Char;
+  TempStr: string;
 begin
-  InitBuf(FirstChar);
-  Result.Value := '';
+  TempStr := FirstChar;
   repeat
     if Stream.Read(TempChar, SizeOf(Char)) = 0 then
       TempChar := FirstChar;
-    ToBuf(TempChar, Result.Value);
+    TempStr := TempStr + TempChar;
   until TempChar = FirstChar;
-  FlushBuf(Result.Value);
 
   Result.TokenType := ttQuoted;
+  Result.Value := TempStr;
 end;
 
 {**
@@ -796,7 +796,7 @@ begin
     Result := Value;
 end;
 
-{ TZCommentState }
+{ TZBasicCommentState }
 
 {**
   Either delegate to a comment-handling state, or return a
@@ -809,17 +809,16 @@ function TZCommentState.NextToken(Stream: TStream; FirstChar: Char;
   Tokenizer: TZTokenizer): TZToken;
 var
   ReadChar: Char;
+  ReadStr: string;
 begin
-  InitBuf(FirstChar);
-  Result.Value := '';
+  ReadStr := FirstChar;
   while (Stream.Read(ReadChar, SizeOf(Char)) > 0) and not CharInSet(ReadChar, [#10, #13]) do
-    ToBuf(ReadChar, Result.Value);
-  FlushBuf(Result.Value);
-
-  if CharInSet(ReadChar, [#10, #13]) then
+      ReadStr := ReadStr + ReadChar;
+    if CharInSet(ReadChar, [#10, #13]) then
     Stream.Seek(-SizeOf(Char), soFromCurrent);
 
   Result.TokenType := ttComment;
+  Result.Value := ReadStr;
 end;
 
 { TZCppCommentState }
@@ -829,14 +828,15 @@ end;
   then return the tokenizer's next token.
   @return the tokenizer's next token
 }
-procedure TZCppCommentState.GetMultiLineComment(Stream: TStream; var Result: String);
+function TZCppCommentState.GetMultiLineComment(Stream: TStream): string;
 var
   ReadChar, LastChar: Char;
 begin
   LastChar := #0;
+  Result := '';
   while Stream.Read(ReadChar, SizeOf(Char)) > 0 do
   begin
-    ToBuf(ReadChar, Result);
+    Result := Result + ReadChar;
     if (LastChar = '*') and (ReadChar = '/') then
       Break;
     LastChar := ReadChar;
@@ -847,24 +847,26 @@ end;
   Ignore everything up to an end-of-line and return the tokenizer's next token.
   @return the tokenizer's next token
 }
-procedure TZCppCommentState.GetSingleLineComment(Stream: TStream; var Result: String);
+function TZCppCommentState.GetSingleLineComment(Stream: TStream): string;
 var
   ReadChar: Char;
 begin
-  while (Stream.Read(ReadChar, SizeOf(Char)) > 0) and not ((ReadChar = #10) or (ReadChar = #13)) do
-    ToBuf(ReadChar, Result);
+  Result := '';
+  while (Stream.Read(ReadChar, SizeOf(Char)) > 0) and not CharInSet(ReadChar, [#10, #13]) do
+      Result := Result + ReadChar;
 
   // mdaems : for single line comments the line ending must be included
   // as it should never be stripped off or unified with other whitespace characters
-  if (ReadChar = #10) or (ReadChar = #13) then begin
-    ToBuf(ReadChar, Result);
-    // ludob Linux line terminator is just LF, don't read further if we already have LF
-    if (ReadChar<>#10) and (Stream.Read(ReadChar, SizeOf(Char)) > 0) then
-      if (ReadChar = #10) or (ReadChar = #13) then
-        ToBuf(ReadChar, Result)
-      else
-        Stream.Seek(-SizeOf(Char), soFromCurrent);
-  end;
+  if CharInSet(ReadChar, [#10, #13]) then
+    begin
+      Result := Result + ReadChar;
+      // ludob Linux line terminator is just LF, don't read further if we already have LF
+      if (ReadChar<>#10) and (Stream.Read(ReadChar, SizeOf(Char)) > 0) then
+        if CharInSet(ReadChar, [#10, #13]) then
+          Result := Result + ReadChar
+        else
+          Stream.Seek(-SizeOf(Char), soFromCurrent);
+    end;
 end;
 
 {**
@@ -881,32 +883,25 @@ var
   ReadNum: Integer;
 begin
   Result.TokenType := ttUnknown;
-  InitBuf(FirstChar);
-  Result.Value := '';
+  Result.Value := FirstChar;
 
   ReadNum := Stream.Read(ReadChar, SizeOf(Char));
-  if (ReadNum > 0) and (ReadChar = '*') then begin
+  if (ReadNum > 0) and (ReadChar = '*') then
+  begin
     Result.TokenType := ttComment;
-    ToBuf(ReadChar, Result.Value);
-    GetMultiLineComment(Stream, Result.Value);
-    FlushBuf(Result.Value);
-  end else if (ReadNum > 0) and (ReadChar = '/') then begin
+    Result.Value := '/*' + GetMultiLineComment(Stream);
+  end
+  else if (ReadNum > 0) and (ReadChar = '/') then
+  begin
     Result.TokenType := ttComment;
-    ToBuf(ReadChar, Result.Value);
-    GetSingleLineComment(Stream, Result.Value);
-    FlushBuf(Result.Value);
-  end else if (ReadNum > 0) and (ReadChar = '-') then begin
-    Result.TokenType := ttComment;
-    ToBuf(ReadChar, Result.Value);
-    GetSingleLineComment(Stream, Result.Value);
-    FlushBuf(Result.Value);
-  end else begin
+    Result.Value := '//' + GetSingleLineComment(Stream);
+  end
+  else
+  begin
     if ReadNum > 0 then
       Stream.Seek(-SizeOf(Char), soFromCurrent);
     if Tokenizer.SymbolState <> nil then
-      Result := Tokenizer.SymbolState.NextToken(Stream, FirstChar, Tokenizer)
-    else
-      FlushBuf(Result.Value);
+      Result := Tokenizer.SymbolState.NextToken(Stream, FirstChar, Tokenizer);
   end;
 end;
 
@@ -924,17 +919,15 @@ var
   ReadNum: Integer;
 begin
   Result.TokenType := ttUnknown;
-  InitBuf(FirstChar);
-  Result.Value := '';
+  Result.Value := FirstChar;
 
   if FirstChar = '/' then
   begin
     ReadNum := Stream.Read(ReadChar, SizeOf(Char));
     if (ReadNum > 0) and (ReadChar = '*') then
     begin
-      ToBuf(ReadChar, Result.Value);
       Result.TokenType := ttComment;
-      GetMultiLineComment(Stream, Result.Value);
+      Result.Value := '/*' + GetMultiLineComment(Stream);
     end
     else
     begin
@@ -944,9 +937,7 @@ begin
   end;
 
   if (Result.TokenType = ttUnknown) and (Tokenizer.SymbolState <> nil) then
-    Result := Tokenizer.SymbolState.NextToken(Stream, FirstChar, Tokenizer)
-  else
-    FlushBuf(Result.Value);
+    Result := Tokenizer.SymbolState.NextToken(Stream, FirstChar, Tokenizer);
 end;
 
 { TZSymbolNode }
@@ -1238,22 +1229,22 @@ function TZWhitespaceState.NextToken(Stream: TStream; FirstChar: Char;
 var
   ReadNum: Integer;
   ReadChar: Char;
+  ReadStr: string;
 begin
-  InitBuf(FirstChar);
-  Result.Value := '';
+  ReadStr := FirstChar;
   ReadNum := 0;
   while True do
   begin
     ReadNum := Stream.Read(ReadChar, SizeOf(Char));
     if (ReadNum = 0) or not FWhitespaceChars[Ord(ReadChar)] then
       Break;
-    ToBuf(ReadChar, Result.Value);
+    ReadStr := ReadStr + ReadChar;
   end;
-  FlushBuf(Result.Value);
 
   if ReadNum > 0 then
     Stream.Seek(-SizeOf(Char), soFromCurrent);
   Result.TokenType := ttWhitespace;
+  Result.Value := ReadStr;
 end;
 
 {**
@@ -1298,20 +1289,20 @@ function TZWordState.NextToken(Stream: TStream; FirstChar: Char;
 var
   TempChar: Char;
   ReadNum: Integer;
+  Value: string;
 begin
-  InitBuf(FirstChar);
-  Result.Value := '';
+  Value := FirstChar;
   repeat
     ReadNum := Stream.Read(TempChar, SizeOf(Char));
     if (ReadNum = 0) or not FWordChars[Ord(TempChar)] then
       Break;
-    ToBuf(TempChar, Result.Value);
+    Value := Value + TempChar;
   until False;
-  FlushBuf(Result.Value);
 
   if ReadNum > 0 then
     Stream.Seek(-SizeOf(Char), soFromCurrent);
   Result.TokenType := ttWord;
+  Result.Value := Value;
 end;
 
 {**
@@ -1667,41 +1658,6 @@ end;
 function TZTokenizer.GetWordState: TZWordState;
 begin
   Result := WordState;
-end;
-
-{ TZTokenizerState }
-
-procedure TZTokenizerState.ClearBuf;
-begin
-  fCurrentBufIndex := 0;
-end;
-
-procedure TZTokenizerState.FlushBuf(var Value: String);
-var I: Integer;
-begin
-  if fCurrentBufIndex > 0 then begin
-    I := Length(Value);
-    SetLength(Value, i+fCurrentBufIndex);
-    System.Move(fBuf[0], Value[I+1], fCurrentBufIndex * SizeOf(Char));
-    fCurrentBufIndex := 0;
-  end;
-end;
-
-procedure TZTokenizerState.InitBuf(FirstChar: Char);
-begin
-  fBuf[0] := FirstChar;
-  fCurrentBufIndex := 1;
-end;
-
-procedure TZTokenizerState.ToBuf(C: Char; var Value: String);
-begin
-  if fCurrentBufIndex < High(Byte) then begin
-    fBuf[fCurrentBufIndex] := C;
-    Inc(fCurrentBufIndex);
-  end else begin
-    FlushBuf(Value);
-    InitBuf(C);
-  end;
 end;
 
 end.

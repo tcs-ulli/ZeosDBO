@@ -566,7 +566,7 @@ begin
         if Value.values['controls_cp'] = 'CP_UTF16' then
         begin
           FControlsCodePage := cGET_ACP;
-          Value.values['controls_cp'] := {$IFDEF DELPHI}'GET_ACP'{$ELSE}'CP_UTF8'{$ENDIF};
+          Value.values['controls_cp'] := {$IFDEF DLEPHI}'GET_ACP'{$ELSE}'CP_UTF8'{$ENDIF};
         end;
         {$ELSE}
         if Value.values['controls_cp'] = 'GET_ACP' then
@@ -991,17 +991,18 @@ begin
   begin
     ShowSQLHourGlass;
     try
- { TODO -oEgonHugeist : Change this code sequence on 7.3! My automation idea simply is wrong! A commit vs. commitupdate(clear the cache) shouldn't be same! }
-      //See: http://zeoslib.sourceforge.net/viewtopic.php?f=38&t=19800
-      for i := 0 to FDatasets.Count -1 do
-        if (TObject(FDatasets[i]) is TZAbstractDataset) and (not THack_ZAbstractDataset(FDatasets[i]).UpdatesPending) then
+      try
+        for i := 0 to FDatasets.Count -1 do
           if Assigned(FDatasets[i]) then
-            THack_ZAbstractDataset(FDatasets[i]).DisposeCachedUpdates;
-      FConnection.Commit;
+            if TObject(FDatasets[i]) is TZAbstractDataset then
+              THack_ZAbstractDataset(FDatasets[i]).DisposeCachedUpdates;
+        FConnection.Commit;
+      finally
+        FExplicitTransactionCounter := 0;
+        if ExplicitTran then
+          AutoCommit := True;
+      end;
     finally
-      FExplicitTransactionCounter := 0;
-      if ExplicitTran then
-        AutoCommit := True;
       HideSQLHourGlass;
     end;
     DoCommit;
@@ -1579,7 +1580,7 @@ procedure TZAbstractConnection.SetControlsCodePage(const Value: TZControlsCodePa
             FControlsCodePage := Value;
           end;
         cGET_ACP:
-          if ZOSCodePage = zCP_UTF8 then
+          if ZDefaultSystemCodePage = zCP_UTF8 then
           begin
             Properties.values['controls_cp'] := 'CP_UTF8';
             FControlsCodePage := cCP_UTF8;
@@ -1603,7 +1604,7 @@ procedure TZAbstractConnection.SetControlsCodePage(const Value: TZControlsCodePa
             FControlsCodePage := Value;
           end;
         cGET_ACP:
-          if ZOSCodePage = zCP_UTF8 then
+          if ZDefaultSystemCodePage = zCP_UTF8 then
           begin
             Properties.values['controls_cp'] := 'CP_UTF8';
             FControlsCodePage := cCP_UTF8;
@@ -1702,4 +1703,4 @@ end;
 initialization
   SqlHourGlassLock := 0;
 end.
-
+

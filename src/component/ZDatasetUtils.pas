@@ -90,7 +90,7 @@ function ConvertFieldsToColumnInfo(Fields: TFields): TObjectList;
   @param RowAccessor a destination row accessor.
 }
 procedure FetchFromResultSet(ResultSet: IZResultSet;
-  const FieldsLookupTable: TPointerDynArray; Fields: TFields;
+  const FieldsLookupTable: TIntegerDynArray; Fields: TFields;
   RowAccessor: TZRowAccessor);
 
 {**
@@ -101,7 +101,7 @@ procedure FetchFromResultSet(ResultSet: IZResultSet;
   @param RowAccessor a destination row accessor.
 }
 procedure PostToResultSet(ResultSet: IZResultSet;
-  const FieldsLookupTable: TPointerDynArray; Fields: TFields;
+  const FieldsLookupTable: TIntegerDynArray; Fields: TFields;
   RowAccessor: TZRowAccessor);
 
 {**
@@ -240,7 +240,7 @@ procedure DefineSortedFields(DataSet: TDataset;
   @param Fields a collection of TDataset fields in initial order.
   @returns a fields lookup table.
 }
-function CreateFieldsLookupTable(Fields: TFields): TPointerDynArray;
+function CreateFieldsLookupTable(Fields: TFields): TIntegerDynArray;
 
 {**
   Defines an original field index in the dataset.
@@ -248,7 +248,7 @@ function CreateFieldsLookupTable(Fields: TFields): TPointerDynArray;
   @param Field a TDataset field object.
   @returns an original fields index or -1 otherwise.
 }
-function DefineFieldIndex(const FieldsLookupTable: TPointerDynArray;
+function DefineFieldIndex(const FieldsLookupTable: TIntegerDynArray;
   Field: TField): Integer;
 
 {**
@@ -257,7 +257,7 @@ function DefineFieldIndex(const FieldsLookupTable: TPointerDynArray;
   @param FieldRefs a TDataset field object references.
   @returns an array with original fields indices.
 }
-function DefineFieldIndices(const FieldsLookupTable: TPointerDynArray;
+function DefineFieldIndices(const FieldsLookupTable: TIntegerDynArray;
   const FieldRefs: TObjectDynArray): TIntegerDynArray;
 
 {**
@@ -475,7 +475,7 @@ end;
   @param RowAccessor a destination row accessor.
 }
 procedure FetchFromResultSet(ResultSet: IZResultSet;
-  const FieldsLookupTable: TPointerDynArray; Fields: TFields;
+  const FieldsLookupTable: TIntegerDynArray; Fields: TFields;
   RowAccessor: TZRowAccessor);
 var
   I, FieldIndex: Integer;
@@ -533,7 +533,7 @@ begin
       ftCurrency:
         RowAccessor.SetCurrency(FieldIndex, ResultSet.GetCurrency(ColumnIndex));
       ftString, ftWideString:
-        if RowAccessor is TZRawRowAccessor then
+        if ResultSet.GetConSettings^.ClientCodePage^.IsStringFieldCPConsistent then
           RowAccessor.SetPAnsiChar(FieldIndex, ResultSet.GetPAnsiChar(ColumnIndex, Len), @Len)
         else
           RowAccessor.SetPWideChar(FieldIndex, ResultSet.GetPWideChar(ColumnIndex, Len), @Len);
@@ -566,7 +566,7 @@ end;
   @param RowAccessor a destination row accessor.
 }
 procedure PostToResultSet(ResultSet: IZResultSet;
-  const FieldsLookupTable: TPointerDynArray; Fields: TFields;
+  const FieldsLookupTable: TIntegerDynArray; Fields: TFields;
   RowAccessor: TZRowAccessor);
 var
   I, FieldIndex: Integer;
@@ -630,7 +630,7 @@ begin
         ResultSet.UpdateCurrency(ColumnIndex,
           RowAccessor.GetCurrency(FieldIndex, WasNull));
       ftString, ftWidestring:
-        if RowAccessor is TZRawRowAccessor then
+        if ResultSet.GetConSettings^.ClientCodePage^.IsStringFieldCPConsistent then
           ResultSet.UpdatePAnsiChar(ColumnIndex,
             RowAccessor.GetPAnsiChar(FieldIndex, WasNull, Len), @Len)
         else
@@ -1474,11 +1474,18 @@ begin
           CompareKinds[FieldCount - 1] := ckAscending;
       end
       else if TokenType in [ttWord, ttQuoted] then
+      begin
         Field := DataSet.FieldByName(TokenValue)
-      else if (TokenType = ttNumber) and (StrToIntDef(TokenValue, 0) < Dataset.Fields.Count) then
-        Field := Dataset.Fields[StrToIntDef(TokenValue, 0)]
+      end
+      else if (TokenType = ttNumber)
+        and (StrToIntDef(TokenValue, 0) < Dataset.Fields.Count) then
+      begin
+        Field := Dataset.Fields[StrToIntDef(TokenValue, 0)];
+      end
       else if (TokenValue <> ',') and (TokenValue <> ';') then
+      begin
         raise EZDatabaseError.Create(Format(SIncorrectSymbol, [TokenValue]));
+      end;
 
       if Field <> nil then
       begin
@@ -1503,14 +1510,14 @@ end;
 }
 type
   THackZField = Class(TZField); //access protected property
-function CreateFieldsLookupTable(Fields: TFields): TPointerDynArray;
+function CreateFieldsLookupTable(Fields: TFields): TIntegerDynArray;
 var
   I: Integer;
 begin
   SetLength(Result, Fields.Count);
   for I := 0 to Fields.Count - 1 do
   begin
-    Result[I] := Fields[I];
+    Result[I] := Integer(Fields[I]);
     if Fields[i] is TZField then
       THackZField(Fields[i]).FieldIndex := I+1;
   end;
@@ -1522,14 +1529,14 @@ end;
   @param Field a TDataset field object.
   @returns an original fields index or -1 otherwise.
 }
-function DefineFieldIndex(const FieldsLookupTable: TPointerDynArray;
+function DefineFieldIndex(const FieldsLookupTable: TIntegerDynArray;
   Field: TField): Integer;
 var
   I: Integer;
 begin
   Result := -1;
   for I := 0 to High(FieldsLookupTable) do
-    if FieldsLookupTable[I] = Field then
+    if FieldsLookupTable[I] = Integer(Field) then
     begin
       Result := I{$IFNDEF GENERIC_INDEX}+1{$ENDIF};
       Break;
@@ -1542,7 +1549,7 @@ end;
   @param FieldRefs a TDataset field object references.
   @returns an array with original fields indices.
 }
-function DefineFieldIndices(const FieldsLookupTable: TPointerDynArray;
+function DefineFieldIndices(const FieldsLookupTable: TIntegerDynArray;
   const FieldRefs: TObjectDynArray): TIntegerDynArray;
 var
   I: Integer;

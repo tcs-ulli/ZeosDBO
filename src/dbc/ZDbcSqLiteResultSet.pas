@@ -81,13 +81,14 @@ type
     FUndefinedVarcharAsStringLength: Integer;
   protected
     procedure Open; override;
+    procedure FreeHandle;
     function InternalGetString(ColumnIndex: Integer): RawByteString; override;
   public
     constructor Create(PlainDriver: IZSQLitePlainDriver; Statement: IZStatement;
       SQL: string; const Handle: Psqlite; const StmtHandle: Psqlite_vm;
-      const UndefinedVarcharAsStringLength: Integer);
+      const ErrorCode: Integer; const UndefinedVarcharAsStringLength: Integer); overload;
 
-    procedure ResetCursor; override;
+    procedure Close; override;
 
     function IsNull(ColumnIndex: Integer): Boolean; override;
     function GetPAnsiChar(ColumnIndex: Integer; out Len: NativeUInt): PAnsiChar; override;
@@ -132,7 +133,7 @@ implementation
 
 uses
   ZMessages, ZDbcSqLite, ZDbcSQLiteUtils, ZEncoding, ZDbcLogging, ZFastCode,
-  ZVariant, ZDbcSqLiteStatement
+  ZVariant
   {$IFDEF WITH_UNITANSISTRINGS}, AnsiStrings{$ENDIF};
 
 {**
@@ -163,7 +164,8 @@ end;
 }
 constructor TZSQLiteResultSet.Create(PlainDriver: IZSQLitePlainDriver;
   Statement: IZStatement; SQL: string; const Handle: Psqlite;
-  const StmtHandle: Psqlite_vm; const UndefinedVarcharAsStringLength: Integer);
+  const StmtHandle: Psqlite_vm; const ErrorCode: Integer;
+  const UndefinedVarcharAsStringLength: Integer);
 begin
   inherited Create(Statement, SQL, TZSQLiteResultSetMetadata.Create(
     Statement.GetConnection.GetMetadata, SQL, Self),
@@ -173,6 +175,7 @@ begin
   FStmtHandle := StmtHandle;
   FPlainDriver := PlainDriver;
   ResultSetConcurrency := rcReadOnly;
+  FErrorCode := ErrorCode;
   FUndefinedVarcharAsStringLength := UndefinedVarcharAsStringLength;
   FFirstRow := True;
 
@@ -183,31 +186,12 @@ end;
   Opens this recordset.
 }
 procedure TZSQLiteResultSet.Open;
-const
-  NativeSQLite3Types: array[Boolean, SQLITE_INTEGER..SQLITE_NULL] of RawByteString =
-    (('BIGINT','DOUBLE','CHAR','BLOB',''),
-    ('BIGINT','DOUBLE','TEXT','BLOB',''));
 var
   I: Integer;
   ColumnInfo: TZColumnInfo;
   FieldPrecision: Integer;
   FieldDecimals: Integer;
-  P: PAnsiChar;
-  tmp: RawByteString;
-  function ColAttributeToStr(P: PAnsichar): String;
-  begin
-    if P = nil then
-      Result := ''
-    else
-      {$IFDEF UNICODE}
-      Result := PRawToUnicode(P, ZFastCode.StrLen(P), ConSettings^.ClientCodePage^.CP);
-      {$ELSE}
-      if (not ConSettings^.AutoEncode) or ZCompatibleCodePages(ConSettings^.ClientCodePage^.CP, ConSettings^.CTRL_CP) then
-        Result := BufferToStr(P, ZFastCode.StrLen(P))
-      else
-        Result := ZUnicodeToString(PRawToUnicode(P, ZFastCode.StrLen(P), ConSettings^.ClientCodePage^.CP), ConSettings^.CTRL_CP);
-      {$ENDIF}
-  end;
+  TypeName: PAnsiChar;
 begin
   if ResultSetConcurrency = rcUpdatable then
     raise EZSQLException.Create(SLiveResultSetsAreNotSupported);
@@ -222,33 +206,40 @@ begin
   for I := 0 to FColumnCount-1 do
   begin
     ColumnInfo := TZColumnInfo.Create;
-    with ColumnInfo do begin
-      ColumnName := ColAttributeToStr(FPlainDriver.column_origin_name(FStmtHandle, i));
-      ColumnLabel := ColAttributeToStr(FPlainDriver.column_name(FStmtHandle, i));
-      TableName := ColAttributeToStr(FPlainDriver.column_table_name(FStmtHandle, i));
-      SchemaName := ColAttributeToStr(FPlainDriver.column_database_name(FStmtHandle, i));
-      ReadOnly := TableName <> '';
-      P := FPlainDriver.column_decltype(FStmtHandle, i);
-      if P = nil then
-        tmp := NativeSQLite3Types[FUndefinedVarcharAsStringLength = 0][FPlainDriver.column_type(FStmtHandle, i)]
+    with ColumnInfo do
+    begin
+      ColumnName := ConSettings^.ConvFuncs.ZRawToString(FPlainDriver.column_origin_name(FStmtHandle, i),
+        ConSettings^.ClientCodePage^.CP, ConSettings^.CTRL_CP);
+      ColumnLabel := ConSettings^.ConvFuncs.ZRawToString(FPlainDriver.column_name(FStmtHandle, i),
+        ConSettings^.ClientCodePage^.CP, ConSettings^.CTRL_CP);
+      TableName := ConSettings^.ConvFuncs.ZRawToString(FPlainDriver.column_table_name(FStmtHandle, i),
+        ConSettings^.ClientCodePage^.CP, ConSettings^.CTRL_CP);
+      SchemaName := ConSettings^.ConvFuncs.ZRawToString(FPlainDriver.column_database_name(FStmtHandle, i),
+        ConSettings^.ClientCodePage^.CP, ConSettings^.CTRL_CP);
+      ReadOnly := False;
+      TypeName := FPlainDriver.column_decltype(FStmtHandle, i);
+      if TypeName = nil then
+        ColumnType := ConvertSQLiteTypeToSQLType(FPlainDriver.column_type_AsString(FStmtHandle, i),
+          FUndefinedVarcharAsStringLength, FieldPrecision{%H-}, FieldDecimals{%H-},
+          ConSettings.CPType)
       else
-        ZSetString(P, ZFastCode.StrLen(P), tmp);
-      ColumnType := ConvertSQLiteTypeToSQLType(tmp, FUndefinedVarcharAsStringLength,
-        FieldPrecision{%H-}, FieldDecimals{%H-}, ConSettings.CPType);
+        ColumnType := ConvertSQLiteTypeToSQLType(TypeName,
+          FUndefinedVarcharAsStringLength, FieldPrecision, FieldDecimals,
+          ConSettings.CPType);
 
       if ColumnType in [stString, stUnicodeString, stAsciiStream, stUnicodeStream] then
       begin
         ColumnCodePage := zCP_UTF8;
-        if ColumnType = stString then begin
-          ColumnDisplaySize := FieldPrecision;
-          CharOctedLength := FieldPrecision shl 2;
-          Precision := FieldPrecision;
-        end else if ColumnType = stUnicodeString then begin
-          ColumnDisplaySize := FieldPrecision;
-          CharOctedLength := FieldPrecision shl 1;
-          Precision := FieldPrecision;
-        end;
-      end else
+        if ColumnType = stString then
+          if ZDefaultSystemCodePage = zCP_UTF8 then
+            ColumnDisplaySize := FieldPrecision shr 2 //shr 2 = div 4 but faster
+          else
+            ColumnDisplaySize := FieldPrecision shr 1; //shr 1 = div 2 but faster
+
+        if ColumnType = stUnicodeString then
+          ColumnDisplaySize := FieldPrecision shr 1; //shr 1 = div 2 but faster
+      end
+      else
         ColumnCodePage := zCP_NONE;
 
       AutoIncrement := False;
@@ -266,19 +257,36 @@ begin
 end;
 
 {**
-  Resets cursor position of this recordset and
-  reset the prepared handles.
+  Frees statement handle.
 }
-procedure TZSQLiteResultSet.ResetCursor;
+procedure TZSQLiteResultSet.FreeHandle;
 begin
-  FFirstRow := True;
-  if Assigned(FStmtHandle) then
+  if FStmtHandle <> nil then
   begin
-    CheckSQLiteError(FPlainDriver, FHandle, FPlainDriver.reset(FStmtHandle),
+    CheckSQLiteError(FPlainDriver, FStmtHandle, FPlainDriver.reset(FStmtHandle),
       nil, lcOther, 'Reset Prepared Stmt', ConSettings);
     FStmtHandle := nil;
   end;
-  inherited ResetCursor;
+  FErrorCode := SQLITE_DONE;
+end;
+
+{**
+  Releases this <code>ResultSet</code> object's database and
+  JDBC resources immediately instead of waiting for
+  this to happen when it is automatically closed.
+
+  <P><B>Note:</B> A <code>ResultSet</code> object
+  is automatically closed by the
+  <code>Statement</code> object that generated it when
+  that <code>Statement</code> object is closed,
+  re-executed, or is used to retrieve the next result from a
+  sequence of multiple results. A <code>ResultSet</code> object
+  is also automatically closed when it is garbage collected.
+}
+procedure TZSQLiteResultSet.Close;
+begin
+  FreeHandle;
+  inherited Close;
 end;
 
 {**
@@ -305,29 +313,18 @@ end;
     value returned is <code>null</code>
 }
 function TZSQLiteResultSet.GetPAnsiChar(ColumnIndex: Integer; out Len: NativeUInt): PAnsiChar;
-var ColType: Integer;
 begin
-  {$IFNDEF GENERIC_INDEX}
-  ColumnIndex := ColumnIndex -1;
-  {$ENDIF}
-  ColType := FPlainDriver.column_type(FStmtHandle, ColumnIndex);
-  LastWasNull := ColType = SQLITE_NULL;
+  LastWasNull := FPlainDriver.column_type(FStmtHandle, ColumnIndex{$IFNDEF GENERIC_INDEX} -1{$ENDIF}) = SQLITE_NULL;
   if LastWasNull then
   begin
     Result := nil;
     Len := 0;
   end
   else
-    if ColType <> SQLITE_BLOB then
-    begin
-      Result := FPlainDriver.column_text(FStmtHandle, ColumnIndex);
-      Len := ZFastCode.StrLen(Result);
-    end
-    else
-    begin
-      Result := FPlainDriver.column_blob(FStmtHandle, ColumnIndex);
-      Len := FPlainDriver.column_bytes(FStmtHandle, ColumnIndex);
-    end;
+  begin
+    Result := FPlainDriver.column_text(FStmtHandle, ColumnIndex{$IFNDEF GENERIC_INDEX} -1{$ENDIF});
+    Len := ZFastCode.StrLen(Result);
+  end;
 end;
 
 {**
@@ -645,7 +642,7 @@ begin
   if LastWasNull then
     Result := nil
   else
-    Result :=  BufferToBytes(FPlainDriver.column_blob(FStmtHandle, ColumnIndex), FPlainDriver.column_bytes(FStmtHandle, ColumnIndex));
+    Result := FPlainDriver.column_blob_AsBytes(FStmtHandle, ColumnIndex);
 end;
 
 {**
@@ -754,6 +751,7 @@ function TZSQLiteResultSet.GetTimestamp(ColumnIndex: Integer): TDateTime;
 var
   ColType: Integer;
   Buffer: PAnsiChar;
+  Len: Cardinal;
   Failed: Boolean;
 begin
 {$IFNDEF DISABLE_CHECKING}
@@ -775,7 +773,9 @@ begin
       else
       begin
         Buffer := FPlainDriver.column_text(FStmtHandle, ColumnIndex);
-        Result := RawSQLTimeStampToDateTime(Buffer, ZFastCode.StrLen(Buffer), ConSettings^.ReadFormatSettings, Failed{%H-});
+        Len := ZFastCode.StrLen(Buffer);
+
+        Result := RawSQLTimeStampToDateTime(Buffer, Len, ConSettings^.ReadFormatSettings, Failed{%H-});
       end;
       LastWasNull := Result = 0;
     end;
@@ -805,14 +805,20 @@ begin
   ColType := FPlainDriver.column_type(FStmtHandle, ColumnIndex);
 
   LastWasNull := ColType = SQLITE_NULL;
-  if not LastWasNull then
-    if ColType = SQLITE_BLOB then
-      Result := TZAbstractBlob.CreateWithData(FPlainDriver.column_blob(FStmtHandle,ColumnIndex),
-        FPlainDriver.column_bytes(FStmtHandle, ColumnIndex))
-    else begin
-      Buffer := FPlainDriver.column_text(FStmtHandle, ColumnIndex);
-      Result := TZAbstractClob.CreateWithData( Buffer,
-        ZFastCode.StrLen(Buffer), zCP_UTF8, ConSettings);
+  if LastWasNull then
+    Exit
+  else
+    case GetMetadata.GetColumnType(ColumnIndex{$IFNDEF GENERIC_INDEX}+1{$ENDIF}) of
+      stAsciiStream, stUnicodeStream:
+        begin
+          Buffer := FPlainDriver.column_text(FStmtHandle, ColumnIndex);
+          Result := TZAbstractClob.CreateWithData( Buffer,
+            ZFastCode.StrLen(Buffer), zCP_UTF8, ConSettings);
+        end;
+      stBinaryStream:
+         Result := TZAbstractBlob.CreateWithData(FPlainDriver.column_blob(FStmtHandle,ColumnIndex), FPlainDriver.column_bytes(FStmtHandle, ColumnIndex));
+      else
+        Result := TZAbstractBlob.CreateWithStream(nil);
     end;
 end;
 
@@ -832,20 +838,13 @@ end;
     <code>false</code> if there are no more rows
 }
 function TZSQLiteResultSet.Next: Boolean;
-label ResetHndl;
 begin
   { Checks for maximum row. }
   Result := False;
-  if Closed then exit;
-  if FFirstRow then
-    FErrorCode := (Statement as IZSQLitePreparedStatement).GetLastErrorCodeAndHandle(FStmtHandle);
   if ((MaxRows > 0) and (RowNo >= MaxRows)) or (FErrorCode = SQLITE_DONE) then //previously set by stmt or Next
   begin
     { Free handle when EOF. }
-ResetHndl:
-    CheckSQLiteError(FPlainDriver, FHandle, FPlainDriver.reset(FStmtHandle),
-      nil, lcOther, 'sqlite3_reset', ConSettings);
-    FErrorCode := SQLITE_DONE;
+    FreeHandle;
     Exit;
   end;
 
@@ -878,7 +877,7 @@ ResetHndl:
 
   { Free handle when EOF. }
   if not Result then
-    goto ResetHndl;
+    FreeHandle;
 end;
 
 { TZSQLiteCachedResolver }

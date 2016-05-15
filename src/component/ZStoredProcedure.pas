@@ -150,7 +150,6 @@ begin
     else
     begin //i need allways all types to cast and there names
       SplitQualifiedObjectName(Trim(SQL), Catalog, Schema, ObjectName);
-      Schema := Connection.DbcConnection.GetMetadata.AddEscapeCharToWildcards(Schema);
       ObjectName := Connection.DbcConnection.GetMetadata.AddEscapeCharToWildcards(ObjectName);
       FMetaResultSet := Connection.DbcConnection.GetMetadata.GetProcedureColumns(Catalog, Schema, ObjectName, '');
     end;
@@ -348,7 +347,6 @@ begin
           Connection.DbcConnection.GetMetadata.GetDatabaseInfo.SupportsCatalogsInProcedureCalls,
           Connection.DbcConnection.GetMetadata.GetDatabaseInfo.SupportsSchemasInProcedureCalls,
           Catalog, Schema, ObjectName);
-        Schema := Connection.DbcConnection.GetMetadata.AddEscapeCharToWildcards(Schema);
         ObjectName := Connection.DbcConnection.GetMetadata.AddEscapeCharToWildcards(ObjectName);
         FMetaResultSet := Connection.DbcConnection.GetMetadata.GetProcedureColumns(Catalog, Schema, ObjectName, '');
         OldParams := TParams.Create;

@@ -265,13 +265,13 @@ begin
   begin
     {$IFDEF WITH_STRPCOPY_DEPRECATED}AnsiStrings.{$ENDIF}StrPCopy(Tmp, 'listen ' + AnsiString(FChildEvents.Strings[I]));
     Res := PlainDRV.ExecuteQuery(Handle, Tmp);
-    if (PlainDRV.PQresultStatus(Res) <> TZPostgreSQLExecStatusType(
+    if (PlainDRV.GetResultStatus(Res) <> TZPostgreSQLExecStatusType(
       PGRES_COMMAND_OK)) then
    begin
-      PlainDRV.PQclear(Res);
+      PlainDRV.Clear(Res);
     Exit;
    end;
-   PlainDRV.PQclear(Res);
+    PlainDRV.Clear(Res);
   end;
   FActive        := True;
   FTimer.Enabled := True;
@@ -299,12 +299,13 @@ begin
   begin
     {$IFDEF WITH_STRPCOPY_DEPRECATED}AnsiStrings.{$ENDIF}StrPCopy(Tmp, 'unlisten ' + AnsiString(FChildEvents.Strings[i]));
     Res := PlainDRV.ExecuteQuery(Handle, Tmp);
-    if (PlainDRV.PQresultStatus(Res) <> TZPostgreSQLExecStatusType(PGRES_COMMAND_OK)) then
-    begin
-      PlainDRV.PQclear(Res);
-      Exit;
-    end;
-    PlainDRV.PQclear(Res);
+    if (PlainDRV.GetResultStatus(Res) <> TZPostgreSQLExecStatusType(
+      PGRES_COMMAND_OK)) then
+   begin
+      PlainDRV.Clear(Res);
+    Exit;
+   end;
+    PlainDRV.Clear(Res);
   end;
 end;
 
