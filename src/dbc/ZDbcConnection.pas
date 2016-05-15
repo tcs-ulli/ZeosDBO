@@ -73,9 +73,6 @@ type
   {** Implements Abstract Database Driver. }
   {$WARNINGS OFF} //to supress the deprecated Warning of connect
   TZAbstractDriver = class(TInterfacedObject, IZDriver)
-  private
-    FTokenizer: IZTokenizer;
-    FAnalyser: IZStatementAnalyser;
   protected
     FCachedPlainDrivers: IZHashMap;
     FSupportedProtocols: TStringDynArray;
@@ -83,8 +80,6 @@ type
     function AddPlainDriverToCache(PlainDriver: IZPlainDriver; const Protocol: string = ''; LibLocation: string = ''): String;
     function GetPlainDriverFromCache(const Protocol, LibLocation: string): IZPlainDriver;
     function GetPlainDriver(const Url: TZURL; const InitDriver: Boolean = True): IZPlainDriver; virtual;
-    property Tokenizer: IZTokenizer read FTokenizer write FTokenizer;
-    property Analyser: IZStatementAnalyser read FAnalyser write FAnalyser;
   public
     constructor Create; virtual;
     destructor Destroy; override;
@@ -200,7 +195,7 @@ type
 
     function NativeSQL(const SQL: string): string; virtual;
 
-    procedure SetAutoCommit(AutoCommit: Boolean); virtual;
+    procedure SetAutoCommit(Value: Boolean); virtual;
     function GetAutoCommit: Boolean; virtual;
 
     procedure Commit; virtual;
@@ -213,7 +208,7 @@ type
 
     //Ping Support initially for MySQL 27032006 (firmos)
     function PingServer: Integer; virtual;
-    function EscapeString(Value: RawByteString): RawByteString; virtual;
+    function EscapeString(const Value: RawByteString): RawByteString; overload; virtual;
 
     procedure Open; virtual;
     procedure Close; virtual;
@@ -300,8 +295,8 @@ end;
 
 implementation
 
-uses ZMessages, ZSysUtils, ZDbcMetadata, ZDbcUtils, ZEncoding,
-  {$IFDEF WITH_UNITANSISTRINGS}AnsiStrings{$ELSE}StrUtils{$ENDIF};
+uses ZMessages, ZSysUtils, ZDbcMetadata, ZDbcUtils, ZEncoding
+  {$IFDEF WITH_UNITANSISTRINGS}, AnsiStrings{$ENDIF};
 
 { TZAbstractDriver }
 
@@ -318,8 +313,6 @@ end;
 }
 destructor TZAbstractDriver.Destroy;
 begin
-  FTokenizer := nil;
-  FAnalyser := nil;
   FCachedPlainDrivers.Clear;
   FCachedPlainDrivers := nil;
   inherited Destroy;
@@ -519,9 +512,7 @@ end;
 }
 function TZAbstractDriver.GetStatementAnalyser: IZStatementAnalyser;
 begin
-  if Analyser = nil then
-    Analyser := TZGenericStatementAnalyser.Create;
-  Result := Analyser;
+  Result := TZGenericStatementAnalyser.Create; { thread save! Allways return a new Analyser! }
 end;
 
 {**
@@ -530,9 +521,7 @@ end;
 }
 function TZAbstractDriver.GetTokenizer: IZTokenizer;
 begin
-  if Tokenizer = nil then
-    Tokenizer := TZGenericSQLTokenizer.Create;
-  Result := Tokenizer;
+  Result := TZGenericSQLTokenizer.Create;
 end;
 
 {**
@@ -817,7 +806,7 @@ begin
   SetConSettingsFromInfo(Info);
   CheckCharEncoding(FClientCodePage, True);
   FAutoCommit := True;
-  FReadOnly := True;
+  FReadOnly := False; //EH: Changed! We definitelly did newer ever open a ReadOnly connection by default!
   FTransactIsolationLevel := tiNone;
   FUseMetadata := True;
   // should be set BEFORE InternalCreate
@@ -905,9 +894,9 @@ var UsedInfo: TStrings;
 begin
   UsedInfo := Info;
   If StrToBoolEx(GetInfo.Values['preferprepared']) then
-  begin
     If UsedInfo = nil then
-        UsedInfo := TSTringList.Create;
+    begin
+      UsedInfo := TSTringList.Create;
       UsedInfo.Append('preferprepared=TRUE');
     end;
   Result := CreateRegularStatement(Info);
@@ -975,9 +964,9 @@ var UsedInfo: TStrings;
 begin
   UsedInfo := Info;
   If StrToBoolEx(GetInfo.Values['preferprepared']) then
+    If UsedInfo = nil then
     begin
-      If UsedInfo = nil then
-        UsedInfo := TSTringList.Create;
+      UsedInfo := TSTringList.Create;
       UsedInfo.Append('preferprepared=TRUE');
     end;
   Result := CreatePreparedStatement(SQL, UsedInfo);
@@ -1054,9 +1043,9 @@ var UsedInfo: TStrings;
 begin
   UsedInfo := Info;
   If StrToBoolEx(GetInfo.Values['preferprepared']) then
+    If UsedInfo = nil then
     begin
-      If UsedInfo = nil then
-        UsedInfo := TSTringList.Create;
+      UsedInfo := TSTringList.Create;
       UsedInfo.Append('preferprepared=TRUE');
     end;
   Result := CreateCallableStatement(SQL, UsedInfo);
@@ -1135,9 +1124,9 @@ end;
 
   @param autoCommit true enables auto-commit; false disables auto-commit.
 }
-procedure TZAbstractConnection.SetAutoCommit(AutoCommit: Boolean);
+procedure TZAbstractConnection.SetAutoCommit(Value: Boolean);
 begin
-  FAutoCommit := AutoCommit;
+  FAutoCommit := Value;
 end;
 
 {**
@@ -1200,7 +1189,7 @@ end;
   @param value string that should be escaped
   @return Escaped string
 }
-function TZAbstractConnection.EscapeString(Value : RawByteString) : RawByteString;
+function TZAbstractConnection.EscapeString(const Value : RawByteString) : RawByteString;
 begin
   Result := AnsiString(EncodeCString(String(Value)));
 end;
@@ -1423,11 +1412,9 @@ end;
 {$ENDIF}
 
 {**
-  EgonHugeist:
   Returns the BinaryString in a Tokenizer-detectable kind
-  If the Tokenizer don't need to predetect it Result = BinaryString
+  If the Tokenizer don't need to pre-detect it Result = BinaryString
   @param Value represents the Binary-String
-  @param EscapeMarkSequence represents a Tokenizer detectable EscapeSequence (Len >= 3)
   @result the detectable Binary String
 }
 function TZAbstractConnection.GetBinaryEscapeString(const Value: RawByteString): String;
@@ -1438,6 +1425,12 @@ begin
     Result := {$IFDEF UNICODE}GetSQLHexWideString{$ELSE}GetSQLHexAnsiString{$ENDIF}(PAnsiChar(Value), Length(Value));
 end;
 
+{**
+  Returns the BinaryString in a Tokenizer-detectable kind
+  If the Tokenizer don't need to pre-detect it Result = BinaryString
+  @param Value represents the Byte-Array
+  @result the detectable Binary String
+}
 function TZAbstractConnection.GetBinaryEscapeString(const Value: TBytes): String;
 begin
   if ConSettings^.AutoEncode then

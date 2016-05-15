@@ -104,17 +104,18 @@ type
 
   TZPostgreSQLExecStatusType = (
     PGRES_EMPTY_QUERY,
-    PGRES_COMMAND_OK,		{ a query command that doesn't return anything
-				  was executed properly by the backend }
-    PGRES_TUPLES_OK,		{ a query command that returns tuples
-				  was executed properly by the backend,
-				  PGresult contains the result tuples }
-    PGRES_COPY_OUT,		{ Copy Out data transfer in progress }
-    PGRES_COPY_IN,		{ Copy In data transfer in progress }
-    PGRES_BAD_RESPONSE,		{ an unexpected response was recv'd from
-				  the backend }
-    PGRES_NONFATAL_ERROR,
-    PGRES_FATAL_ERROR
+    PGRES_COMMAND_OK,		  { a query command that doesn't return
+                            anything was executed properly by the backend }
+    PGRES_TUPLES_OK,		  { a query command that returns tuples
+				                    was executed properly by the backend,
+				                    PGresult contains the result tuples }
+    PGRES_COPY_OUT,		    { Copy Out data transfer in progress }
+    PGRES_COPY_IN,		    { Copy In data transfer in progress }
+    PGRES_BAD_RESPONSE,	  { an unexpected response was recv'd from the backend }
+    PGRES_NONFATAL_ERROR, { notice or warning message }
+    PGRES_FATAL_ERROR,    { query failed }
+    PGRES_COPY_BOTH,		  { Copy In/Out data transfer in progress }
+    PGRES_SINGLE_TUPLE    { since 9.2 single tuple from larger resultset }
   );
 
 { PGnotify represents the occurrence of a NOTIFY message.
@@ -386,6 +387,7 @@ type
          {%H-}paramLengths: TPQparamLengths; {%H-}paramFormats: TPQparamFormats;
          resultFormat: Integer): Integer; cdecl;
   TPQgetResult     = function(Handle: PPGconn): PPGresult;  cdecl;
+  TPQsetSingleRowMode = function(Handle: PPGconn): Integer; cdecl;
 //* Describe prepared statements and portals */
   TPQdescribePrepared = function(Handle: PPGconn; const stmt: PAnsiChar): PPGresult; cdecl;
   TPQdescribePortal = function(Handle: PPGconn; const portal: PAnsiChar): PPGresult; cdecl;
@@ -488,6 +490,7 @@ TZPOSTGRESQL_API = record
   PQsendPrepare:   TPQsendPrepare;
   PQsendQueryPrepared: TPQsendQueryPrepared;
   PQgetResult:     TPQgetResult;
+  PQsetSingleRowMode: TPQsetSingleRowMode;
   //* Describe prepared statements and portals */
   PQdescribePrepared:     TPQdescribePrepared;
   PQdescribePortal:       TPQdescribePortal;
@@ -561,15 +564,14 @@ type
 
     function GetStandardConformingStrings: Boolean;
 
-    function EncodeBYTEA(const Value: RawByteString; Handle: PZPostgreSQLConnect;
-      Quoted: Boolean = True): RawByteString;
-    function DecodeBYTEA(const value: RawByteString; const Is_bytea_output_hex: Boolean;
-      Handle: PZPostgreSQLConnect): RawByteString; overload;
-    function DecodeBYTEA(const RowNo, ColumnIndex: Integer; const Is_bytea_output_hex: Boolean;
-      const Handle: PZPostgreSQLConnect; const QueryHandle: PZPostgreSQLResult;
-      Var Buffer: Pointer): Cardinal; overload;
+    function EscapeBytea(Handle: PGconn; from: PAnsiChar; from_length: LongWord; to_lenght:PLongword): PAnsiChar;
+    function EscapeString(Handle: PGconn; ToChar: PAnsiChar; const FromChar: PAnsiChar;
+      length: NativeUInt; error: PInteger): NativeUInt; overload;
+    function UnescapeBytea(const from:PAnsiChar;to_lenght:PLongword):PAnsiChar;
+    procedure FreeMem(ptr:Pointer);
+
     function SupportsEncodeBYTEA: Boolean;
-    function SupportsDecodeBYTEA(const Handle: PZPostgreSQLConnect): Boolean;
+    function SupportsDecodeBYTEA: Boolean;
     function SupportsStringEscaping(const ClientDependend: Boolean): Boolean;
 
     function ConnectDatabase(ConnInfo: PAnsiChar): PZPostgreSQLConnect;
@@ -617,7 +619,7 @@ type
          nParams: Integer; paramValues: TPQparamValues;
          paramLengths: TPQparamLengths; paramFormats: TPQparamFormats;
          resultFormat: Integer): Integer;
-    function GetResult(Handle: PZPostgreSQLConnect): PZPostgreSQLResult;
+    function PGGetResult(Handle: PZPostgreSQLConnect): PZPostgreSQLResult;
     //* Describe prepared statements and portals */
     function DescribePrepared(Handle: PPGconn; const stmt: PAnsiChar): PPGresult;
     function DescribePortal(Handle: PPGconn; const portal: PAnsiChar): PPGresult;
@@ -643,7 +645,7 @@ type
     function ExecuteFunction(Handle: PZPostgreSQLConnect; fnid: Integer;
       result_buf, result_len: PInteger; result_is_int: Integer;
       args: PZPostgreSQLArgBlock; nargs: Integer): PZPostgreSQLResult;
-    function GetResultStatus(Res: PZPostgreSQLResult):
+    function PQresultStatus(Res: PZPostgreSQLResult):
       TZPostgreSQLExecStatusType;
 
     function GetResultErrorMessage(Res: PZPostgreSQLResult): PAnsiChar;
@@ -668,7 +670,7 @@ type
     function GetValue(Res: PZPostgreSQLResult;  TupNum, FieldNum: Integer): PAnsiChar;
     function GetLength(Res: PZPostgreSQLResult; TupNum, FieldNum: Integer): Integer;
     function GetIsNull(Res: PZPostgreSQLResult; TupNum, FieldNum: Integer): Integer;
-    procedure Clear(Res: PZPostgreSQLResult);
+    procedure PQclear(Res: PZPostgreSQLResult);
 
     function MakeEmptyResult(Handle: PZPostgreSQLConnect;
       Status: TZPostgreSQLExecStatusType): PZPostgreSQLResult;
@@ -694,6 +696,8 @@ type
     function ExportLargeObject(Handle: PZPostgreSQLConnect; ObjId: Oid;
       FileName: PAnsiChar): Integer;
     function GetPlainFunc:PAPI;
+
+    function PQsetSingleRowMode(Handle: PZPostgreSQLConnect): Integer; //PG9+
   end;
 
   {** Implements a base driver for PostgreSQL}
@@ -706,17 +710,14 @@ type
     procedure LoadApi; override;
   public
     constructor Create;
-
-    function EncodeBYTEA(const Value: RawByteString; Handle: PZPostgreSQLConnect;
-      Quoted: Boolean = True): RawByteString;
-    function DecodeBYTEA(const value: RawByteString; const Is_bytea_output_hex: Boolean;
-      {%H-}Handle: PZPostgreSQLConnect): RawByteString; overload;
-    function DecodeBYTEA(const RowNo, ColumnIndex: Integer;
-      const Is_bytea_output_hex: Boolean; const {%H-}Handle: PZPostgreSQLConnect;
-      const QueryHandle: PZPostgreSQLResult; Var Buffer: Pointer): Cardinal; overload;
+    function EscapeBytea(Handle: PGconn; from: PAnsiChar; from_length: LongWord; to_lenght:PLongword): PAnsiChar;
+    function EscapeString(Handle: PGconn; ToChar: PAnsiChar; const FromChar: PAnsiChar;
+      length: NativeUInt; error: PInteger): NativeUInt; overload;
+    function UnescapeBytea(const from:PAnsiChar;to_lenght:PLongword):PAnsiChar;
+    procedure FreeMem(ptr:Pointer);
 
     function SupportsEncodeBYTEA: Boolean;
-    function SupportsDecodeBYTEA(const Handle: PZPostgreSQLConnect): Boolean;
+    function SupportsDecodeBYTEA: Boolean;
     function SupportsStringEscaping(const ClientDependend: Boolean): Boolean;
 
     function ConnectDatabase(ConnInfo: PAnsiChar): PZPostgreSQLConnect;
@@ -768,7 +769,7 @@ type
          nParams: Integer; paramValues: TPQparamValues;
          paramLengths: TPQparamLengths; paramFormats: TPQparamFormats;
          resultFormat: Integer): Integer;
-    function GetResult(Handle: PZPostgreSQLConnect): PZPostgreSQLResult;
+    function PGGetResult(Handle: PZPostgreSQLConnect): PZPostgreSQLResult;
     function DescribePrepared(Handle: PPGconn; const stmt: PAnsiChar): PPGresult;
     function DescribePortal(Handle: PPGconn; const portal: PAnsiChar): PPGresult;
     function SendDescribePrepared(Handle: PPGconn; const stmt: PAnsiChar): Integer;
@@ -794,7 +795,7 @@ type
     function ExecuteFunction(Handle: PZPostgreSQLConnect; fnid: Integer;
       result_buf, result_len: PInteger; result_is_int: Integer;
       args: PZPostgreSQLArgBlock; nargs: Integer): PZPostgreSQLResult;
-    function GetResultStatus(Res: PZPostgreSQLResult): TZPostgreSQLExecStatusType;
+    function PQresultStatus(Res: PZPostgreSQLResult): TZPostgreSQLExecStatusType;
     function GetResultErrorMessage(Res: PZPostgreSQLResult): PAnsiChar;
     function GetResultErrorField(Res: PZPostgreSQLResult;FieldCode:TZPostgreSQLFieldCode):PAnsiChar;
 
@@ -825,7 +826,7 @@ type
       TupNum, FieldNum: Integer): Integer;
     function GetIsNull(Res: PZPostgreSQLResult;
       TupNum, FieldNum: Integer): Integer;
-    procedure Clear(Res: PZPostgreSQLResult);
+    procedure PQclear(Res: PZPostgreSQLResult);
 
     function MakeEmptyResult(Handle: PZPostgreSQLConnect;
       Status: TZPostgreSQLExecStatusType): PZPostgreSQLResult;
@@ -851,8 +852,7 @@ type
     function ExportLargeObject(Handle: PZPostgreSQLConnect; ObjId: Oid;
       FileName: PAnsiChar): Integer;
     function GetPlainFunc:PAPI;
-    function EscapeString(Handle: Pointer; const Value: RawByteString;
-      ConSettings: PZConSettings; WasEncoded: Boolean = False): RawByteString; override;
+    function PQsetSingleRowMode(Handle: PZPostgreSQLConnect): Integer; //PG9+
   end;
 
   {** Implements a driver for PostgreSQL 7.4 }
@@ -982,6 +982,7 @@ begin
     @POSTGRESQL_API.PQsendPrepare  := GetAddress('PQsendPrepare');
     @POSTGRESQL_API.PQsendQueryPrepared := GetAddress('PQsendQueryPrepared');
     @POSTGRESQL_API.PQgetResult    := GetAddress('PQgetResult');
+    @POSTGRESQL_API.PQsetSingleRowMode := GetAddress('PQsetSingleRowMode'); //9+ http://www.postgresql.org/docs/9.2/static/libpq-single-row-mode.html
 
     @POSTGRESQL_API.PQnotifies     := GetAddress('PQnotifies');
     @POSTGRESQL_API.PQfreeNotify   := GetAddress('PQfreeNotify');
@@ -1056,7 +1057,7 @@ begin
   LoadCodePages;
 end;
 
-procedure TZPostgreSQLBaseDriver.Clear(Res: PZPostgreSQLResult);
+procedure TZPostgreSQLBaseDriver.PQclear(Res: PZPostgreSQLResult);
 begin
   POSTGRESQL_API.PQclear(Res);
 end;
@@ -1093,6 +1094,11 @@ begin
     POSTGRESQL_API.PQfreeCancel( Canc);
 end;
 
+procedure TZPostgreSQLBaseDriver.FreeMem(ptr: Pointer);
+begin
+  POSTGRESQL_API.PQFreemem(ptr);
+end;
+
 function TZPostgreSQLBaseDriver.Cancel(Canc: PZPostgreSQLCancel; Buffer: PChar; Length: Integer): Integer;
 begin
   if Assigned(POSTGRESQL_API.PQcancel) then
@@ -1107,80 +1113,15 @@ begin
   Result := POSTGRESQL_API.lo_creat(Handle, Mode);
 end;
 
-function TZPostgreSQLBaseDriver.DecodeBYTEA(const value: RawByteString;
-  const Is_bytea_output_hex: Boolean; Handle: PZPostgreSQLConnect): RawByteString;
-var
-  decoded: PAnsiChar;
-  len: Longword;
-  L, Xpos: Integer;
-begin
-  Result := ''; //speeds up SetLength *2
-  if ( Is_bytea_output_hex ) then
-  begin
-    Xpos := {$IFDEF WITH_UNITANSISTRINGS}AnsiStrings.{$ENDIF}AnsiPos('x', Value); //get pos of 'x'
-    L := (Length(value)-Xpos) div 2;
-    SetLength(Result, L); //Set length of binary-result
-    HexToBin(PAnsiChar(Value)+Xpos{inc pointer ove '\x'}, PAnsichar(Result), L); //convert hex to binary
-  end
-  else
-    if Assigned(POSTGRESQL_API.PQUnescapeBytea) then
-    begin
-      decoded := POSTGRESQL_API.PQUnescapeBytea(PAnsiChar(value), @len);
-      SetLength(result, len);
-      if (len > 0) then
-         Move(decoded^, result[1], len);
-      if Assigned(POSTGRESQL_API.PQFreemem) then
-        POSTGRESQL_API.PQFreemem(decoded);
-    end
-    else
-      Result := Value;
-
-end;
-
-function TZPostgreSQLBaseDriver.DecodeBYTEA(const RowNo, ColumnIndex: Integer;
-  const Is_bytea_output_hex: Boolean; const Handle: PZPostgreSQLConnect;
-  const QueryHandle: PZPostgreSQLResult; Var Buffer: Pointer): Cardinal;
-var
-  decoded: PAnsiChar;
-  //Xpos: Integer;
-  ColBuffer: PAnsiChar;
-begin
-  Buffer := nil;
-  Result := 0;
-  ColBuffer := GetValue(QueryHandle, RowNo, ColumnIndex);
-  if ( Is_bytea_output_hex ) then
-  begin
-    {if ColBuffer^ = 'x' then
-      xPos := 1
-    else
-      xPos := 2;}
-    Result := GetLength(QueryHandle, Rowno, ColumnIndex);
-    Result := (Result-2) div 2;
-    ReallocMem(Buffer, Result);
-    HexToBin(ColBuffer+2{Xpos{inc pointer over '\x'}, Buffer, Result); //convert hex to binary
-  end
-  else
-    if Assigned(POSTGRESQL_API.PQUnescapeBytea) then
-    begin
-      decoded := POSTGRESQL_API.PQUnescapeBytea(ColBuffer, @Result);
-      ReallocMem(Buffer, Result);
-      if (Result > 0) then
-         Move(decoded^, Buffer^, Result);
-      if Assigned(POSTGRESQL_API.PQFreemem) then
-        POSTGRESQL_API.PQFreemem(decoded);
-    end;
-end;
-
 function TZPostgreSQLBaseDriver.SupportsEncodeBYTEA: Boolean;
 begin
   Result := Assigned(POSTGRESQL_API.PQescapeByteaConn) or
     Assigned(POSTGRESQL_API.PQescapeBytea);
 end;
 
-function TZPostgreSQLBaseDriver.SupportsDecodeBYTEA(const Handle: PZPostgreSQLConnect): Boolean;
+function TZPostgreSQLBaseDriver.SupportsDecodeBYTEA: Boolean;
 begin
-  Result := ( POSTGRESQL_API.PQserverVersion(Handle) div 10000 >= 9 ) or
-    Assigned(POSTGRESQL_API.PQUnescapeBytea);
+  Result := Assigned(POSTGRESQL_API.PQUnescapeBytea);
 end;
 
 function TZPostgreSQLBaseDriver.SupportsStringEscaping(const ClientDependend: Boolean): Boolean;
@@ -1190,33 +1131,6 @@ begin
   else
     Result := Assigned(POSTGRESQL_API.PQescapeStringConn) or
               Assigned(POSTGRESQL_API.PQescapeString);
-end;
-
-function TZPostgreSQLBaseDriver.EncodeBYTEA(const Value: RawByteString;
-  Handle: PZPostgreSQLConnect; Quoted: Boolean = True): RawByteString;
-var
-  encoded: PAnsiChar;
-  len: Longword;
-  leng: cardinal;
-begin
-  if assigned(POSTGRESQL_API.PQescapeByteaConn) or
-    Assigned(POSTGRESQL_API.PQescapeBytea) then
-  begin
-    leng := Length(Value);
-    if assigned(POSTGRESQL_API.PQescapeByteaConn) then
-      encoded := POSTGRESQL_API.PQescapeByteaConn(Handle, PAnsiChar(value), leng, @len)
-    else
-      encoded := POSTGRESQL_API.PQescapeBytea(PAnsiChar(value),leng,@len);
-    SetLength(result, len -1); //removes the #0 byte
-
-    {$IFDEF WITH_STRLCOPY_DEPRECATED}AnsiStrings.{$ENDIF}StrLCopy(PAnsiChar(result), encoded, len - 1);
-
-    POSTGRESQL_API.PQFreemem(encoded);
-    if Quoted then
-      result := ''''+result+'''';
-  end
-  else
-    Result := Value;
 end;
 
 function TZPostgreSQLBaseDriver.EndCopy( Handle: PZPostgreSQLConnect): Integer;
@@ -1310,7 +1224,7 @@ begin
     Result := -1;
 end;
 
-function TZPostgreSQLBaseDriver.GetResult(Handle: PZPostgreSQLConnect): PZPostgreSQLResult;
+function TZPostgreSQLBaseDriver.PGGetResult(Handle: PZPostgreSQLConnect): PZPostgreSQLResult;
 begin
   Result := POSTGRESQL_API.PQgetResult(Handle);
 end;
@@ -1530,7 +1444,7 @@ begin
   Result := POSTGRESQL_API.PQresultErrorMessage(Res);
 end;
 
-function TZPostgreSQLBaseDriver.GetResultStatus(
+function TZPostgreSQLBaseDriver.PQresultStatus(
   Res: PZPostgreSQLResult): TZPostgreSQLExecStatusType;
 begin
   Result := TZPostgreSQLExecStatusType(POSTGRESQL_API.PQresultStatus(Res));
@@ -1676,6 +1590,12 @@ begin
   POSTGRESQL_API.PQtrace(Handle, DebugPort);
 end;
 
+function TZPostgreSQLBaseDriver.UnescapeBytea(const from: PAnsiChar;
+  to_lenght: PLongword): PAnsiChar;
+begin
+  Result := POSTGRESQL_API.PQUnescapeBytea(from, to_lenght);
+end;
+
 function TZPostgreSQLBaseDriver.UnlinkLargeObject(
   Handle: PZPostgreSQLConnect; ObjId: Oid): Integer;
 begin
@@ -1699,42 +1619,38 @@ begin
   result:= @POSTGRESQL_API;
 end;
 
-function TZPostgreSQLBaseDriver.EscapeString(Handle: Pointer; const Value: RawByteString;
-  ConSettings: PZConSettings; WasEncoded: Boolean = False): RawByteString;
-var
-  ResLen: NativeUInt;
-  Temp: PAnsiChar;
-  SourceTemp: RawByteString;
-  IError: Integer;
+function TZPostgreSQLBaseDriver.EscapeBytea(Handle: PGconn; from: PAnsiChar;
+  from_length: LongWord; to_lenght: PLongword): PAnsiChar;
 begin
-  if ( Assigned(POSTGRESQL_API.PQescapeStringConn) or
-       Assigned(POSTGRESQL_API.PQescapeString) ) and ( Value <> '' )then
-  begin
-    IError := 0;
-    {$IFDEF UNICODE}
-    SourceTemp := Value;
-    {$ELSE}
-    if WasEncoded then
-      SourceTemp := Value
-    else
-      SourceTemp := ConSettings^.ConvFuncs.ZStringToRaw(Value, ConSettings^.CTRL_CP, ConSettings^.ClientCodePage^.CP); //check encoding too
-    {$ENDIF}
-    GetMem(Temp, Length(SourceTemp)*2);
-    if Assigned(POSTGRESQL_API.PQescapeStringConn) then
-      ResLen := POSTGRESQL_API.PQescapeStringConn(Handle, Temp,
-      PAnsiChar(SourceTemp), Length(SourceTemp), @IError)
-    else
-      ResLen := POSTGRESQL_API.PQescapeString(Temp, PAnsiChar(SourceTemp), Length(SourceTemp));
-    if not (IError = 0) then
-      raise Exception.Create('Wrong escape behavior!');
-    Result := ''; //speeds up setlength x2
-    SetLength(Result, ResLen);
-    Move(Temp^, Pointer(Result)^, ResLen);
-    FreeMem(Temp);
-  end
+  if assigned(POSTGRESQL_API.PQescapeByteaConn) then
+    Result := POSTGRESQL_API.PQescapeByteaConn(Handle, from, from_length, to_lenght)
+  else if Assigned(POSTGRESQL_API.PQescapeBytea) then
+    Result := POSTGRESQL_API.PQescapeBytea(from,from_length,to_lenght)
   else
-    Result := Value;
-  Result := #39+Result+#39;
+    raise Exception.Create('can''t escape bytea ');
+end;
+
+function TZPostgreSQLBaseDriver.EscapeString(Handle: PGconn; ToChar: PAnsiChar;
+  const FromChar: PAnsiChar; length: NativeUInt; error: PInteger): NativeUInt;
+begin
+  Error^ := 0;
+  if (FromChar = nil) or (Length = 0) then
+    Result := 0
+  else if Assigned(POSTGRESQL_API.PQescapeStringConn) then
+    Result := POSTGRESQL_API.PQescapeStringConn(Handle, ToChar, FromChar, Length, error)
+  else if Assigned(POSTGRESQL_API.PQescapeString) then
+    Result := POSTGRESQL_API.PQescapeString(ToChar, FromChar, Length)
+  else
+    raise Exception.Create('can''t escape the string!');
+end;
+
+function TZPostgreSQLBaseDriver.PQsetSingleRowMode(Handle: PZPostgreSQLConnect): Integer; //PG9+
+begin
+  //http://www.postgresql.org/docs/9.2/static/libpq-single-row-mode.html
+  if Assigned(POSTGRESQL_API.PQsetSingleRowMode) then
+    Result := POSTGRESQL_API.PQsetSingleRowMode(Handle)
+  else
+    Result := 0;
 end;
 
 { TZPostgreSQL7PlainDriver }

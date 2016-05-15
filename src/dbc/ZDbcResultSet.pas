@@ -101,6 +101,7 @@ type
     procedure CheckColumnConvertion(ColumnIndex: Integer; ResultType: TZSQLType);
     procedure CheckBlobColumn(ColumnIndex: Integer);
     procedure Open; virtual;
+
     function GetColumnIndex(const ColumnName: string): Integer;
     property RowNo: Integer read FRowNo write FRowNo;
     property LastRowNo: Integer read FLastRowNo write FLastRowNo;
@@ -115,9 +116,8 @@ type
       read FResultSetConcurrency write FResultSetConcurrency;
     property Statement: IZStatement read FStatement;
     property Metadata: TContainedObject read FMetadata write FMetadata;
-
   public
-    constructor Create(Statement: IZStatement; SQL: string;
+    constructor Create(Statement: IZStatement; const SQL: string;
       Metadata: TContainedObject; ConSettings: PZConSettings);
     destructor Destroy; override;
 
@@ -126,6 +126,7 @@ type
 
     function Next: Boolean; virtual;
     procedure Close; virtual;
+    procedure ResetCursor; virtual;
     function WasNull: Boolean; virtual;
 
     //======================================================================
@@ -386,6 +387,8 @@ type
     procedure SetBytes(const Value: TBytes); virtual;
     function GetStream: TStream; virtual;
     procedure SetStream(const Value: TStream); overload; virtual;
+    function GetBufferAddress: PPointer;
+    function GetLengthAddress: PInteger;
     function GetBuffer: Pointer; virtual;
     procedure SetBuffer(const Buffer: Pointer; const Length: Integer);
     {$IFDEF WITH_MM_CAN_REALLOC_EXTERNAL_MEM}
@@ -433,13 +436,14 @@ type
     function GetBytes: TBytes; override;
     function GetStream: TStream; override;
     function GetBuffer: Pointer; override;
+    function Clone(Empty: Boolean = False): IZBlob; override;
+    procedure FlushBuffer; virtual;
   end;
 
   {** Implements external or internal clob wrapper object. }
   TZAbstractCLob = class(TZAbstractBlob)
-  private
-    FCurrentCodePage: Word;
   protected
+    FCurrentCodePage: Word;
     FConSettings: PZConSettings;
     procedure InternalSetRawByteString(Const Value: RawByteString; const CodePage: Word);
     procedure InternalSetAnsiString(Const Value: AnsiString);
@@ -509,11 +513,12 @@ type
     function GetPWideChar: PWideChar; override;
     function GetBuffer: Pointer; override;
     function Clone(Empty: Boolean = False): IZBLob; override;
+    procedure FlushBuffer; virtual;
   End;
 
 implementation
 
-uses Math, ZMessages, ZDbcUtils, ZDbcResultSetMetadata, ZEncoding, ZFastCode
+uses ZMessages, ZDbcUtils, ZDbcResultSetMetadata, ZEncoding, ZFastCode
   {$IFDEF WITH_UNITANSISTRINGS}, AnsiStrings{$ENDIF};
 
 function CompareNothing(const Null1, Null2: Boolean; const V1, V2): Integer; //emergency exit for complex types we can't sort quickly like arrays, dataset ...
@@ -640,7 +645,7 @@ end;
   @param Metadata a resultset metadata object.
   @param ConSettings the pointer to Connection Settings record
 }
-constructor TZAbstractResultSet.Create(Statement: IZStatement; SQL: string;
+constructor TZAbstractResultSet.Create(Statement: IZStatement; const SQL: string;
   Metadata: TContainedObject; ConSettings: PZConSettings);
 var
   DatabaseMetadata: IZDatabaseMetadata;
@@ -825,6 +830,24 @@ begin
 end;
 
 {**
+  Resets cursor position of this recordset and
+  the overrides should reset the prepared handles.
+}
+procedure TZAbstractResultSet.ResetCursor;
+begin
+  if not FClosed and Assigned(Statement){virtual RS ! } then
+  begin
+    FFetchSize := Statement.GetFetchSize;
+    FPostUpdates := Statement.GetPostUpdates;
+    FLocateUpdates := Statement.GetLocateUpdates;
+    FMaxRows := Statement.GetMaxRows;
+  end;
+  FRowNo := 0;
+  FLastRowNo := 0;
+  LastWasNull := True;
+end;
+
+{**
   Releases this <code>ResultSet</code> object's database and
   JDBC resources immediately instead of waiting for
   this to happen when it is automatically closed.
@@ -838,19 +861,9 @@ end;
   is also automatically closed when it is garbage collected.
 }
 procedure TZAbstractResultSet.Close;
-var
-   I: integer;
-   FColumnInfo: TZColumnInfo;
 begin
-  LastWasNull := True;
-  FRowNo := 0;
-  FLastRowNo := 0;
   FClosed := True;
-  for I := FColumnsInfo.Count - 1 downto 0 do
-  begin
-    FColumnInfo := TZColumnInfo(FColumnsInfo.Extract(FColumnsInfo.Items[I]));
-    FColumnInfo.Free;
-  end;
+  ResetCursor;
   FColumnsInfo.Clear;
   if (FStatement <> nil) then FStatement.FreeOpenResultSetReference;
   FStatement := nil;
@@ -1579,7 +1592,7 @@ begin
       Result := EncodeBytes(GetBytes(ColumnIndex));
     stString, stAsciiStream, stUnicodeString, stUnicodeStream:
       if (not ConSettings^.ClientCodePage^.IsStringFieldCPConsistent) or
-          (ConSettings^.ClientCodePage^.CP = zCP_UTF8) then
+         (ConSettings^.ClientCodePage^.Encoding in [ceUTf8, ceUTF16]) then
         Result := EncodeUnicodeString(GetUnicodeString(ColumnIndex))
       else
         Result := EncodeRawByteString(GetRawByteString(ColumnIndex));
@@ -3878,7 +3891,7 @@ begin
             Result[i] := CompareBytes_Asc;
           stString, stAsciiStream, stUnicodeString, stUnicodeStream:
             if (not ConSettings^.ClientCodePage^.IsStringFieldCPConsistent) or
-                (ConSettings^.ClientCodePage^.CP = zCP_UTF8) then
+                (ConSettings^.ClientCodePage^.Encoding in [ceUTf8, ceUTF16]) then
               Result[i] := CompareUnicodeString_Asc
             else
               Result[I] := CompareRawByteString_Asc
@@ -3901,7 +3914,7 @@ begin
             Result[i] := CompareBytes_Desc;
           stString, stAsciiStream, stUnicodeString, stUnicodeStream:
             if (not ConSettings^.ClientCodePage^.IsStringFieldCPConsistent) or
-                (ConSettings^.ClientCodePage^.CP = zCP_UTF8) then
+                (ConSettings^.ClientCodePage^.Encoding in [ceUTf8, ceUTF16]) then
               Result[i] := CompareUnicodeString_Desc
             else
               Result[I] := CompareRawByteString_Desc
@@ -4205,6 +4218,11 @@ begin
     Result := nil;
 end;
 
+function TZAbstractBlob.GetLengthAddress: PInteger;
+begin
+  Result := @FBlobSize;
+end;
+
 {**
   Sets a new byte buffer to this blob content.
   @param Value a new byte buffer.
@@ -4267,6 +4285,11 @@ end;
 function TZAbstractBlob.GetBuffer: Pointer;
 begin
   Result := FBlobData;
+end;
+
+function TZAbstractBlob.GetBufferAddress: PPointer;
+begin
+  Result := @FBlobData;
 end;
 
 procedure TZAbstractBlob.SetBuffer(const Buffer: Pointer; const Length: Integer);
@@ -4340,6 +4363,27 @@ begin
   Result := inherited Getbuffer;
 end;
 
+function TZAbstractUnCachedBlob.Clone(Empty: Boolean = False): IZBlob;
+begin
+  if not Empty and not Floaded then
+  begin
+    ReadLob;
+    Result := inherited Clone(Empty);
+    FlushBuffer;
+  end
+  else
+    Result := inherited Clone(Empty);
+end;
+
+procedure TZAbstractUnCachedBlob.FlushBuffer;
+begin
+  if not FUpdated then
+  begin
+    InternalClear;
+    Floaded := False;
+  end;
+end;
+
 { TZAbstractCLob }
 
 procedure TZAbstractCLob.InternalSetRawByteString(Const Value: RawByteString;
@@ -4354,7 +4398,7 @@ end;
 procedure TZAbstractCLob.InternalSetAnsiString(Const Value: AnsiString);
 begin
   FBlobSize := System.Length(Value)+1;
-  FCurrentCodePage := ZDefaultSystemCodePage;
+  FCurrentCodePage := ZOSCodePage;
   ReallocMem(FBlobData, FBlobSize);
   System.Move(PAnsiChar(Value)^, FBlobData^, FBlobSize);
 end;
@@ -4397,7 +4441,7 @@ begin
           else
             if zCompatibleCodePages(FConSettings^.ClientCodePage^.CP, zCP_UTF8) then
               if ZCompatibleCodePages(FConSettings^.CTRL_CP, zCP_UTF8) then
-                CodePage := zDefaultSystemCodePage
+                CodePage := ZOSCodePage
               else
                 CodePage := FConSettings^.CTRL_CP
             else
@@ -4539,7 +4583,7 @@ var
 begin
   Result := '';
   if FBlobSize > 0 then
-    if ZCompatibleCodePages(FCurrentCodePage, ZDefaultSystemCodePage) then
+    if ZCompatibleCodePages(FCurrentCodePage, ZOSCodePage) then
        System.SetString(Result, PAnsiChar(FBlobData), FBlobSize -1)
     else
     begin
@@ -4684,7 +4728,7 @@ begin
   Result := TMemoryStream.Create;
   if (FBlobSize > 0) and Assigned(FBlobData) then
   begin
-    if ZCompatibleCodePages(FCurrentCodePage, ZDefaultSystemCodePage) then
+    if ZCompatibleCodePages(FCurrentCodePage, ZOSCodePage) then
     begin
       Result.Size := Length;
       System.Move(FBlobData^, TMemoryStream(Result).Memory^, Length)
@@ -4782,7 +4826,8 @@ begin
       Result := PWideChar(FBlobData)
     else
     begin
-      GetUnicodeString;
+      FBlobSize := (PRaw2PUnicodeBuf(FBlobData, Length, 0, FBlobData, FCurrentCodePage)+1) shl 1 ;
+      FCurrentCodePage := zCP_UTF16;
       Result := PWideChar(FBlobData);
     end;
 end;
@@ -4943,8 +4988,23 @@ end;
 }
 function TZAbstractUnCachedCLob.Clone(Empty: Boolean = False): IZBLob;
 begin
-  if not Empty and not Loaded then ReadLob;
-  Result := inherited Clone(Empty);
+  if not Empty and not Loaded then
+  begin
+    ReadLob;
+    Result := inherited Clone(Empty);
+    FlushBuffer;
+  end
+  else
+    Result := inherited Clone(Empty);
+end;
+
+procedure TZAbstractUnCachedCLob.FlushBuffer;
+begin
+  if not FUpdated then
+  begin
+    InternalClear;
+    FLoaded := False;
+  end;
 end;
 
 end.

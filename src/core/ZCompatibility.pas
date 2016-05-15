@@ -101,7 +101,7 @@ type
 {$ENDIF}
   // EgonHugeist: Use always a 4Byte unsigned Integer for Windows otherwise MySQL64 has problems on Win64!
   // don't know anything about reported issues on other OS's
-  ULong                 = {$IFDEF WIN64}LongWord{$ELSE}NativeUInt{$ENDIF};
+  ULong                 = {$IFDEF MSWINDOWS}LongWord{$ELSE}NativeUInt{$ENDIF};
   ULongLong             = UInt64;
   PULong                = ^ULong;
   PULongLong            = ^ULongLong;
@@ -306,19 +306,11 @@ type
   TZUnicodeToRaw = function (const US: ZWideString; CP: Word): RawByteString;
   TZUnicodeToString = function (const Src: ZWideString; const StringCP: Word): String;
   TZStringToUnicode = function (const Src: String; const StringCP: Word): ZWideString;
-  TPRawToString = function (const Src: PAnsiChar; Len: LengthInt; const StringCP: Word): String;
-  TPUnicodeToString = function (const Src: PWideChar; CodePoints: NativeUInt; const StringCP: Word): String;
+  TPRawToString = function (Src: PAnsiChar; Len: LengthInt; const RawCP, StringCP: Word): String;
+  TPUnicodeToString = function (Src: PWideChar; CodePoints: NativeUInt; const StringCP: Word): String;
 
   {** Defines the Target Ansi codepages for the Controls }
-  {$IFDEF UNICODE}
-  TZControlsCodePage = (cCP_UTF16, cCP_UTF8, cGET_ACP);
-  {$ELSE}
-    {$IFDEF FPC}
-    TZControlsCodePage = (cCP_UTF8, cCP_UTF16, cGET_ACP);
-    {$ELSE}
-    TZControlsCodePage = (cGET_ACP, cCP_UTF8, cCP_UTF16);
-    {$ENDIF}
-  {$ENDIF}
+  TZControlsCodePage = ({$IFDEF UNICODE}cCP_UTF16, cCP_UTF8, cGET_ACP{$ELSE}{$IFDEF FPC}cCP_UTF8, cCP_UTF16, cGET_ACP{$ELSE}cGET_ACP, cCP_UTF8, cCP_UTF16{$ENDIF}{$ENDIF});
 
   TZCharEncoding = (
     ceDefault,  //Internal switch for the two Functions below do not use it as a CodePage-declaration!
@@ -405,6 +397,7 @@ type
 {$IFNDEF WITH_CHARINSET}
 function CharInSet(const C: AnsiChar; const CharSet: TSysCharSet): Boolean; overload; {$IFDEF WITH_INLINE}Inline;{$ENDIF}
 function CharInSet(const C: WideChar; const CharSet: TSysCharSet): Boolean; overload; {$IFDEF WITH_INLINE}Inline;{$ENDIF}
+function CharInSet(const C: Word; const CharSet: TSysCharSet): Boolean; overload; {$IFDEF WITH_INLINE}Inline;{$ENDIF}
 {$ENDIF}
 
 {$IF not Declared(UTF8ToString)}
@@ -415,11 +408,16 @@ function UTF8ToString(const s: RawByteString): ZWideString;
 function Hash(const S : RawByteString) : LongWord; overload;
 function Hash(const Key : ZWideString) : Cardinal; overload;
 
-procedure ZSetString(const Src: PAnsiChar; const Len: Cardinal; var Dest: AnsiString); overload;// {$IFDEF WITH_INLINE}Inline;{$ENDIF}
+procedure ZSetString(const Src: PAnsiChar; const Len: Cardinal; var Dest: {$IFDEF UNICODE}AnsiString{$ELSE}String{$ENDIF}); overload;// {$IFDEF WITH_INLINE}Inline;{$ENDIF}
 procedure ZSetString(const Src: PAnsiChar; const Len: Cardinal; var Dest: UTF8String); overload;// {$IFDEF WITH_INLINE}Inline;{$ENDIF}
 procedure ZSetString(Src: PAnsiChar; const Len: LengthInt; var Dest: ZWideString); overload;// {$IFDEF WITH_INLINE}Inline;{$ENDIF}
 {$IFDEF WITH_RAWBYTESTRING}
 procedure ZSetString(const Src: PAnsiChar; const Len: Cardinal; var Dest: RawByteString); overload;// {$IFDEF WITH_INLINE}Inline;{$ENDIF}
+{$ENDIF}
+
+{$IFDEF MISS_MATH_NATIVEUINT_MIN_MAX_OVERLOAD}
+function Min(const A, B: NativeUInt): NativeUInt; overload; {$IFDEF WITH_INLINE}Inline;{$ENDIF}
+function Max(const A, B: NativeUInt): NativeUInt; overload; {$IFDEF WITH_INLINE}Inline;{$ENDIF}
 {$ENDIF}
 
 var
@@ -463,7 +461,7 @@ const
   PEmptyAnsiString: PAnsiChar = '';
 
 var
-  ZDefaultSystemCodePage: Word;
+  ZOSCodePage: Word;
 
 implementation
 
@@ -472,7 +470,7 @@ begin
   if Assigned(Info) and Assigned(FConSettings) then
   begin
     {$IFDEF UNICODE}
-    ConSettings.CTRL_CP := ZDefaultSystemCodePage;
+    ConSettings.CTRL_CP := DefaultSystemCodePage;
     if Info.values['controls_cp'] = 'GET_ACP' then
       ConSettings.CPType := cGET_ACP
     else
@@ -487,7 +485,7 @@ begin
     if Info.values['controls_cp'] = 'GET_ACP' then
     begin
       ConSettings.CPType := cGET_ACP;
-      ConSettings.CTRL_CP := ZDefaultSystemCodePage;
+      ConSettings.CTRL_CP := ZOSCodePage;
     end
     else
       if Info.values['controls_cp'] = 'CP_UTF8' then
@@ -498,33 +496,31 @@ begin
       else
         if Info.values['controls_cp'] = 'CP_UTF16' then
         begin
-          {$IF defined(MSWINDOWS) or defined(FPC_HAS_BUILTIN_WIDESTR_MANAGER) or defined(WITH_LCONVENCODING)}
-          ConSettings.CPType := {$IFDEF WITH_WIDEFIELDS}cCP_UTF16{$ELSE}cCP_UTF8{$ENDIF};
-          ConSettings.CTRL_CP := ZDefaultSystemCodePage;
-          ConSettings.AutoEncode := True;
+          {$IFDEF WITH_WIDEFIELDS}
+          ConSettings.CPType := cCP_UTF16;
+            {$IFDEF WITH_DEFAULTSYSTEMCODEPAGE}
+            ConSettings.CTRL_CP := DefaultSystemCodePage;
+            {$ELSE}
+            ConSettings.CTRL_CP := ZOSCodePage;
+            {$ENDIF}
           {$ELSE}
-          if ConSettings.ClientCodePage.Encoding = ceUTF8 then
-          begin
-            ConSettings.CPType := {$IFDEF WITH_WIDEFIELDS}cCP_UTF16{$ELSE}cCP_UTF8{$ENDIF};
-            ConSettings.CTRL_CP := 65001;
-            ConSettings.AutoEncode := True;
-          end
-          else
-          begin
-            ConSettings.CPType := cCP_UTF8;
-            ConSettings.CTRL_CP := 65001;
-            ConSettings.AutoEncode := False;
-          end;
-          {$IFEND}
+          ConSettings.CPType := cCP_UTF8;
+          ConSettings.CTRL_CP := 65001;
+          {$ENDIF}
+          ConSettings.AutoEncode := True;
         end
         else // nothing was found set defaults
         begin
-          {$IFDEF FPC}
+          {$IFDEF LCL}
           ConSettings.CPType := cCP_UTF8;
           ConSettings.CTRL_CP := 65001;
           {$ELSE}
           ConSettings.CPType := cGET_ACP;
-          ConSettings.CTRL_CP := GetACP;
+            {$IFDEF WITH_DEFAULTSYSTEMCODEPAGE}
+            ConSettings.CTRL_CP := DefaultSystemCodePage;
+            {$ELSE}
+            ConSettings.CTRL_CP := ZOSCodePage;
+            {$ENDIF}
           {$ENDIF}
         end;
     {$ENDIF}
@@ -696,8 +692,14 @@ end;
 
 function CharInSet(const C: WideChar; const CharSet: TSysCharSet): Boolean;
 begin
-  result := Char(C) in Charset;
+  result := CharInSet(Word(C), CharSet);
 end;
+
+function CharInSet(const C: Word; const CharSet: TSysCharSet): Boolean;
+begin
+  result := (C <= High(Byte)) and (AnsiChar(Byte(C)) in Charset);
+end;
+
 {$ENDIF}
 
 {$IFDEF  ZUTF8ToString}
@@ -708,7 +710,7 @@ end;
 {$UNDEF ZUTF8ToString}
 {$ENDIF}
 
-procedure ZSetString(const Src: PAnsiChar; const Len: Cardinal; var Dest: AnsiString);
+procedure ZSetString(const Src: PAnsiChar; const Len: Cardinal; var Dest: {$IFDEF UNICODE}AnsiString{$ELSE}String{$ENDIF});
 begin
   if ( Len = 0 ) then
     Dest := ''
@@ -718,9 +720,16 @@ begin
        ({%H-}PLengthInt(NativeUInt(Dest) - StringLenOffSet)^ = LengthInt(Len)) {length} then
     begin
       if Src <> nil then Move(Src^, Pointer(Dest)^, Len)
-    end
-    else
+    end else
+    {$IFDEF MISS_RBS_SETSTRING_OVERLOAD}
+    begin
+      Dest := '';
+      SetLength(Dest, Len);
+      if Src <> nil then Move(Src^, Pointer(Dest)^, Len);
+    end;
+    {$ELSE}
       SetString(Dest, Src, Len);
+    {$ENDIF}
 end;
 
 procedure ZSetString(const Src: PAnsiChar; const Len: Cardinal; var Dest: UTF8String);
@@ -760,10 +769,10 @@ begin
     if (Pointer(Dest{%H-}) = nil) or//empty
        ({%H-}PRefCntInt(NativeUInt(Dest) - StringRefCntOffSet)^ <> 1) or { unique string ? }
        (Len <> {%H-}PLengthInt(NativeUInt(Dest) - StringLenOffSet)^) then { length as expected ? }
-      SetString(Dest, nil, Len);
     {$ELSE}
-    SetString(Dest, nil, Len);
+    if Length(Dest) <> Len then //WideString isn't ref counted
     {$ENDIF}
+    SetLength(Dest, Len);
     if Src <> nil then
     begin
       PW := Pointer(Dest);
@@ -789,6 +798,7 @@ begin
 end;
 
 {$IFDEF WITH_RAWBYTESTRING}
+
 procedure ZSetString(const Src: PAnsiChar; const Len: Cardinal; var Dest: RawByteString);
 begin
   if ( Len = 0 ) then
@@ -796,11 +806,9 @@ begin
   else
     if (Pointer(Dest) <> nil) and //Empty?
        ({%H-}PRefCntInt(NativeUInt(Dest) - StringRefCntOffSet)^ = 1) {refcount} and
-       ({%H-}PLengthInt(NativeUInt(Dest) - StringLenOffSet)^ = LengthInt(Len)) {length} then
-    begin
+       ({%H-}PLengthInt(NativeUInt(Dest) - StringLenOffSet)^ = LengthInt(Len)) {length} then begin
       if Src <> nil then Move(Src^, Pointer(Dest)^, Len)
-    end
-    else
+    end else
       {$IFDEF MISS_RBS_SETSTRING_OVERLOAD}
       begin
         Dest := '';
@@ -813,14 +821,31 @@ begin
 end;
 {$ENDIF}
 
+{$IFDEF MISS_MATH_NATIVEUINT_MIN_MAX_OVERLOAD}
+function Min(const A, B: NativeUInt): NativeUInt;
+begin
+  if A < B then
+    Result := A
+  else
+    Result := B;
+end;
+
+function Max(const A, B: NativeUInt): NativeUInt;
+begin
+  if A > B then
+    Result := A
+  else
+    Result := B;
+end;
+{$ENDIF}
 
 initialization
   case ConSettingsDummy.CPType of
-    cCP_UTF16, cGET_ACP: ConSettingsDummy.CTRL_CP := ZDefaultSystemCodePage;
+    cCP_UTF16, cGET_ACP: ConSettingsDummy.CTRL_CP := ZOSCodePage;
     cCP_UTF8: ConSettingsDummy.CTRL_CP := 65001;
   end;
 end.
 
 
 
-
+

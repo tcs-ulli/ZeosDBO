@@ -5,7 +5,7 @@
         <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
         <DCC_DCCCompiler>DCC32</DCC_DCCCompiler>
         <DCC_DependencyCheckOutputName>C:\Documents and Settings\All Users\Documentos\RAD Studio\5.0\Bpl\ZCore110.bpl</DCC_DependencyCheckOutputName>
-        <ProjectVersion>15.1</ProjectVersion>
+        <ProjectVersion>15.3</ProjectVersion>
         <Config Condition="'$(Config)'==''">Debug</Config>
         <Base>True</Base>
         <AppType>Package</AppType>
@@ -67,7 +67,7 @@
         <DCC_Namespace>System;Xml;Data;Datasnap;Web;Soap;Winapi;$(DCC_Namespace)</DCC_Namespace>
         <VerInfo_Locale>1031</VerInfo_Locale>
         <DCC_ImageBase>00400000</DCC_ImageBase>
-        <DllSuffix>170</DllSuffix>
+        <DllSuffix>190</DllSuffix>
         <DCC_Description>Zeos Core Classes and Interfaces</DCC_Description>
         <RuntimeOnlyPackage>true</RuntimeOnlyPackage>
         <DCC_DependencyCheckOutputName>build\ZCore170.bpl</DCC_DependencyCheckOutputName>
@@ -140,6 +140,7 @@
         <DCCReference Include="..\..\src\core\ZExpression.pas"/>
         <DCCReference Include="..\..\src\core\ZExprParser.pas"/>
         <DCCReference Include="..\..\src\core\ZExprToken.pas"/>
+        <DCCReference Include="..\..\src\core\ZFastCode.pas"/>
         <DCCReference Include="..\..\src\core\ZMatchPattern.pas"/>
         <DCCReference Include="..\..\src\core\ZSysUtils.pas"/>
         <DCCReference Include="..\..\src\core\ZTokenizer.pas"/>
@@ -196,7 +197,7 @@
                     <VersionInfoKeys Name="LegalTrademarks"/>
                     <VersionInfoKeys Name="OriginalFilename"/>
                     <VersionInfoKeys Name="ProductName"/>
-                    <VersionInfoKeys Name="ProductVersion">1.0.0.0</VersionInfoKeys>
+                    <VersionInfoKeys Name="ProductVersion">7.2.0.0</VersionInfoKeys>
                 </VersionInfoKeys>
                 <Source>
                     <Source Name="MainSource">ZCore.dpk</Source>

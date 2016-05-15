@@ -54,10 +54,11 @@ unit ZDbcAdoMetadata;
 interface
 
 {$I ZDbc.inc}
+{$IFDEF ENABLE_ADO}
 
 uses
-  Types, Classes, SysUtils, ZSysUtils, ZClasses, ZDbcIntfs, ZDbcMetadata,
-  ZDbcResultSet, ZDbcCachedResultSet, ZDbcResultsetMetadata, ZURL,
+  Types, Classes, {$IFDEF MSEgui}mclasses,{$ENDIF} SysUtils,
+  ZSysUtils, {%H-}ZClasses, ZDbcIntfs, ZDbcMetadata, ZDbcResultSet, ZURL,
   ZCompatibility, ZGenericSqlAnalyser, ZPlainAdo, ZDbcConnection;
 
 type
@@ -135,16 +136,17 @@ type
     function SupportsOpenStatementsAcrossCommit: Boolean; override;
     function SupportsOpenStatementsAcrossRollback: Boolean; override;
     function SupportsTransactions: Boolean; override;
-    function SupportsTransactionIsolationLevel(const Level: TZTransactIsolationLevel):
+    function SupportsTransactionIsolationLevel(const {%H-}Level: TZTransactIsolationLevel):
       Boolean; override;
     function SupportsDataDefinitionAndDataManipulationTransactions: Boolean; override;
     function SupportsDataManipulationTransactionsOnly: Boolean; override;
-    function SupportsResultSetType(const _Type: TZResultSetType): Boolean; override;
-    function SupportsResultSetConcurrency(const _Type: TZResultSetType;
-      const Concurrency: TZResultSetConcurrency): Boolean; override;
+    function SupportsResultSetType(const {%H-}_Type: TZResultSetType): Boolean; override;
+    function SupportsResultSetConcurrency(const {%H-}_Type: TZResultSetType;
+      const {%H-}Concurrency: TZResultSetConcurrency): Boolean; override;
 //    function SupportsBatchUpdates: Boolean; override; -> Not implemented
     function SupportsNonEscapedSearchStrings: Boolean; override;
     function SupportsUpdateAutoIncrementFields: Boolean; override;
+    function SupportsArrayBindings: Boolean; override;
 
     // maxima:
     function GetMaxBinaryLiteralLength: Integer; override;
@@ -259,11 +261,9 @@ type
 implementation
 
 uses
-{$IFNDEF FPC}
   Variants,
-{$ENDIF}
-  Math, ZDbcUtils, ZCollections, ZGenericSqlToken, ZDbcAdoUtils, ZDbcAdo,
-  OleDB, ZDbcAdoResultSet;
+  Math, ZGenericSqlToken, ZDbcAdoUtils, ZDbcAdo,
+  {$IFDEF FPC}ZOleDB{$ELSE}OleDB{$ENDIF}, ZDbcAdoResultSet;
 
 type
   TSuppSchemaRec = record
@@ -322,7 +322,7 @@ end;
 }
 function TZAdoDatabaseInfo.GetDatabaseProductVersion: string;
 begin
-  Result := (Metadata.GetConnection as IZAdoConnection).GetAdoConnection.Version;
+  Result := String((Metadata.GetConnection as IZAdoConnection).GetAdoConnection.Version);
 end;
 
 {**
@@ -1213,6 +1213,16 @@ begin
   Result := False;
 end;
 
+{**
+  Does the Database support binding arrays? Is the ZDbc ready for this?
+  @return <code>true</code> if the DataBase allows it.
+}
+function TZAdoDatabaseInfo.SupportsArrayBindings: Boolean;
+begin
+  Result := True;
+end;
+
+
 { TZAdoDatabaseMetadata }
 
 
@@ -1286,6 +1296,7 @@ function TZAdoDatabaseMetadata.UncachedGetProcedures(const Catalog: string;
   const SchemaPattern: string; const ProcedureNamePattern: string): IZResultSet;
 var
   AdoRecordSet: ZPlainAdo.RecordSet;
+  Len: NativeUInt;
 begin
   Result:=inherited UncachedGetProcedures(Catalog, SchemaPattern, ProcedureNamePattern);
 
@@ -1297,10 +1308,10 @@ begin
       while Next do
       begin
         Result.MoveToInsertRow;
-        Result.UpdateString(CatalogNameIndex, GetStringByName('PROCEDURE_CATALOG'));
-        Result.UpdateString(SchemaNameIndex, GetStringByName('PROCEDURE_SCHEMA'));
-        Result.UpdateString(ProcedureNameIndex, GetStringByName('PROCEDURE_NAME'));
-        Result.UpdateString(ProcedureRemarksIndex, GetStringByName('DESCRIPTION'));
+        Result.UpdatePWideChar(CatalogNameIndex, GetPWideCharByName('PROCEDURE_CATALOG', Len), @Len);
+        Result.UpdatePWideChar(SchemaNameIndex, GetPWideCharByName('PROCEDURE_SCHEMA', Len), @Len);
+        Result.UpdatePWideChar(ProcedureNameIndex, GetPWideCharByName('PROCEDURE_NAME', Len), @Len);
+        Result.UpdatePWideChar(ProcedureRemarksIndex, GetPWideCharByName('DESCRIPTION', Len), @Len);
         Result.UpdateSmall(ProcedureTypeIndex, GetSmallByName('PROCEDURE_TYPE') - 1);
         Result.InsertRow;
       end;
@@ -1370,6 +1381,7 @@ function TZAdoDatabaseMetadata.UncachedGetProcedureColumns(const Catalog: string
   const ColumnNamePattern: string): IZResultSet;
 var
   AdoRecordSet: ZPlainAdo.RecordSet;
+  Len: NativeUInt;
 begin
   Result:=inherited UncachedGetProcedureColumns(Catalog, SchemaPattern, ProcedureNamePattern, ColumnNamePattern);
 
@@ -1381,10 +1393,10 @@ begin
       while Next do
       begin
         Result.MoveToInsertRow;
-        Result.UpdateString(CatalogNameIndex, GetStringByName('PROCEDURE_CATALOG'));
-        Result.UpdateString(SchemaNameIndex, GetStringByName('PROCEDURE_SCHEMA'));
-        Result.UpdateString(ProcColProcedureNameIndex, GetStringByName('PROCEDURE_NAME'));
-        Result.UpdateString(ProcColColumnNameIndex, GetStringByName('PARAMETER_NAME'));
+        Result.UpdatePWideChar(CatalogNameIndex, GetPWideCharByName('PROCEDURE_CATALOG', Len), @Len);
+        Result.UpdatePWideChar(SchemaNameIndex, GetPWideCharByName('PROCEDURE_SCHEMA', Len), @Len);
+        Result.UpdatePWideChar(ProcColProcedureNameIndex, GetPWideCharByName('PROCEDURE_NAME', Len), @Len);
+        Result.UpdatePWideChar(ProcColColumnNameIndex, GetPWideCharByName('PARAMETER_NAME', Len), @Len);
         case GetSmallByName('PARAMETER_TYPE') of
           1: Result.UpdateSmall(ProcColColumnTypeIndex, Ord(pctIn));
           2: Result.UpdateSmall(ProcColColumnTypeIndex, Ord(pctInOut));
@@ -1395,7 +1407,7 @@ begin
         end;
         Result.UpdateSmall(ProcColDataTypeIndex, Ord(ConvertAdoToSqlType(
           GetSmallByName('DATA_TYPE'), ConSettings.CPType)));
-        Result.UpdateString(ProcColTypeNameIndex, GetStringByName('TYPE_NAME'));
+        Result.UpdatePWideChar(ProcColTypeNameIndex, GetPWideCharByName('TYPE_NAME', Len), @Len);
         Result.UpdateInt(ProcColPrecisionIndex, GetIntByName('NUMERIC_PRECISION'));
         Result.UpdateInt(ProcColLengthIndex, GetIntByName('CHARACTER_OCTET_LENGTH'));
         Result.UpdateSmall(ProcColScaleIndex, GetSmallByName('NUMERIC_SCALE'));
@@ -1407,7 +1419,7 @@ begin
             Result.UpdateSmall(ProcColNullableIndex, 1)
           else
             Result.UpdateSmall(ProcColNullableIndex, 2);
-        Result.UpdateString(ProcColRemarksIndex, GetStringByName('DESCRIPTION'));
+        Result.UpdatePWideChar(ProcColRemarksIndex, GetPWideCharByName('DESCRIPTION', Len), @Len);
         Result.InsertRow;
       end;
       Close;
@@ -1452,9 +1464,11 @@ var
   I: Integer;
   TableTypes: string;
   AdoRecordSet: ZPlainAdo.RecordSet;
+  Len: NativeUInt;
 begin
   Result:=inherited UncachedGetTables(Catalog, SchemaPattern, TableNamePattern, Types);
 
+  TableTypes := '';
   for I := Low(Types) to High(Types) do
   begin
     if Length(TableTypes) > 0 then
@@ -1470,11 +1484,11 @@ begin
       while Next do
       begin
         Result.MoveToInsertRow;
-        Result.UpdateString(CatalogNameIndex, GetStringByName('TABLE_CATALOG'));
-        Result.UpdateString(SchemaNameIndex, GetStringByName('TABLE_SCHEMA'));
-        Result.UpdateString(TableNameIndex, GetStringByName('TABLE_NAME'));
-        Result.UpdateString(TableColumnsSQLType, GetStringByName('TABLE_TYPE'));
-        Result.UpdateString(TableColumnsRemarks, GetStringByName('DESCRIPTION'));
+        Result.UpdatePWideChar(CatalogNameIndex, GetPWideCharByName('TABLE_CATALOG', Len), @Len);
+        Result.UpdatePWideChar(SchemaNameIndex, GetPWideCharByName('TABLE_SCHEMA', Len), @Len);
+        Result.UpdatePWideChar(TableNameIndex, GetPWideCharByName('TABLE_NAME', Len), @Len);
+        Result.UpdatePWideChar(TableColumnsSQLType, GetPWideCharByName('TABLE_TYPE', Len), @Len);
+        Result.UpdatePWideChar(TableColumnsRemarks, GetPWideCharByName('DESCRIPTION', Len), @Len);
         Result.InsertRow;
       end;
       Close;
@@ -1497,6 +1511,7 @@ end;
 function TZAdoDatabaseMetadata.UncachedGetSchemas: IZResultSet;
 var
   AdoRecordSet: ZPlainAdo.RecordSet;
+  Len: NativeUInt;
 begin
   Result := inherited UncachedGetSchemas;
 
@@ -1507,8 +1522,8 @@ begin
       while Next do
       begin
         Result.MoveToInsertRow;
-        Result.UpdateString(SchemaColumnsTableSchemaIndex,
-          GetStringByName('SCHEMA_NAME'));
+        Result.UpdatePWideChar(SchemaColumnsTableSchemaIndex,
+          GetPWideCharByName('SCHEMA_NAME', Len), @Len);
         Result.InsertRow;
       end;
       Close;
@@ -1531,6 +1546,7 @@ end;
 function TZAdoDatabaseMetadata.UncachedGetCatalogs: IZResultSet;
 var
   AdoRecordSet: ZPlainAdo.RecordSet;
+  Len: NativeUInt;
 begin
   Result:=inherited UncachedGetCatalogs;
 
@@ -1541,7 +1557,7 @@ begin
       while Next do
       begin
         Result.MoveToInsertRow;
-        Result.UpdateString(CatalogNameIndex, GetStringByName('CATALOG_NAME'));
+        Result.UpdatePWideChar(CatalogNameIndex, GetPWideCharByName('CATALOG_NAME', Len), @Len);
         Result.InsertRow;
       end;
       Close;
@@ -1565,7 +1581,7 @@ end;
 }
 function TZAdoDatabaseMetadata.UncachedGetTableTypes: IZResultSet;
 const
-  TableTypes: array[0..7] of string = (
+  TableTypes: array[0..7] of ZWideString = (
     'ALIAS', 'TABLE', 'SYNONYM', 'SYSTEM TABLE', 'VIEW',
     'GLOBAL TEMPORARY', 'LOCAL TEMPORARY', 'SYSTEM VIEW'
   );
@@ -1577,7 +1593,7 @@ begin
   for I := 0 to 7 do
   begin
     Result.MoveToInsertRow;
-    Result.UpdateString(TableTypeColumnTableTypeIndex, TableTypes[I]);
+    Result.UpdateUnicodeString(TableTypeColumnTableTypeIndex, TableTypes[I]);
     Result.InsertRow;
   end;
 end;
@@ -1640,6 +1656,7 @@ var
   AdoRecordSet: ZPlainAdo.RecordSet;
   Flags: Integer;
   SQLType: TZSQLType;
+  Len: NativeUInt;
 begin
   Result:=inherited UncachedGetColumns(Catalog, SchemaPattern,
       TableNamePattern, ColumnNamePattern);
@@ -1655,10 +1672,10 @@ begin
       while Next do
       begin
         Result.MoveToInsertRow;
-        Result.UpdateString(CatalogNameIndex, GetStringByName('TABLE_CATALOG'));
-        Result.UpdateString(SchemaNameIndex, GetStringByName('TABLE_SCHEMA'));
-        Result.UpdateString(TableNameIndex, GetStringByName('TABLE_NAME'));
-        Result.UpdateString(ColumnNameIndex, GetStringByName('COLUMN_NAME'));
+        Result.UpdatePWideChar(CatalogNameIndex, GetPWideCharByName('TABLE_CATALOG', Len), @Len);
+        Result.UpdatePWideChar(SchemaNameIndex, GetPWideCharByName('TABLE_SCHEMA', Len), @Len);
+        Result.UpdatePWideChar(TableNameIndex, GetPWideCharByName('TABLE_NAME', Len), @Len);
+        Result.UpdatePWideChar(ColumnNameIndex, GetPWideCharByName('COLUMN_NAME', Len), @Len);
 
         SQLType := ConvertAdoToSqlType(GetSmallByName('DATA_TYPE'),
           ConSettings.CPType);
@@ -1679,8 +1696,8 @@ begin
           Result.UpdateSmall(TableColColumnNullableIndex, 1)
         else
           Result.UpdateSmall(TableColColumnNullableIndex, 0);
-        Result.UpdateString(TableColColumnRemarksIndex, GetStringByName('DESCRIPTION'));
-        Result.UpdateString(TableColColumnColDefIndex, GetStringByName('COLUMN_DEFAULT'));
+        Result.UpdatePWideChar(TableColColumnRemarksIndex, GetPWideCharByName('DESCRIPTION', Len), @Len);
+        Result.UpdatePWideChar(TableColColumnColDefIndex, GetPWideCharByName('COLUMN_DEFAULT', Len), @Len);
         Result.UpdateSmall(TableColColumnSQLDataTypeIndex, GetSmallByName('DATETIME_PRECISION'));
         Result.UpdateInt(TableColColumnCharOctetLengthIndex, GetIntByName('CHARACTER_OCTET_LENGTH'));
         Result.UpdateInt(TableColColumnOrdPosIndex, GetIntByName('ORDINAL_POSITION'));
@@ -1734,6 +1751,7 @@ function TZAdoDatabaseMetadata.UncachedGetColumnPrivileges(const Catalog: string
   const Schema: string; const Table: string; const ColumnNamePattern: string): IZResultSet;
 var
   AdoRecordSet: ZPlainAdo.RecordSet;
+  Len: NativeUInt;
 begin
   Result:=inherited UncachedGetColumnPrivileges(Catalog, Schema, Table, ColumnNamePattern);
 
@@ -1746,13 +1764,13 @@ begin
       while Next do
       begin
         Result.MoveToInsertRow;
-        Result.UpdateString(CatalogNameIndex, GetStringByName('TABLE_CATALOG'));
-        Result.UpdateString(SchemaNameIndex, GetStringByName('TABLE_SCHEMA'));
-        Result.UpdateString(TableNameIndex, GetStringByName('TABLE_NAME'));
-        Result.UpdateString(ColumnNameIndex, GetStringByName('COLUMN_NAME'));
-        Result.UpdateString(TableColPrivGrantorIndex, GetStringByName('GRANTOR'));
-        Result.UpdateString(TableColPrivGranteeIndex, GetStringByName('GRANTEE'));
-        Result.UpdateString(TableColPrivPrivilegeIndex, GetStringByName('PRIVILEGE_TYPE'));
+        Result.UpdatePWideChar(CatalogNameIndex, GetPWideCharByName('TABLE_CATALOG', Len), @Len);
+        Result.UpdatePWideChar(SchemaNameIndex, GetPWideCharByName('TABLE_SCHEMA', Len), @Len);
+        Result.UpdatePWideChar(TableNameIndex, GetPWideCharByName('TABLE_NAME', Len), @Len);
+        Result.UpdatePWideChar(ColumnNameIndex, GetPWideCharByName('COLUMN_NAME', Len), @Len);
+        Result.UpdatePWideChar(TableColPrivGrantorIndex, GetPWideCharByName('GRANTOR', Len), @Len);
+        Result.UpdatePWideChar(TableColPrivGranteeIndex, GetPWideCharByName('GRANTEE', Len), @Len);
+        Result.UpdatePWideChar(TableColPrivPrivilegeIndex, GetPWideCharByName('PRIVILEGE_TYPE', Len), @Len);
         if GetBooleanByName('IS_GRANTABLE') then
           Result.UpdateString(TableColPrivIsGrantableIndex, 'YES')
         else
@@ -1801,6 +1819,7 @@ function TZAdoDatabaseMetadata.UncachedGetTablePrivileges(const Catalog: string;
   const SchemaPattern: string; const TableNamePattern: string): IZResultSet;
 var
   AdoRecordSet: ZPlainAdo.RecordSet;
+  Len: NativeUInt;
 begin
   Result:=inherited UncachedGetTablePrivileges(Catalog, SchemaPattern, TableNamePattern);
 
@@ -1813,12 +1832,12 @@ begin
       while Next do
       begin
         Result.MoveToInsertRow;
-        Result.UpdateString(CatalogNameIndex, GetStringByName('TABLE_CATALOG'));
-        Result.UpdateString(SchemaNameIndex, GetStringByName('TABLE_SCHEMA'));
-        Result.UpdateString(TableNameIndex, GetStringByName('TABLE_NAME'));
-        Result.UpdateString(TablePrivGrantorIndex, GetStringByName('GRANTOR'));
-        Result.UpdateString(TablePrivGranteeIndex, GetStringByName('GRANTEE'));
-        Result.UpdateString(TablePrivPrivilegeIndex, GetStringByName('PRIVILEGE_TYPE'));
+        Result.UpdatePWideChar(CatalogNameIndex, GetPWideCharByName('TABLE_CATALOG', Len), @Len);
+        Result.UpdatePWideChar(SchemaNameIndex, GetPWideCharByName('TABLE_SCHEMA', Len), @Len);
+        Result.UpdatePWideChar(TableNameIndex, GetPWideCharByName('TABLE_NAME', Len), @Len);
+        Result.UpdatePWideChar(TablePrivGrantorIndex, GetPWideCharByName('GRANTOR', Len), @Len);
+        Result.UpdatePWideChar(TablePrivGranteeIndex, GetPWideCharByName('GRANTEE', Len), @Len);
+        Result.UpdatePWideChar(TablePrivPrivilegeIndex, GetPWideCharByName('PRIVILEGE_TYPE', Len), @Len);
         if GetBooleanByName('IS_GRANTABLE') then
           Result.UpdateString(TablePrivIsGrantableIndex, 'YES')
         else
@@ -1867,6 +1886,7 @@ const
   DBCOLUMNFLAGS_ISROWVER = $00000200;
 var
   AdoRecordSet: ZPlainAdo.RecordSet;
+  Len: NativeUInt;
 begin
   Result:=inherited UncachedGetVersionColumns(Catalog, Schema, Table);
 
@@ -1882,10 +1902,10 @@ begin
           Continue;
         Result.MoveToInsertRow;
         Result.UpdateSmall(TableColVerScopeIndex, 0);
-        Result.UpdateString(TableColVerColNameIndex, GetStringByName('COLUMN_NAME'));
+        Result.UpdatePWideChar(TableColVerColNameIndex, GetPWideCharByName('COLUMN_NAME', Len), @Len);
         Result.UpdateSmall(TableColVerDataTypeIndex, Ord(ConvertAdoToSqlType(
           GetSmallByName('DATA_TYPE'), ConSettings.CPType)));
-        Result.UpdateString(TableColVerTypeNameIndex, GetStringByName('TYPE_NAME'));
+        Result.UpdatePWideChar(TableColVerTypeNameIndex, GetPWideCharByName('TYPE_NAME', Len), @Len);
         Result.UpdateInt(TableColVerColSizeIndex, GetIntByName('CHARACTER_OCTET_LENGTH'));
         Result.UpdateInt(TableColVerBufLengthIndex, GetIntByName('CHARACTER_OCTET_LENGTH'));
         Result.UpdateInt(TableColVerDecimalDigitsIndex, GetIntByName('NUMERIC_SCALE'));
@@ -1924,6 +1944,7 @@ function TZAdoDatabaseMetadata.UncachedGetPrimaryKeys(const Catalog: string;
   const Schema: string; const Table: string): IZResultSet;
 var
   AdoRecordSet: ZPlainAdo.RecordSet;
+  Len: NativeUInt;
 begin
   Result:=inherited UncachedGetPrimaryKeys(Catalog, Schema, Table);
 
@@ -1936,13 +1957,13 @@ begin
       while Next do
       begin
         Result.MoveToInsertRow;
-        Result.UpdateString(CatalogNameIndex, GetStringByName('TABLE_CATALOG'));
-        Result.UpdateString(SchemaNameIndex, GetStringByName('TABLE_SCHEMA'));
-        Result.UpdateString(TableNameIndex, GetStringByName('TABLE_NAME'));
-        Result.UpdateString(PrimaryKeyColumnNameIndex, GetStringByName('COLUMN_NAME'));
+        Result.UpdatePWideChar(CatalogNameIndex, GetPWideCharByName('TABLE_CATALOG', Len), @Len);
+        Result.UpdatePWideChar(SchemaNameIndex, GetPWideCharByName('TABLE_SCHEMA', Len), @Len);
+        Result.UpdatePWideChar(TableNameIndex, GetPWideCharByName('TABLE_NAME', Len), @Len);
+        Result.UpdatePWideChar(PrimaryKeyColumnNameIndex, GetPWideCharByName('COLUMN_NAME', Len), @Len);
         Result.UpdateSmall(PrimaryKeyKeySeqIndex, GetSmallByName('ORDINAL'));
         if FindColumn('PK_NAME') > FirstDbcIndex then
-          Result.UpdateString(PrimaryKeyPKNameIndex, GetStringByName('PK_NAME'));
+          Result.UpdatePWideChar(PrimaryKeyPKNameIndex, GetPWideCharByName('PK_NAME', Len), @Len);
         Result.InsertRow;
       end;
       Close;
@@ -2177,6 +2198,7 @@ function TZAdoDatabaseMetadata.UncachedGetCrossReference(const PrimaryCatalog: s
   const ForeignSchema: string; const ForeignTable: string): IZResultSet;
 var
   AdoRecordSet: ZPlainAdo.RecordSet;
+  Len: NativeUInt;
 
   function GetRuleType(const Rule: String): TZImportedKey;
   begin
@@ -2205,19 +2227,19 @@ begin
       while Next do
       begin
         Result.MoveToInsertRow;
-        Result.UpdateString(CrossRefKeyColPKTableCatalogIndex, GetStringByName('PK_TABLE_CATALOG'));
-        Result.UpdateString(CrossRefKeyColPKTableSchemaIndex, GetStringByName('PK_TABLE_SCHEMA'));
-        Result.UpdateString(CrossRefKeyColPKTableNameIndex, GetStringByName('PK_TABLE_NAME'));
-        Result.UpdateString(CrossRefKeyColPKColumnNameIndex, GetStringByName('PK_COLUMN_NAME'));
-        Result.UpdateString(CrossRefKeyColFKTableCatalogIndex, GetStringByName('FK_TABLE_CATALOG'));
-        Result.UpdateString(CrossRefKeyColFKTableSchemaIndex, GetStringByName('FK_TABLE_SCHEMA'));
-        Result.UpdateString(CrossRefKeyColFKTableNameIndex, GetStringByName('FK_TABLE_NAME'));
-        Result.UpdateString(CrossRefKeyColFKColumnNameIndex, GetStringByName('FK_COLUMN_NAME'));
+        Result.UpdatePWideChar(CrossRefKeyColPKTableCatalogIndex, GetPWideCharByName('PK_TABLE_CATALOG', Len), @Len);
+        Result.UpdatePWideChar(CrossRefKeyColPKTableSchemaIndex, GetPWideCharByName('PK_TABLE_SCHEMA', Len), @Len);
+        Result.UpdatePWideChar(CrossRefKeyColPKTableNameIndex, GetPWideCharByName('PK_TABLE_NAME', Len), @Len);
+        Result.UpdatePWideChar(CrossRefKeyColPKColumnNameIndex, GetPWideCharByName('PK_COLUMN_NAME', Len), @Len);
+        Result.UpdatePWideChar(CrossRefKeyColFKTableCatalogIndex, GetPWideCharByName('FK_TABLE_CATALOG', Len), @Len);
+        Result.UpdatePWideChar(CrossRefKeyColFKTableSchemaIndex, GetPWideCharByName('FK_TABLE_SCHEMA', Len), @Len);
+        Result.UpdatePWideChar(CrossRefKeyColFKTableNameIndex, GetPWideCharByName('FK_TABLE_NAME', Len), @Len);
+        Result.UpdatePWideChar(CrossRefKeyColFKColumnNameIndex, GetPWideCharByName('FK_COLUMN_NAME', Len), @Len);
         Result.UpdateSmall(CrossRefKeyColKeySeqIndex, GetSmallByName('ORDINAL'));
         Result.UpdateSmall(CrossRefKeyColUpdateRuleIndex, Ord(GetRuleType(GetStringByName('UPDATE_RULE'))));
         Result.UpdateSmall(CrossRefKeyColDeleteRuleIndex, Ord(GetRuleType(GetStringByName('DELETE_RULE'))));
-        Result.UpdateString(CrossRefKeyColFKNameIndex, GetStringByName('FK_NAME'));
-        Result.UpdateString(CrossRefKeyColPKNameIndex, GetStringByName('PK_NAME'));
+        Result.UpdatePWideChar(CrossRefKeyColFKNameIndex, GetPWideCharByName('FK_NAME', Len), @Len);
+        Result.UpdatePWideChar(CrossRefKeyColPKNameIndex, GetPWideCharByName('PK_NAME', Len), @Len);
         Result.UpdateInt(CrossRefKeyColDeferrabilityIndex, GetSmallByName('DEFERRABILITY'));
         Result.InsertRow;
       end;
@@ -2274,6 +2296,7 @@ end;
 function TZAdoDatabaseMetadata.UncachedGetTypeInfo: IZResultSet;
 var
   AdoRecordSet: ZPlainAdo.RecordSet;
+  Len: NativeUInt;
 begin
   Result:=inherited UncachedGetTypeInfo;
 
@@ -2285,13 +2308,13 @@ begin
       while Next do
       begin
         Result.MoveToInsertRow;
-        Result.UpdateString(TypeInfoTypeNameIndex, GetStringByName('TYPE_NAME'));
+        Result.UpdatePWideChar(TypeInfoTypeNameIndex, GetPWideCharByName('TYPE_NAME', Len), @Len);
         Result.UpdateSmall(TypeInfoDataTypeIndex, Ord(ConvertAdoToSqlType(
           GetSmallByName('DATA_TYPE'), ConSettings.CPType)));
         Result.UpdateInt(TypeInfoPecisionIndex, 0);//GetIntByName('PRECISION'));
-        Result.UpdateString(TypeInfoLiteralPrefixIndex, GetStringByName('LITERAL_PREFIX'));
-        Result.UpdateString(TypeInfoLiteralSuffixIndex, GetStringByName('LITERAL_SUFFIX'));
-        Result.UpdateString(TypeInfoCreateParamsIndex, GetStringByName('CREATE_PARAMS'));
+        Result.UpdatePWideChar(TypeInfoLiteralPrefixIndex, GetPWideCharByName('LITERAL_PREFIX', Len), @Len);
+        Result.UpdatePWideChar(TypeInfoLiteralSuffixIndex, GetPWideCharByName('LITERAL_SUFFIX', Len), @Len);
+        Result.UpdatePWideChar(TypeInfoCreateParamsIndex, GetPWideCharByName('CREATE_PARAMS', Len), @Len);
         if GetBooleanByName('IS_NULLABLE') then
           Result.UpdateSmall(TypeInfoNullAbleIndex, 1)
         else
@@ -2301,7 +2324,7 @@ begin
         Result.UpdateBoolean(TypeInfoUnsignedAttributeIndex, GetBooleanByName('UNSIGNED_ATTRIBUTE'));
         Result.UpdateBoolean(TypeInfoFixedPrecScaleIndex, GetBooleanByName('FIXED_PREC_SCALE'));
         Result.UpdateBoolean(TypeInfoAutoIncrementIndex, False);
-        Result.UpdateString(TypeInfoLocaleTypeNameIndex, GetStringByName('LOCAL_TYPE_NAME'));
+        Result.UpdatePWideChar(TypeInfoLocaleTypeNameIndex, GetPWideCharByName('LOCAL_TYPE_NAME', Len), @Len);
         Result.UpdateSmall(TypeInfoMinimumScaleIndex, GetSmallByName('MINIMUM_SCALE'));
         Result.UpdateSmall(TypeInfoMaximumScaleIndex, GetSmallByName('MAXIMUM_SCALE'));
   //      Result.UpdateSmall(TypeInfoSQLDataTypeIndex, GetSmallByName('SQL_DATA_TYPE'));
@@ -2371,6 +2394,7 @@ function TZAdoDatabaseMetadata.UncachedGetIndexInfo(const Catalog: string;
   Approximate: Boolean): IZResultSet;
 var
   AdoRecordSet: ZPlainAdo.RecordSet;
+  Len: NativeUInt;
 begin
   Result:=inherited UncachedGetIndexInfo(Catalog, Schema, Table, Unique, Approximate);
 
@@ -2382,19 +2406,19 @@ begin
       while Next do
       begin
         Result.MoveToInsertRow;
-        Result.UpdateString(CatalogNameIndex, GetStringByName('TABLE_CATALOG'));
-        Result.UpdateString(SchemaNameIndex, GetStringByName('TABLE_SCHEMA'));
-        Result.UpdateString(TableNameIndex, GetStringByName('TABLE_NAME'));
+        Result.UpdatePWideChar(CatalogNameIndex, GetPWideCharByName('TABLE_CATALOG', Len), @Len);
+        Result.UpdatePWideChar(SchemaNameIndex, GetPWideCharByName('TABLE_SCHEMA', Len), @Len);
+        Result.UpdatePWideChar(TableNameIndex, GetPWideCharByName('TABLE_NAME', Len), @Len);
         Result.UpdateBoolean(IndexInfoColNonUniqueIndex, not GetBooleanByName('UNIQUE'));
-        Result.UpdateString(IndexInfoColIndexQualifierIndex, GetStringByName('INDEX_CATALOG'));
-        Result.UpdateString(IndexInfoColIndexNameIndex, GetStringByName('INDEX_NAME'));
+        Result.UpdatePWideChar(IndexInfoColIndexQualifierIndex, GetPWideCharByName('INDEX_CATALOG', Len), @Len);
+        Result.UpdatePWideChar(IndexInfoColIndexNameIndex, GetPWideCharByName('INDEX_NAME', Len), @Len);
         Result.UpdateSmall(IndexInfoColTypeIndex, GetSmallByName('TYPE'));
         Result.UpdateSmall(IndexInfoColOrdPositionIndex, GetSmallByName('ORDINAL_POSITION'));
-        Result.UpdateString(IndexInfoColColumnNameIndex, GetStringByName('COLUMN_NAME'));
-  //!!!      Result.UpdateString(IndexInfoColAscOrDescIndex, GetStringByName('COLLATION'));
+        Result.UpdatePWideChar(IndexInfoColColumnNameIndex, GetPWideCharByName('COLUMN_NAME', Len), @Len);
+  //!!!      Result.UpdatePWideChar(IndexInfoColAscOrDescIndex, GetPWideCharByName('COLLATION', Len), @Len);
         Result.UpdateInt(IndexInfoColCardinalityIndex, GetIntByName('CARDINALITY'));
         Result.UpdateInt(IndexInfoColPagesIndex, GetIntByName('PAGES'));
-        Result.UpdateString(IndexInfoColFilterConditionIndex, GetStringByName('FILTER_CONDITION'));
+        Result.UpdatePWideChar(IndexInfoColFilterConditionIndex, GetPWideCharByName('FILTER_CONDITION', Len), @Len);
         Result.InsertRow;
       end;
       Close;
@@ -2454,9 +2478,9 @@ begin
 //    while Next do
 //    begin
 //      Result.MoveToInsertRow;
-//      Result.UpdateString(CatalogNameIndex, GetString('TYPE_CAT'));
-//      Result.UpdateString(SchemaNameIndex, GetString('TYPE_SCHEM'));
-//      Result.UpdateString(UDTColTypeNameIndex, GetString('TYPE_NAME'));
+//      Result.UpdatePWideChar(CatalogNameIndex, GetPWideChar('TYPE_CAT', Len), @Len);
+//      Result.UpdatePWideChar(SchemaNameIndex, GetPWideChar('TYPE_SCHEM', Len), @Len);
+//      Result.UpdatePWideChar(UDTColTypeNameIndex, GetPWideChar('TYPE_NAME', Len), @Len);
 //      Result.UpdateNull(UDTColClassNameIndex);
 //      Result.UpdateSmall(UDTColDataTypeIndex, GetSmall('DATA_TYPE'));
 //      Result.UpdateNull(UDTColRemarksIndex);
@@ -2516,7 +2540,7 @@ begin
       OleDBSession.QueryInterface(IDBSchemaRowset, SchemaRS);
       if Assigned(SchemaRS) then
       begin
-        SchemaRS.GetSchemas(Nr, PG, PInteger(IA));
+        SchemaRS.GetSchemas(Nr{%H-}, PG{%H-}, PInteger({%H-}IA));
         OriginalPG := PG;
         SetLength(SupportedSchemas, Nr);
         for I := 0 to Nr - 1 do
@@ -2524,7 +2548,7 @@ begin
           SupportedSchemas[I].SchemaGuid := PG^;
           SupportedSchemas[I].SupportedRestrictions := IA^[I];
           SupportedSchemas[I].AdoSchemaId := ConvertOleDBToAdoSchema(PG^);
-          Inc(NativeInt(PG), SizeOf(TGuid));  //M.A. Inc(Integer(PG), SizeOf(TGuid));
+          Inc({%H-}NativeInt(PG), SizeOf(TGuid));  //M.A. Inc(Integer(PG), SizeOf(TGuid));
         end;
         FSupportedSchemasInitialized := True;
         if Assigned(OriginalPG) then ZAdoMalloc.Free(OriginalPG);
@@ -2605,6 +2629,9 @@ begin
   end;
 end;
 
+{$ELSE}
+implementation
+{$ENDIF ENABLE_ADO}
 end.
 
 

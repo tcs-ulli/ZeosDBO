@@ -121,7 +121,7 @@ type
     FCanBindInt64: Boolean;
     procedure SortZeosOrderToOCIParamsOrder;
     procedure FetchOutParamsFromOracleVars;
-    function GetProcedureSql(SelectProc: boolean): RawByteString;
+    function GetProcedureSql: RawByteString;
   protected
     procedure SetInParam(ParameterIndex: Integer; SQLType: TZSQLType;
       const Value: TZVariant); override;
@@ -216,13 +216,13 @@ end;
 
 function TZOraclePreparedStatement.CreateResultSet: IZResultSet;
 begin
-  if FOpenResultSet <> nil then
+  if FOpenResultSet = nil then
   begin
-    IZResultSet(FOpenResultSet).Close;
-    FOpenResultSet := nil;
-  end;
-  Result := CreateOracleResultSet(FPlainDriver, Self, SQL, FHandle, FErrorHandle, FZBufferSize);
-  FOpenResultSet := Pointer(Result);
+    Result := CreateOracleResultSet(FPlainDriver, Self, SQL, FHandle, FErrorHandle, FZBufferSize);
+    FOpenResultSet := Pointer(Result);
+  end
+  else
+    Result := IZResultSet(FOpenResultSet);
 end;
 
 {**
@@ -355,22 +355,16 @@ end;
 function TZOraclePreparedStatement.ExecutePrepared: Boolean;
 begin
   Result := False;
-
   { Prepares a statement. }
   Prepare;
-
-  if FOpenResultSet <> nil then
-  begin
-    IZResultSet(FOpenResultSet).Close;
-    FOpenResultSet := nil;
-  end;
-
+  PrepareLastResultSetForReUse;
   BindInParameters;
 
   if FStatementType = OCI_STMT_SELECT then
   begin
     { Executes the statement and gets a resultset. }
-    LastResultSet := CreateResultSet;
+    if not Assigned(LastResultSet) then
+      LastResultSet := CreateResultSet;
     Result := LastResultSet <> nil;
   end
   else
@@ -399,6 +393,7 @@ function TZOraclePreparedStatement.ExecuteQueryPrepared: IZResultSet;
 begin
   { Prepares a statement. }
   Prepare;
+  PrepareOpenResultSetForReUse;
   BindInParameters;
 
   { Executes the statement and gets a resultset. }
@@ -468,7 +463,7 @@ procedure TZOracleCallableStatement.Prepare;
 begin
   if not Prepared then
   begin
-    ASQL := GetProcedureSql(False);
+    ASQL := GetProcedureSql;
     { Allocates statement handles. }
     if (FHandle = nil) or (FErrorHandle = nil) then
       AllocateOracleStatementHandles(FPlainDriver, Connection,
@@ -482,6 +477,7 @@ begin
 end;
 
 
+{$WARNINGS OFF} //unreachable code as long FServerStmtCache isn't really used
 procedure TZOracleCallableStatement.UnPrepare;
 const {%H-}RELEASE_MODE: array[boolean] of integer = (OCI_DEFAULT,OCI_STMTCACHE_DELETE);
 begin
@@ -496,6 +492,7 @@ begin
     inherited Unprepare;
   end;
 end;
+{$WARNINGS OFF}
 
 procedure TZOracleCallableStatement.RegisterOutParameter(ParameterIndex,
   SQLType: Integer);
@@ -766,7 +763,7 @@ begin
       SetOutParam(@FParams^.Variables[I], FOracleParams[i].pParamIndex{$IFNDEF GENERIC_INDEX}-1{$ENDIF});
 end;
 
-function TZOracleCallableStatement.GetProcedureSql(SelectProc: boolean): RawByteString;
+function TZOracleCallableStatement.GetProcedureSql: RawByteString;
 var
   sFunc: string;
   I, IncludeCount, LastIndex: Integer;
