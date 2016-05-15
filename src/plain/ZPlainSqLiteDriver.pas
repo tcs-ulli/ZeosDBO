@@ -814,7 +814,7 @@ begin
       Result := 'unknown error';
     end
   else
-    Result := {$IFDEF WITH_UNITANSISTRINGS}AnsiStrings.{$ENDIF}Trim(SQLite_API.sqlite_errmsg(db));
+    Result := {$IFDEF WITH_UNITANSISTRINGS}AnsiStrings.{$ENDIF}Trim(SQLite_API.sqlite_errstr(code));
 end;
 
 function TZSQLiteBaseDriver.Execute(db: Psqlite; const sql: PAnsiChar;
