@@ -1166,8 +1166,11 @@ begin
       ReallocMem(Buffer, Result);
       if (Result > 0) then
          Move(decoded^, Buffer^, Result);
-      if Assigned(POSTGRESQL_API.PQFreemem) then
-        POSTGRESQL_API.PQFreemem(decoded);
+      try
+        if Assigned(POSTGRESQL_API.PQFreemem) then
+          POSTGRESQL_API.PQFreemem(decoded);
+      except
+      end;
     end;
 end;
 
