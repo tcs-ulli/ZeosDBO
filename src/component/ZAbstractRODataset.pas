@@ -2485,21 +2485,31 @@ end;
 }
 function TZAbstractRODataset.FetchOneRow: Boolean;
 begin
-  repeat
-    if (FetchCount = 0) or (ResultSet.GetRow = FetchCount)
-      or ResultSet.MoveAbsolute(FetchCount) then
-      Result := ResultSet.Next
-    else
-      Result := False;
-    if Result then
-    begin
-      Inc(FFetchCount);
-      if FilterRow(ResultSet.GetRow) then
-        CurrentRows.Add({%H-}Pointer(ResultSet.GetRow))
-      else
-        Continue;
-    end;
-  until True;
+  if Assigned(ResultSet) then
+    repeat
+      try
+        if (FetchCount = 0) or (ResultSet.GetRow = FetchCount)
+          or ResultSet.MoveAbsolute(FetchCount) then
+          Result := ResultSet.Next
+        else
+          Result := False;
+        if Result then
+        begin
+          Inc(FFetchCount);
+          if FilterRow(ResultSet.GetRow) then
+            CurrentRows.Add({%H-}Pointer(ResultSet.GetRow))
+          else
+            Continue;
+        end;
+      except
+        begin
+          Result := False;
+          exit;
+        end;
+      end;
+    until True
+  else
+    Result := False;
 end;
 
 {**
@@ -7489,4 +7499,4 @@ end;
 end.
 
 
-
+
