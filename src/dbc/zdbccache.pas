@@ -1430,6 +1430,7 @@ var
   I: Integer;
   P: PPointer;
 begin
+  if Buffer = nil then exit;
   Buffer^.Index := -1;
   Buffer^.UpdateType := utUnmodified;
   Buffer^.BookmarkFlag := 0;
