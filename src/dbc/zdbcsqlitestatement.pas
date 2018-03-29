@@ -129,7 +129,8 @@ begin
       CachedResolver,GetConnection.GetConSettings);
 
     { Fetches all rows to prevent blocking (DataBase is locked).}
-    CachedResultSet.Last;
+    if FetchSize=0 then
+      CachedResultSet.Last;
     CachedResultSet.BeforeFirst;
 
     CachedResultSet.SetType(rtScrollInsensitive);
