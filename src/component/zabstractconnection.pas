@@ -164,6 +164,7 @@ type
     procedure SetProperties(Value: TStrings);
     procedure SetTransactIsolationLevel(Value: TZTransactIsolationLevel);
     procedure SetAutoCommit(Value: Boolean);
+    procedure SetReadOnly(Value: Boolean);
     function GetDbcDriver: IZDriver;
     function GetInTransaction: Boolean;
     function GetClientVersion: Integer;
@@ -242,7 +243,6 @@ type
     function GetBinaryEscapeStringFromString(const BinaryString: AnsiString): String; overload;
     function GetBinaryEscapeStringFromStream(const Stream: TStream): String; overload;
     function GetBinaryEscapeStringFromFile(const FileName: String): String; overload;
-    function GetAnsiEscapeString(const Ansi: AnsiString): String;
     function GetURL: String;
 
     property InTransaction: Boolean read GetInTransaction;
@@ -271,7 +271,7 @@ type
     property Properties: TStrings read GetProperties write SetProperties;
     property AutoCommit: Boolean read FAutoCommit write SetAutoCommit
       default True;
-    property ReadOnly: Boolean read FReadOnly write FReadOnly
+    property ReadOnly: Boolean read FReadOnly write SetReadOnly
       default False;
     property UseMetadata: Boolean read FUseMetaData write SetUseMetadata default true;
     property TransactIsolationLevel: TZTransactIsolationLevel
@@ -521,74 +521,72 @@ end;
 }
 procedure TZAbstractConnection.SetProperties(Value: TStrings);
 begin
-  if Value <> nil then
-  begin
-    if ( Trim(Value.Values['codepage']) <> '' ) then
-      FClientCodepage := Trim(Value.Values['codepage'])
-    else
-      Value.Values['codepage'] := FClientCodepage;
+  FURL.Properties.Clear;
+  if Value = nil then Exit;
 
-    { check autoencodestrings }
-    {$IF (defined(MSWINDOWS) or defined(WITH_LCONVENCODING) or defined(FPC_HAS_BUILTIN_WIDESTR_MANAGER)) and not defined(UNICODE)}
-    if Connected then
-      DbcConnection.AutoEncodeStrings := Value.Values['AutoEncodeStrings'] = 'ON';
-    FAutoEncode := Value.Values['AutoEncodeStrings'] = 'ON';
+  if ( Trim(Value.Values['codepage']) <> '' ) then
+    FClientCodepage := Trim(Value.Values['codepage'])
+  else
+    Value.Values['codepage'] := FClientCodepage;
+
+  { check autoencodestrings }
+  {$IF (defined(MSWINDOWS) or defined(WITH_LCONVENCODING) or defined(FPC_HAS_BUILTIN_WIDESTR_MANAGER)) and not defined(UNICODE)}
+  if Connected then
+    DbcConnection.AutoEncodeStrings := Value.Values['AutoEncodeStrings'] = 'ON';
+  FAutoEncode := Value.Values['AutoEncodeStrings'] = 'ON';
+  {$ELSE}
+    {$IFDEF UNICODE}
+    Value.Values['AutoEncodeStrings'] := 'ON';
     {$ELSE}
-      {$IFDEF UNICODE}
-      Value.Values['AutoEncodeStrings'] := 'ON';
-      {$ELSE}
-      Value.Values['AutoEncodeStrings'] := '';
-      {$ENDIF}
-    {$IFEND}
+    Value.Values['AutoEncodeStrings'] := '';
+    {$ENDIF}
+  {$IFEND}
 
-    if Value.IndexOf('controls_cp') = -1 then
-      {$IFDEF UNICODE}
-      if ControlsCodePage = cCP_UTF16 then
-        Value.values['controls_cp'] := 'CP_UTF16'
-      else
-        Value.values['controls_cp'] := 'GET_ACP'
-      {$ELSE}
-      case ControlsCodePage of //automated check..
-        cCP_UTF16: Value.values['controls_cp'] := 'CP_UTF16';
-        cCP_UTF8: Value.values['controls_cp'] := 'CP_UTF8';
-        cGET_ACP: Value.values['controls_cp'] := 'GET_ACP';
-      end
-      {$ENDIF}
+  if Value.IndexOf('controls_cp') = -1 then
+    {$IFDEF UNICODE}
+    if ControlsCodePage = cCP_UTF16 then
+      Value.values['controls_cp'] := 'CP_UTF16'
     else
-      {$IFDEF UNICODE}
-      if Value.values['controls_cp'] = 'CP_UTF8' then
+      Value.values['controls_cp'] := 'GET_ACP'
+    {$ELSE}
+    case ControlsCodePage of //automated check..
+      cCP_UTF16: Value.values['controls_cp'] := 'CP_UTF16';
+      cCP_UTF8: Value.values['controls_cp'] := 'CP_UTF8';
+      cGET_ACP: Value.values['controls_cp'] := 'GET_ACP';
+    end
+    {$ENDIF}
+  else
+    {$IFDEF UNICODE}
+    if Value.values['controls_cp'] = 'CP_UTF8' then
+    begin
+      Value.values['controls_cp'] := 'CP_UTF16';
+      FControlsCodePage := cCP_UTF16;
+    end;
+    {$ELSE}
+      {$IFNDEF WITH_WIDEFIELDS} //old FPC and D7
+      if Value.values['controls_cp'] = 'CP_UTF16' then
       begin
-        Value.values['controls_cp'] := 'CP_UTF16';
-        FControlsCodePage := cCP_UTF16;
+        FControlsCodePage := cGET_ACP;
+        Value.values['controls_cp'] := {$IFDEF DELPHI}'GET_ACP'{$ELSE}'CP_UTF8'{$ENDIF};
       end;
       {$ELSE}
-        {$IFNDEF WITH_WIDEFIELDS} //old FPC and D7
-        if Value.values['controls_cp'] = 'CP_UTF16' then
-        begin
-          FControlsCodePage := cGET_ACP;
-          Value.values['controls_cp'] := {$IFDEF DLEPHI}'GET_ACP'{$ELSE}'CP_UTF8'{$ENDIF};
-        end;
-        {$ELSE}
-        if Value.values['controls_cp'] = 'GET_ACP' then
-          FControlsCodePage := cGET_ACP
+      if Value.values['controls_cp'] = 'GET_ACP' then
+        FControlsCodePage := cGET_ACP
+      else
+        if Value.values['controls_cp'] = 'CP_UTF8' then
+          FControlsCodePage := cCP_UTF8
         else
-          if Value.values['controls_cp'] = 'CP_UTF8' then
-            FControlsCodePage := cCP_UTF8
+          if Value.values['controls_cp'] = 'CP_UTF16' then
+            FControlsCodePage := cCP_UTF16
           else
-            if Value.values['controls_cp'] = 'CP_UTF16' then
-              FControlsCodePage := cCP_UTF16
-            else
-              case ControlsCodePage of //automated check..
-                cCP_UTF16: Value.values['controls_cp'] := 'CP_UTF16';
-                cCP_UTF8: Value.values['controls_cp'] := 'CP_UTF8';
-                cGET_ACP: Value.values['controls_cp'] := 'GET_ACP';
-              end;
-        {$ENDIF}
+            case ControlsCodePage of //automated check..
+              cCP_UTF16: Value.values['controls_cp'] := 'CP_UTF16';
+              cCP_UTF8: Value.values['controls_cp'] := 'CP_UTF8';
+              cGET_ACP: Value.values['controls_cp'] := 'GET_ACP';
+            end;
       {$ENDIF}
-    FURL.Properties.Text := Value.Text;
-  end
-  else
-    FURL.Properties.Clear;
+    {$ENDIF}
+  FURL.Properties.AddStrings(Value);
 end;
 
 {**
@@ -606,6 +604,27 @@ begin
     try
       if FConnection <> nil then
         FConnection.SetAutoCommit(Value);
+    finally
+      HideSqlHourGlass
+    end;
+  end;
+end;
+
+{**
+  Sets readonly flag.
+  @param Value readonly flag.
+}
+procedure TZAbstractConnection.SetReadOnly(Value: Boolean);
+begin
+  if FReadOnly <> Value then
+  begin
+    if FExplicitTransactionCounter > 0 then
+      raise Exception.Create(SInvalidOperationInTrans);
+    FReadOnly := Value;
+    ShowSQLHourGlass;
+    try
+      if FConnection <> nil then
+        FConnection.SetReadOnly(Value);
     finally
       HideSqlHourGlass
     end;
@@ -991,20 +1010,21 @@ begin
   begin
     ShowSQLHourGlass;
     try
-      try
-        for i := 0 to FDatasets.Count -1 do
+ { TODO -oEgonHugeist : Change this code sequence on 7.3! My automation idea simply is wrong! A commit vs. commitupdate(clear the cache) shouldn't be same! }
+      //See: http://zeoslib.sourceforge.net/viewtopic.php?f=38&t=19800
+      for i := 0 to FDatasets.Count -1 do
+        if (TObject(FDatasets[i]) is TZAbstractDataset) and (not THack_ZAbstractDataset(FDatasets[i]).UpdatesPending) then
           if Assigned(FDatasets[i]) then
-            if TObject(FDatasets[i]) is TZAbstractDataset then
-              THack_ZAbstractDataset(FDatasets[i]).DisposeCachedUpdates;
-        FConnection.Commit;
-      finally
-        FExplicitTransactionCounter := 0;
-        if ExplicitTran then
-          AutoCommit := True;
-      end;
+            THack_ZAbstractDataset(FDatasets[i]).DisposeCachedUpdates;
+      FConnection.Commit;
     finally
       HideSQLHourGlass;
     end;
+
+    FExplicitTransactionCounter := 0;
+    if ExplicitTran then
+      AutoCommit := True;
+
     DoCommit;
   end
   else
@@ -1470,17 +1490,6 @@ begin
   end;
 end;
 
-{**
-  EgonHugeist: Returns a detectable String to inform the Tokenizer
-    to do no UTF8Encoding if neccessary
-  @param Ansi Represents the AnsiString wich has to prepered
-  @Result: A Prepared String like '~<|1023|<~''Binary-data-string(1023 Char's)''~<|1023|<~
-}
-function TZAbstractConnection.GetAnsiEscapeString(const Ansi: AnsiString): String;
-begin
-  Result := DbcConnection.GetDriver.GetTokenizer.GetEscapeString(String(Ansi));
-end;
-
 function TZAbstractConnection.GetURL: String;
 begin
   Result := ConstructURL(FURL.UserName, FURL.Password);
@@ -1580,7 +1589,7 @@ procedure TZAbstractConnection.SetControlsCodePage(const Value: TZControlsCodePa
             FControlsCodePage := Value;
           end;
         cGET_ACP:
-          if ZDefaultSystemCodePage = zCP_UTF8 then
+          if ZOSCodePage = zCP_UTF8 then
           begin
             Properties.values['controls_cp'] := 'CP_UTF8';
             FControlsCodePage := cCP_UTF8;
@@ -1604,7 +1613,7 @@ procedure TZAbstractConnection.SetControlsCodePage(const Value: TZControlsCodePa
             FControlsCodePage := Value;
           end;
         cGET_ACP:
-          if ZDefaultSystemCodePage = zCP_UTF8 then
+          if ZOSCodePage = zCP_UTF8 then
           begin
             Properties.values['controls_cp'] := 'CP_UTF8';
             FControlsCodePage := cCP_UTF8;
@@ -1681,26 +1690,17 @@ end;
 }
 function TZAbstractConnection.ExecuteDirect(SQL: string;
   var RowsAffected: integer):boolean;
-var
-  stmt : IZStatement;
 begin
+  RowsAffected := -1;
   try
-    try
-      CheckConnected;
-      stmt := DbcConnection.CreateStatement;
-      RowsAffected:= stmt.ExecuteUpdate(SQL);
-      result := (RowsAffected <> -1);
-    except
-      RowsAffected := -1;
-      result := False;
-      raise; {------ added by Henk 09-10-2012 --------}
-    end;
+    CheckConnected;
+    RowsAffected := DbcConnection.CreateStatement.ExecuteUpdate(SQL);
   finally
-    stmt:=nil;
+    result := (RowsAffected <> -1);
   end;
 end;
 
 initialization
   SqlHourGlassLock := 0;
 end.
-
+

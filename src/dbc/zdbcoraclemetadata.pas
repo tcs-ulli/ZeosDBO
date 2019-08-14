@@ -204,6 +204,10 @@ type
 
   {** Implements Oracle Database Metadata. }
   TZOracleDatabaseMetadata = class(TZAbstractDatabaseMetadata)
+  private
+    function InternalGetCrossReference(const PrimarySchema, PrimaryTable,
+      ForeignSchema, ForeignTable, OrderBy: string;
+      const ColumnsDefs: TZMetadataColumnDefs): IZResultSet;
   protected
     function CreateDatabaseInfo: IZDatabaseInfo; override; // technobot 2008-06-28
 
@@ -220,13 +224,13 @@ type
       const Table: string; const ColumnNamePattern: string): IZResultSet; override;
     function UncachedGetPrimaryKeys(const {%H-}Catalog: string; const Schema: string;
       const Table: string): IZResultSet; override;
-//    function UncachedGetImportedKeys(const Catalog: string; const Schema: string;
-//      const Table: string): IZResultSet; override;
-//    function UncachedGetExportedKeys(const Catalog: string; const Schema: string;
-//      const Table: string): IZResultSet; override;
-//    function UncachedGetCrossReference(const PrimaryCatalog: string; const PrimarySchema: string;
-//      const PrimaryTable: string; const ForeignCatalog: string; const ForeignSchema: string;
-//      const ForeignTable: string): IZResultSet; override;
+    function UncachedGetImportedKeys(const Catalog: string; const Schema: string;
+      const Table: string): IZResultSet; override;
+    function UncachedGetExportedKeys(const Catalog: string; const Schema: string;
+      const Table: string): IZResultSet; override;
+    function UncachedGetCrossReference(const PrimaryCatalog: string; const PrimarySchema: string;
+      const PrimaryTable: string; const ForeignCatalog: string; const ForeignSchema: string;
+      const ForeignTable: string): IZResultSet; override;
     function UncachedGetIndexInfo(const Catalog: string; const Schema: string; const Table: string;
       Unique: Boolean; Approximate: Boolean): IZResultSet; override;
 //     function UncachedGetSequences(const Catalog: string; const SchemaPattern: string;
@@ -245,7 +249,7 @@ type
 implementation
 
 uses
-  ZFastCode, ZDbcUtils;
+  ZFastCode, ZDbcUtils, ZSelectSchema;
 
 { TZOracleDatabaseInfo }
 
@@ -395,10 +399,10 @@ end;
 }
 function TZOracleDatabaseInfo.GetSQLKeywords: string;
 begin
-  Result := 'ACCESS,ADD,ALTER,AUDIT,CLUSTER,COLUMN,COMMENT,COMPRESS,CONNECT,'
-    + 'DATE,DROP,EXCLUSIVE,FILE,IDENTIFIED,IMMEDIATE,INCREMENT,INDEX,INITIAL,'
+  Result := 'ACCESS,ADD,AUDIT,CLUSTER,COMMENT,COMPRESS,CONNECT,'
+    + 'DATE,EXCLUSIVE,FILE,IDENTIFIED,IMMEDIATE,INCREMENT,INITIAL,'
     + 'INTERSECT,LEVEL,LOCK,LONG,MAXEXTENTS,MINUS,MODE,NOAUDIT,NOCOMPRESS,'
-    + 'NOWAIT,NUMBER,OFFLINE,ONLINE,PCTFREE,PRIOR';
+    + 'NOWAIT,OFFLINE,ONLINE,PCTFREE,PRIOR';
 end;
 
 {**
@@ -1300,12 +1304,12 @@ var
         end;
   end;
 
-  procedure InsertProcedureColumnValues(Source: IZResultSet; IsResultParam: Boolean = False);
+  procedure InsertProcedureColumnValues(const Source: IZResultSet; IsResultParam: Boolean = False);
   var
-    TypeName, SubTypeName: string;
+    TypeName{, SubTypeName}: string;
   begin
     TypeName := Source.GetString(ColumnIndexes[4]);
-    SubTypeName := Source.GetString(ColumnIndexes[5]);
+    //SubTypeName := Source.GetString(ColumnIndexes[5]);
     PackageName := Source.GetString(ColumnIndexes[8]);
     ProcName := Source.GetString(ColumnIndexes[9]);
 
@@ -1346,11 +1350,11 @@ var
     Result.InsertRow;
   end;
 
-  function GetColumnSQL(PosChar: String; Package: String = ''): String;
+  function GetColumnSQL(const PosChar: String; const Package: String = ''): String;
   var
     OwnerCondition, PackageNameCondition, PackageAsProcCondition, PackageProcNameCondition: string;
 
-    procedure SplitPackageAndProc(Value: String);
+    procedure SplitPackageAndProc(const Value: String);
     var
       iPos: Integer;
     begin
@@ -1406,8 +1410,6 @@ var
   end;
 
   procedure GetMoreProcedures;
-  const
-    ObjectNameIndex = {$IFDEF GENERIC_INDEX}0{$ELSE}1{$ENDIF};
   var
     i: Integer;
     PackageNameCondition: String;
@@ -1419,7 +1421,7 @@ var
     TempSet := IZStmt.ExecuteQuery('select object_name from user_arguments '
                + PackageNameCondition + ' GROUP BY object_name order by object_name');
     while TempSet.Next do
-      Procs.Add(TempSet.GetString(ObjectNameIndex));
+      Procs.Add(TempSet.GetString(FirstDbcIndex));
     TempSet.Close;
     for i := 0 to Procs.Count -1 do
     begin
@@ -1430,8 +1432,6 @@ var
   end;
 
   function CheckSchema: Boolean;
-  const
-    CountIndex = {$IFDEF GENERIC_INDEX}0{$ELSE}1{$ENDIF};
   begin
     if TmpSchemaPattern = '' then
       Result := False
@@ -1439,7 +1439,7 @@ var
       with GetConnection.CreateStatement.ExecuteQuery('SELECT COUNT(*) FROM ALL_USERS WHERE '+ConstructNameCondition(TmpSchemaPattern,'username')) do
       begin
         Next;
-        Result := GetInt(CountIndex) > 0;
+        Result := GetInt(FirstDbcIndex) > 0;
         Close;
       end;
   end;
@@ -1512,12 +1512,12 @@ end;
 function TZOracleDatabaseMetadata.UncachedGetProcedures(const Catalog: string;
   const SchemaPattern: string; const ProcedureNamePattern: string): IZResultSet;
 const
-  {%H-}PROCEDURE_CAT_Index = {$IFDEF GENERIC_INDEX}0{$ELSE}1{$ENDIF};
-  PROCEDURE_SCHEM_Index = {$IFDEF GENERIC_INDEX}1{$ELSE}2{$ENDIF};
-  OBJECT_NAME_Index = {$IFDEF GENERIC_INDEX}2{$ELSE}3{$ENDIF};
-  PROCEDURE_NAME_Index = {$IFDEF GENERIC_INDEX}3{$ELSE}4{$ENDIF};
-  PROCEDURE_OVERLOAD_Index = {$IFDEF GENERIC_INDEX}4{$ELSE}5{$ENDIF};
-  PROCEDURE_TYPE_Index = {$IFDEF GENERIC_INDEX}5{$ELSE}6{$ENDIF};
+  {%H-}PROCEDURE_CAT_Index = FirstDbcIndex + 0;
+  PROCEDURE_SCHEM_Index    = FirstDbcIndex + 1;
+  OBJECT_NAME_Index        = FirstDbcIndex + 2;
+  PROCEDURE_NAME_Index     = FirstDbcIndex + 3;
+  PROCEDURE_OVERLOAD_Index = FirstDbcIndex + 4;
+  PROCEDURE_TYPE_Index     = FirstDbcIndex + 5;
 var
   Len: NativeUInt;
   SQL: string;
@@ -1671,21 +1671,22 @@ function TZOracleDatabaseMetadata.UncachedGetColumns(const Catalog: string;
   const SchemaPattern: string; const TableNamePattern: string;
   const ColumnNamePattern: string): IZResultSet;
 const
-  OWNER_Index = {$IFDEF GENERIC_INDEX}0{$ELSE}1{$ENDIF};
-  TABLE_NAME_Index = {$IFDEF GENERIC_INDEX}1{$ELSE}2{$ENDIF};
-  COLUMN_NAME_Index = {$IFDEF GENERIC_INDEX}2{$ELSE}3{$ENDIF};
-  DATA_TYPE_Index = {$IFDEF GENERIC_INDEX}3{$ELSE}4{$ENDIF};
-  DATA_LENGTH_Index = {$IFDEF GENERIC_INDEX}4{$ELSE}5{$ENDIF};
-  DATA_PRECISION_Index = {$IFDEF GENERIC_INDEX}5{$ELSE}6{$ENDIF};
-  DATA_SCALE_Index = {$IFDEF GENERIC_INDEX}6{$ELSE}7{$ENDIF};
-  NULLABLE_Index = {$IFDEF GENERIC_INDEX}7{$ELSE}8{$ENDIF};
-  DATA_DEFAULT_Index = {$IFDEF GENERIC_INDEX}8{$ELSE}9{$ENDIF};
-  COLUMN_ID_Index = {$IFDEF GENERIC_INDEX}9{$ELSE}10{$ENDIF};
+  OWNER_Index          = FirstDbcIndex + 0;
+  TABLE_NAME_Index     = FirstDbcIndex + 1;
+  COLUMN_NAME_Index    = FirstDbcIndex + 2;
+  DATA_TYPE_Index      = FirstDbcIndex + 3;
+  DATA_LENGTH_Index    = FirstDbcIndex + 4;
+  DATA_PRECISION_Index = FirstDbcIndex + 5;
+  DATA_SCALE_Index     = FirstDbcIndex + 6;
+  NULLABLE_Index       = FirstDbcIndex + 7;
+  DATA_DEFAULT_Index   = FirstDbcIndex + 8;
+  COLUMN_ID_Index      = FirstDbcIndex + 9;
 var
   Len: NativeUInt;
   SQL, oDataType: string;
   SQLType: TZSQLType;
   OwnerCondition,TableCondition,ColumnCondition: String;
+  FieldSize: Integer;
 
   function CreateWhere: String;
   begin
@@ -1715,7 +1716,7 @@ begin
   SQL := 'SELECT OWNER, TABLE_NAME, COLUMN_NAME, DATA_TYPE,'
     + ' DATA_LENGTH, DATA_PRECISION, DATA_SCALE, NULLABLE, '
     + ' DATA_DEFAULT, COLUMN_ID FROM SYS.ALL_TAB_COLUMNS'
-    + CreateWhere;
+    + CreateWhere+' order by COLUMN_ID';
 
   with GetConnection.CreateStatement.ExecuteQuery(SQL) do
   begin
@@ -1730,9 +1731,17 @@ begin
         GetInt(DATA_PRECISION_Index), GetInt(DATA_SCALE_Index), ConSettings.CPType);
       Result.UpdateByte(TableColColumnTypeIndex, Ord(SQLType));
       Result.UpdatePAnsiChar(TableColColumnTypeNameIndex, GetPAnsiChar(DATA_TYPE_Index, Len), @Len);
-      Result.UpdateInt(TableColColumnSizeIndex, GetFieldSize(SQLType, ConSettings,
-        GetInt(DATA_LENGTH_Index), ConSettings.ClientCodePage.CharWidth));
-      //Result.UpdateNull(TableColColumnBufLengthIndex);
+      FieldSize := GetInt(DATA_LENGTH_Index);
+      if SQLType = stString then begin
+        Result.UpdateInt(TableColColumnBufLengthIndex, FieldSize * ConSettings^.ClientCodePage^.CharWidth +1);
+        Result.UpdateInt(TableColColumnCharOctetLengthIndex, FieldSize * ConSettings^.ClientCodePage^.CharWidth);
+      end else if SQLType = stUnicodeString then begin
+        Result.UpdateInt(TableColColumnBufLengthIndex, (FieldSize+1) shl 1);
+        Result.UpdateInt(TableColColumnCharOctetLengthIndex, FieldSize shl 1);
+      end else if SQLType = stBytes then
+        Result.UpdateInt(TableColColumnBufLengthIndex, FieldSize)
+      else if not (SQLType in [stAsciiStream, stUnicodeStream, stBinaryStream]) then
+        Result.UpdateInt(TableColColumnBufLengthIndex, ZSQLTypeToBuffSize(SQLType));
       Result.UpdateInt(TableColColumnDecimalDigitsIndex, GetInt(DATA_PRECISION_Index));
       Result.UpdateInt(TableColColumnNumPrecRadixIndex, GetInt(DATA_SCALE_Index));
 
@@ -1748,7 +1757,7 @@ begin
       end;
 
       Result.UpdatePAnsiChar(TableColColumnColDefIndex, GetPAnsiChar(DATA_DEFAULT_Index, Len), @Len);
-      Result.UpdateInt(TableColColumnOrdPosIndex, GetInt(COLUMN_ID_Index){$IFDEF GENERIC_INDEX}-1{$ENDIF});
+      Result.UpdateInt(TableColColumnOrdPosIndex, GetInt(COLUMN_ID_Index));
 
       Result.UpdateBoolean(TableColColumnCaseSensitiveIndex,
         IC.IsCaseSensitive(GetString(COLUMN_NAME_Index)));
@@ -1761,6 +1770,163 @@ begin
     end;
     Close;
   end;
+end;
+
+{**
+  Gets a description of the foreign key columns in the foreign key
+  table that reference the primary key columns of the primary key
+  table (describe how one table imports another's key.) This
+  should normally return a single foreign key/primary key pair
+  (most tables only import a foreign key from a table once.)  They
+  are ordered by FKTABLE_CAT, FKTABLE_SCHEM, FKTABLE_NAME, and
+  KEY_SEQ.
+
+  <P>Each foreign key column description has the following columns:
+   <OL>
+ 	<LI><B>PKTABLE_CAT</B> String => primary key table catalog (may be null)
+ 	<LI><B>PKTABLE_SCHEM</B> String => primary key table schema (may be null)
+ 	<LI><B>PKTABLE_NAME</B> String => primary key table name
+ 	<LI><B>PKCOLUMN_NAME</B> String => primary key column name
+ 	<LI><B>FKTABLE_CAT</B> String => foreign key table catalog (may be null)
+       being exported (may be null)
+ 	<LI><B>FKTABLE_SCHEM</B> String => foreign key table schema (may be null)
+       being exported (may be null)
+ 	<LI><B>FKTABLE_NAME</B> String => foreign key table name
+       being exported
+ 	<LI><B>FKCOLUMN_NAME</B> String => foreign key column name
+       being exported
+ 	<LI><B>KEY_SEQ</B> short => sequence number within foreign key
+ 	<LI><B>UPDATE_RULE</B> short => What happens to
+        foreign key when primary is updated:
+       <UL>
+       <LI> importedNoAction - do not allow update of primary
+                key if it has been imported
+       <LI> importedKeyCascade - change imported key to agree
+                with primary key update
+       <LI> importedKeySetNull - change imported key to NULL if
+                its primary key has been updated
+       <LI> importedKeySetDefault - change imported key to default values
+                if its primary key has been updated
+       <LI> importedKeyRestrict - same as importedKeyNoAction
+                                  (for ODBC 2.x compatibility)
+       </UL>
+ 	<LI><B>DELETE_RULE</B> short => What happens to
+       the foreign key when primary is deleted.
+       <UL>
+       <LI> importedKeyNoAction - do not allow delete of primary
+                key if it has been imported
+       <LI> importedKeyCascade - delete rows that import a deleted key
+       <LI> importedKeySetNull - change imported key to NULL if
+                its primary key has been deleted
+       <LI> importedKeyRestrict - same as importedKeyNoAction
+                                  (for ODBC 2.x compatibility)
+       <LI> importedKeySetDefault - change imported key to default if
+                its primary key has been deleted
+       </UL>
+ 	<LI><B>FK_NAME</B> String => foreign key name (may be null)
+ 	<LI><B>PK_NAME</B> String => primary key name (may be null)
+ 	<LI><B>DEFERRABILITY</B> short => can the evaluation of foreign key
+       constraints be deferred until commit
+       <UL>
+       <LI> importedKeyInitiallyDeferred - see SQL92 for definition
+       <LI> importedKeyInitiallyImmediate - see SQL92 for definition
+       <LI> importedKeyNotDeferrable - see SQL92 for definition
+       </UL>
+   </OL>
+
+  @param primaryCatalog a catalog name; "" retrieves those without a
+  catalog; null means drop catalog name from the selection criteria
+  @param primarySchema a schema name; "" retrieves those
+  without a schema
+  @param primaryTable the table name that exports the key
+  @param foreignCatalog a catalog name; "" retrieves those without a
+  catalog; null means drop catalog name from the selection criteria
+  @param foreignSchema a schema name; "" retrieves those
+  without a schema
+  @param foreignTable the table name that imports the key
+  @return <code>ResultSet</code> - each row is a foreign key column description
+  @see #getImportedKeys
+}
+function TZOracleDatabaseMetadata.UncachedGetCrossReference(
+  const PrimaryCatalog, PrimarySchema, PrimaryTable, ForeignCatalog,
+  ForeignSchema, ForeignTable: string): IZResultSet;
+begin
+  Result := InternalGetCrossReference(PrimarySchema, PrimaryTable, ForeignSchema, ForeignTable,
+    'order by ACFK.OWNER, ACFK.TABLE_NAME, CCFK.POSITION', CrossRefColumnsDynArray);
+end;
+
+{**
+  Gets a description of the foreign key columns that reference a
+  table's primary key columns (the foreign keys exported by a
+  table).  They are ordered by FKTABLE_CAT, FKTABLE_SCHEM,
+  FKTABLE_NAME, and KEY_SEQ.
+
+  <P>Each foreign key column description has the following columns:
+   <OL>
+ 	<LI><B>PKTABLE_CAT</B> String => primary key table catalog (may be null)
+ 	<LI><B>PKTABLE_SCHEM</B> String => primary key table schema (may be null)
+ 	<LI><B>PKTABLE_NAME</B> String => primary key table name
+ 	<LI><B>PKCOLUMN_NAME</B> String => primary key column name
+ 	<LI><B>FKTABLE_CAT</B> String => foreign key table catalog (may be null)
+       being exported (may be null)
+ 	<LI><B>FKTABLE_SCHEM</B> String => foreign key table schema (may be null)
+       being exported (may be null)
+ 	<LI><B>FKTABLE_NAME</B> String => foreign key table name
+       being exported
+ 	<LI><B>FKCOLUMN_NAME</B> String => foreign key column name
+       being exported
+ 	<LI><B>KEY_SEQ</B> short => sequence number within foreign key
+ 	<LI><B>UPDATE_RULE</B> short => What happens to
+        foreign key when primary is updated:
+       <UL>
+       <LI> importedNoAction - do not allow update of primary
+                key if it has been imported
+       <LI> importedKeyCascade - change imported key to agree
+                with primary key update
+       <LI> importedKeySetNull - change imported key to NULL if
+                its primary key has been updated
+       <LI> importedKeySetDefault - change imported key to default values
+                if its primary key has been updated
+       <LI> importedKeyRestrict - same as importedKeyNoAction
+                                  (for ODBC 2.x compatibility)
+       </UL>
+ 	<LI><B>DELETE_RULE</B> short => What happens to
+       the foreign key when primary is deleted.
+       <UL>
+       <LI> importedKeyNoAction - do not allow delete of primary
+                key if it has been imported
+       <LI> importedKeyCascade - delete rows that import a deleted key
+       <LI> importedKeySetNull - change imported key to NULL if
+                its primary key has been deleted
+       <LI> importedKeyRestrict - same as importedKeyNoAction
+                                  (for ODBC 2.x compatibility)
+       <LI> importedKeySetDefault - change imported key to default if
+                its primary key has been deleted
+       </UL>
+ 	<LI><B>FK_NAME</B> String => foreign key name (may be null)
+ 	<LI><B>PK_NAME</B> String => primary key name (may be null)
+ 	<LI><B>DEFERRABILITY</B> short => can the evaluation of foreign key
+       constraints be deferred until commit
+       <UL>
+       <LI> importedKeyInitiallyDeferred - see SQL92 for definition
+       <LI> importedKeyInitiallyImmediate - see SQL92 for definition
+       <LI> importedKeyNotDeferrable - see SQL92 for definition
+       </UL>
+   </OL>
+
+  @param catalog a catalog name; "" retrieves those without a
+  catalog; null means drop catalog name from the selection criteria
+  @param schema a schema name; "" retrieves those
+  without a schema
+  @param table a table name
+  @return <code>ResultSet</code> - each row is a foreign key column description
+  @see #getImportedKeys
+}
+function TZOracleDatabaseMetadata.UncachedGetExportedKeys(const Catalog, Schema,
+  Table: string): IZResultSet;
+begin
+  Result := InternalGetCrossReference(Schema, Table, '', '',
+    'order by ACFK.OWNER, ACFK.TABLE_NAME, CCFK.POSITION', ExportedKeyColumnsDynArray);
 end;
 
 {**
@@ -1791,6 +1957,51 @@ end;
   @return <code>ResultSet</code> - each row is a column privilege description
   @see #getSearchStringEscape
 }
+function TZOracleDatabaseMetadata.InternalGetCrossReference(const PrimarySchema,
+  PrimaryTable, ForeignSchema, ForeignTable, OrderBy: string;
+  const ColumnsDefs: TZMetadataColumnDefs): IZResultSet;
+var
+  SQL: String;
+  procedure Append(const Condition: String; var SQL: String);
+  begin
+    if Condition <> ''
+      then SQL := SQL + ' and '+Condition;
+  end;
+begin
+  //EH: dead slow but first approach avg~3sec
+  //So we should go away from using the giant views of oracle ....
+  SQL := 'select'
+    + ' null as PKTABLE_CAT, ACPK.OWNER as PKTABLE_SCHEM, ACPK.TABLE_NAME as PKTABLE_NAME, CCPK.COLUMN_NAME as PKCOLUMN_NAME,'
+    + ' null as FKTABLE_CAT, ACFK.OWNER as FKTABLE_SCHEM, ACFK.TABLE_NAME as FKTABLE_NAME, CCFK.COLUMN_NAME as FKCOLUMN_NAME,'
+    + ' CCFK.POSITION as KEY_SEQ,'
+    + ' null as UPDATE_RULE,' //is not given or correct me
+    + ' case ACFK.DELETE_RULE '
+    + '  when ''RESTRICT'' then '+ZFastCode.IntToStr(Ord(ikRestrict))
+    + '  when ''NO ACTION'' then '+ZFastCode.IntToStr(Ord(ikNoAction))
+    + '  when ''CASCADE'' then '+ZFastCode.IntToStr(Ord(ikCascade))
+    + '  when ''SET DEFAULT'' then '+ZFastCode.IntToStr(Ord(ikSetDefault))
+    + '  when ''SET NULL'' then '+ZFastCode.IntToStr(Ord(ikSetNull))
+    + '  else '+ZFastCode.IntToStr(Ord(ikNotDeferrable))+' end as DELETE_RULE,'
+    + ' ACFK.CONSTRAINT_NAME as FK_NAME, ACPK.CONSTRAINT_NAME as PK_NAME,'
+    + ' case ACFK.DEFERRABLE'
+    + '  when ''NOT DEFERRABLE'' then '+ZFastCode.IntToStr(Ord(ikNotDeferrable))
+    + '  else '+ZFastCode.IntToStr(Ord(ikInitiallyDeferred))+' end as DEFERRABILITY'
+    + ' from ALL_CONS_COLUMNS CCFK'
+    + ' join ALL_CONSTRAINTS ACFK on ACFK.OWNER = CCFK.OWNER and ACFK.CONSTRAINT_NAME = CCFK.CONSTRAINT_NAME'
+    + ' join ALL_CONSTRAINTS ACPK on ACPK.OWNER = ACFK.R_OWNER and ACPK.CONSTRAINT_NAME = ACFK.R_CONSTRAINT_NAME'
+    + ' join ALL_CONS_COLUMNS CCPK ON CCPK.OWNER = ACPK.OWNER and CCPK.CONSTRAINT_NAME = ACPK.CONSTRAINT_NAME'
+    + ' where ACFK.CONSTRAINT_TYPE=''R'' and ACPK.CONSTRAINT_TYPE=''P''';
+  Append(ConstructNameCondition(AddEscapeCharToWildcards(PrimarySchema), 'ACPK.OWNER'), SQL);
+  Append(ConstructNameCondition(AddEscapeCharToWildcards(PrimaryTable), 'ACPK.TABLE_NAME'), SQL);
+  Append(ConstructNameCondition(AddEscapeCharToWildcards(ForeignSchema), 'ACFK.OWNER'), SQL);
+  Append(ConstructNameCondition(AddEscapeCharToWildcards(ForeignTable), 'ACFK.TABLE_NAME'), SQL);
+  SQL := SQL+OrderBy;
+
+  Result := CopyToVirtualResultSet(
+    GetConnection.CreateStatement.ExecuteQuery(SQL),
+    ConstructVirtualResultSet(ColumnsDefs));
+end;
+
 function TZOracleDatabaseMetadata.UncachedGetColumnPrivileges(const Catalog: string;
   const Schema: string; const Table: string; const ColumnNamePattern: string): IZResultSet;
 var
@@ -1941,18 +2152,91 @@ begin
   OwnerCondition := ConstructNameCondition(Schema,'A.OWNER');
   TableCondition := ConstructNameCondition(Table,'A.TABLE_NAME');
   SQL := 'SELECT NULL AS TABLE_CAT, A.OWNER AS TABLE_SCHEM, A.TABLE_NAME,'
-    + ' B.COLUMN_NAME, B.COLUMN_POSITION AS KEY_SEQ, A.INDEX_NAME AS PK_NAME'
-    + ' FROM ALL_INDEXES A, ALL_IND_COLUMNS B'
-    + ' WHERE A.OWNER=B.INDEX_OWNER AND A.INDEX_NAME=B.INDEX_NAME'
-    + ' AND A.TABLE_OWNER=B.TABLE_OWNER AND A.TABLE_NAME=B.TABLE_NAME'
-    + ' AND A.UNIQUENESS=''UNIQUE'' AND A.GENERATED=''Y'''
-    + ' AND A.INDEX_NAME LIKE ''SYS_%'''
-    + CreateExtraWhere
-    + ' ORDER BY A.INDEX_NAME, B.COLUMN_POSITION';
+        + ' B.COLUMN_NAME, B.POSITION AS KEY_SEQ, A.INDEX_NAME AS PK_NAME'
+        + ' FROM ALL_CONSTRAINTS A, ALL_CONS_COLUMNS B'
+        + ' WHERE A.CONSTRAINT_TYPE = ''P'''
+        + ' AND A.CONSTRAINT_NAME = B.CONSTRAINT_NAME'
+        + ' AND A.OWNER = B.OWNER'
+        + CreateExtraWhere
+        + ' ORDER BY A.INDEX_NAME, B.POSITION';
 
   Result := CopyToVirtualResultSet(
     GetConnection.CreateStatement.ExecuteQuery(SQL),
     ConstructVirtualResultSet(PrimaryKeyColumnsDynArray));
+end;
+
+{**
+  Gets a description of the primary key columns that are
+  referenced by a table's foreign key columns (the primary keys
+  imported by a table).  They are ordered by PKTABLE_CAT,
+  PKTABLE_SCHEM, PKTABLE_NAME, and KEY_SEQ.
+
+  <P>Each primary key column description has the following columns:
+   <OL>
+ 	<LI><B>PKTABLE_CAT</B> String => primary key table catalog
+       being imported (may be null)
+ 	<LI><B>PKTABLE_SCHEM</B> String => primary key table schema
+       being imported (may be null)
+ 	<LI><B>PKTABLE_NAME</B> String => primary key table name
+       being imported
+ 	<LI><B>PKCOLUMN_NAME</B> String => primary key column name
+       being imported
+ 	<LI><B>FKTABLE_CAT</B> String => foreign key table catalog (may be null)
+ 	<LI><B>FKTABLE_SCHEM</B> String => foreign key table schema (may be null)
+ 	<LI><B>FKTABLE_NAME</B> String => foreign key table name
+ 	<LI><B>FKCOLUMN_NAME</B> String => foreign key column name
+ 	<LI><B>KEY_SEQ</B> short => sequence number within foreign key
+ 	<LI><B>UPDATE_RULE</B> short => What happens to
+        foreign key when primary is updated:
+       <UL>
+       <LI> importedNoAction - do not allow update of primary
+                key if it has been imported
+       <LI> importedKeyCascade - change imported key to agree
+                with primary key update
+       <LI> importedKeySetNull - change imported key to NULL if
+                its primary key has been updated
+       <LI> importedKeySetDefault - change imported key to default values
+                if its primary key has been updated
+       <LI> importedKeyRestrict - same as importedKeyNoAction
+                                  (for ODBC 2.x compatibility)
+       </UL>
+ 	<LI><B>DELETE_RULE</B> short => What happens to
+       the foreign key when primary is deleted.
+       <UL>
+       <LI> importedKeyNoAction - do not allow delete of primary
+                key if it has been imported
+       <LI> importedKeyCascade - delete rows that import a deleted key
+       <LI> importedKeySetNull - change imported key to NULL if
+                its primary key has been deleted
+       <LI> importedKeyRestrict - same as importedKeyNoAction
+                                  (for ODBC 2.x compatibility)
+       <LI> importedKeySetDefault - change imported key to default if
+                its primary key has been deleted
+       </UL>
+ 	<LI><B>FK_NAME</B> String => foreign key name (may be null)
+ 	<LI><B>PK_NAME</B> String => primary key name (may be null)
+ 	<LI><B>DEFERRABILITY</B> short => can the evaluation of foreign key
+       constraints be deferred until commit
+       <UL>
+       <LI> importedKeyInitiallyDeferred - see SQL92 for definition
+       <LI> importedKeyInitiallyImmediate - see SQL92 for definition
+       <LI> importedKeyNotDeferrable - see SQL92 for definition
+       </UL>
+   </OL>
+
+  @param catalog a catalog name; "" retrieves those without a
+  catalog; null means drop catalog name from the selection criteria
+  @param schema a schema name; "" retrieves those
+  without a schema
+  @param table a table name
+  @return <code>ResultSet</code> - each row is a primary key column description
+  @see #getExportedKeys
+}
+function TZOracleDatabaseMetadata.UncachedGetImportedKeys(const Catalog, Schema,
+  Table: string): IZResultSet;
+begin
+  Result := InternalGetCrossReference('', '', Schema, Table,
+    'order by ACPK.OWNER, ACPK.TABLE_NAME, CCPK.POSITION', ExportedKeyColumnsDynArray);
 end;
 
 {**
@@ -2010,13 +2294,13 @@ function TZOracleDatabaseMetadata.UncachedGetIndexInfo(const Catalog: string;
   const Schema: string; const Table: string; Unique: Boolean;
   Approximate: Boolean): IZResultSet;
 const
-  OWNER_Index = {$IFDEF GENERIC_INDEX}0{$ELSE}1{$ENDIF};
-  TABLE_NAME_Index = {$IFDEF GENERIC_INDEX}1{$ELSE}2{$ENDIF};
-  UNIQUENESS_Index = {$IFDEF GENERIC_INDEX}2{$ELSE}3{$ENDIF};
-  INDEX_NAME_Index = {$IFDEF GENERIC_INDEX}3{$ELSE}4{$ENDIF};
-  COLUMN_POSITION_Index = {$IFDEF GENERIC_INDEX}4{$ELSE}5{$ENDIF};
-  COLUMN_NAME_Index = {$IFDEF GENERIC_INDEX}5{$ELSE}6{$ENDIF};
-  DESCEND_Index = {$IFDEF GENERIC_INDEX}6{$ELSE}7{$ENDIF};
+  OWNER_Index           = FirstDbcIndex + 0;
+  TABLE_NAME_Index      = FirstDbcIndex + 1;
+  UNIQUENESS_Index      = FirstDbcIndex + 2;
+  INDEX_NAME_Index      = FirstDbcIndex + 3;
+  COLUMN_POSITION_Index = FirstDbcIndex + 4;
+  COLUMN_NAME_Index     = FirstDbcIndex + 5;
+  DESCEND_Index         = FirstDbcIndex + 6;
 var
   Len: NativeUint;
   SQL: string;

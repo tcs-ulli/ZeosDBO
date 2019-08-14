@@ -231,6 +231,8 @@ type
   {** Database Connection interface. }
   IZConnection = interface(IZInterface)
     ['{8EEBBD1A-56D1-4EC0-B3BD-42B60591457F}']
+    procedure RegisterStatement(const Value: IZStatement);
+    procedure DeregisterStatement(const Statement: IZStatement);
 
     function CreateStatement: IZStatement;
     function PrepareStatement(const SQL: string): IZPreparedStatement;
@@ -262,7 +264,7 @@ type
     //Ping Server Support (firmos) 27032006
 
     function PingServer: Integer;
-    function EscapeString(Value: RawByteString): RawByteString;
+    function EscapeString(const Value: RawByteString): RawByteString;
 
     procedure Open;
     procedure Close;
@@ -366,8 +368,8 @@ type
     function GetConnection: IZConnection;
     function GetIdentifierConvertor: IZIdentifierConvertor;
 
-    procedure ClearCache;overload;
-		procedure ClearCache(const Key: string);overload;
+    procedure ClearCache;overload; 
+    procedure ClearCache(const Key: string);overload;
 
     function AddEscapeCharToWildcards(const Pattern:string): string;
     function NormalizePatternCase(Pattern:String): string;
@@ -432,6 +434,7 @@ type
     function SupportsCatalogsInIndexDefinitions: Boolean;
     function SupportsCatalogsInPrivilegeDefinitions: Boolean;
     function SupportsOverloadPrefixInStoredProcedureName: Boolean;
+    function SupportsParameterBinding: Boolean;
     function SupportsPositionedDelete: Boolean;
     function SupportsPositionedUpdate: Boolean;
     function SupportsSelectForUpdate: Boolean;
@@ -506,6 +509,7 @@ type
 
     // interface details (terms, keywords, etc):
     function GetIdentifierQuoteString: string;
+    function GetIdentifierQuoteKeywordsSorted: TStringDynArray;
     function GetSchemaTerm: string;
     function GetProcedureTerm: string;
     function GetCatalogTerm: string;
@@ -607,6 +611,7 @@ type
     procedure SetString(ParameterIndex: Integer; const Value: String);
     procedure SetUnicodeString(ParameterIndex: Integer; const Value: ZWideString); //AVZ
     procedure SetBytes(ParameterIndex: Integer; const Value: TBytes);
+    procedure SetGuid(ParameterIndex: Integer; const Value: TGUID);
     procedure SetAnsiString(ParameterIndex: Integer; const Value: AnsiString);
     procedure SetUTF8String(ParameterIndex: Integer; const Value: UTF8String);
     procedure SetRawByteString(ParameterIndex: Integer; const Value: RawByteString);
@@ -633,7 +638,6 @@ type
     ['{E6FA6C18-C764-4C05-8FCB-0582BDD1EF40}']
     function IsFunction: Boolean;
     { Multiple ResultSet support API }
-    function HasMoreResultSets: Boolean;
     function GetFirstResultSet: IZResultSet;
     function GetPreviousResultSet: IZResultSet;
     function GetNextResultSet: IZResultSet;
@@ -694,6 +698,7 @@ type
 
     function Next: Boolean;
     procedure Close;
+    procedure ResetCursor;
     function WasNull: Boolean;
 
     //======================================================================
@@ -939,32 +944,33 @@ type
     ['{47CA2144-2EA7-42C4-8444-F5154369B2D7}']
 
     function GetColumnCount: Integer;
-    function IsAutoIncrement(Column: Integer): Boolean;
-    function IsCaseSensitive(Column: Integer): Boolean;
-    function IsSearchable(Column: Integer): Boolean;
-    function IsCurrency(Column: Integer): Boolean;
-    function IsNullable(Column: Integer): TZColumnNullableType;
+    function IsAutoIncrement(ColumnIndex: Integer): Boolean;
+    function IsCaseSensitive(ColumnIndex: Integer): Boolean;
+    function IsSearchable(ColumnIndex: Integer): Boolean;
+    function IsCurrency(ColumnIndex: Integer): Boolean;
+    function IsNullable(ColumnIndex: Integer): TZColumnNullableType;
 
-    function IsSigned(Column: Integer): Boolean;
-    function GetColumnDisplaySize(Column: Integer): Integer;
-    function GetColumnLabel(Column: Integer): string;
-    function GetColumnName(Column: Integer): string;
-    function GetColumnCodePage(const Column: Integer): Word;
-    function GetSchemaName(Column: Integer): string;
-    function GetPrecision(Column: Integer): Integer;
-    function GetScale(Column: Integer): Integer;
-    function GetTableName(Column: Integer): string;
-    function GetCatalogName(Column: Integer): string;
-    function GetColumnType(Column: Integer): TZSQLType;
-    function GetColumnTypeName(Column: Integer): string;
-    function IsReadOnly(Column: Integer): Boolean;
-    function IsWritable(Column: Integer): Boolean;
-    function IsDefinitelyWritable(Column: Integer): Boolean;
-    function GetDefaultValue(Column: Integer): string;
-    function HasDefaultValue(Column: Integer): Boolean;
+    function IsSigned(ColumnIndex: Integer): Boolean;
+    function GetColumnDisplaySize(ColumnIndex: Integer): Integer;
+    function GetColumnLabel(ColumnIndex: Integer): string;
+    function GetColumnName(ColumnIndex: Integer): string;
+    function GetColumnCodePage(ColumnIndex: Integer): Word;
+    function GetSchemaName(ColumnIndex: Integer): string;
+    function GetPrecision(ColumnIndex: Integer): Integer;
+    function GetScale(ColumnIndex: Integer): Integer;
+    function GetTableName(ColumnIndex: Integer): string;
+    function GetCatalogName(ColumnIndex: Integer): string;
+    function GetColumnType(ColumnIndex: Integer): TZSQLType;
+    function GetColumnTypeName(ColumnIndex: Integer): string;
+    function IsReadOnly(ColumnIndex: Integer): Boolean;
+    function IsWritable(ColumnIndex: Integer): Boolean;
+    function IsDefinitelyWritable(ColumnIndex: Integer): Boolean;
+    function GetDefaultValue(ColumnIndex: Integer): string;
+    function HasDefaultValue(ColumnIndex: Integer): Boolean;
   end;
 
   {** External or internal blob wrapper object. }
+  PIZLob = ^IZBlob;
   IZBlob = interface(IZInterface)
     ['{47D209F1-D065-49DD-A156-EFD1E523F6BF}']
 
@@ -1006,9 +1012,15 @@ type
     procedure SetPAnsiChar(const Buffer: PAnsiChar; const CodePage: Word; const Len: Cardinal);
     function GetPWideChar: PWideChar;
     procedure SetPWideChar(const Buffer: PWideChar; const Len: Cardinal);
+    function GetBufferAddress: PPointer;
+    function GetLengthAddress: PInteger;
     {$IFDEF WITH_MM_CAN_REALLOC_EXTERNAL_MEM}
     procedure SetBlobData(const Buffer: Pointer; const Len: Cardinal; const CodePage: Word); overload;
     {$ENDIF}
+  end;
+  IZUnCachedLob = interface(IZBlob)
+    ['{194F1179-9FFC-4032-B983-5EB3DD2E8B16}']
+    procedure FlushBuffer;
   end;
 
   {** Database notification interface. }
@@ -1044,7 +1056,7 @@ var
 
 implementation
 
-uses ZMessages;
+uses ZMessages,{$IFDEF FPC}syncobjs{$ELSE}SyncObjs{$ENDIF};
 
 type
   {** Driver Manager interface. }
@@ -1057,6 +1069,7 @@ type
     FLoginTimeout: Integer;
     FLoggingListeners: IZCollection;
     FHasLoggingListener: Boolean;
+    FCriticalSection: TCriticalSection;
     FURL: TZURL;
     procedure LogEvent(const Event: TZLoggingEvent);
   public
@@ -1110,6 +1123,7 @@ begin
   FLoggingListeners := TZCollection.Create;
   FHasLoggingListener := False;
   FURL := TZURL.Create;
+  fCriticalSection := TCriticalSection.Create;
 end;
 
 {**
@@ -1117,9 +1131,10 @@ end;
 }
 destructor TZDriverManager.Destroy;
 begin
-  FURL.Free;
+  FreeAndNil(FURL);
   FDrivers := nil;
   FLoggingListeners := nil;
+  FreeAndNil(fCriticalSection);
   inherited Destroy;
 end;
 
@@ -1261,8 +1276,13 @@ end;
 }
 procedure TZDriverManager.AddLoggingListener(Listener: IZLoggingListener);
 begin
-  FLoggingListeners.Add(Listener);
-  FHasLoggingListener := True;
+  fCriticalSection.Enter;
+  try
+    FLoggingListeners.Add(Listener);
+    FHasLoggingListener := True;
+  finally
+    fCriticalSection.Leave;
+  end;
 end;
 
 {**
@@ -1271,8 +1291,13 @@ end;
 }
 procedure TZDriverManager.RemoveLoggingListener(Listener: IZLoggingListener);
 begin
-  FLoggingListeners.Remove(Listener);
-  FHasLoggingListener := (FLoggingListeners.Count>0);
+  fCriticalSection.Enter;
+  try
+    FLoggingListeners.Remove(Listener);
+    FHasLoggingListener := (FLoggingListeners.Count>0);
+  finally
+    fCriticalSection.Leave;
+  end;
 end;
 
 function TZDriverManager.HasLoggingListener: Boolean;
@@ -1319,13 +1344,18 @@ var
 begin
   if not FHasLoggingListener then
     Exit;
-  for I := 0 to FLoggingListeners.Count - 1 do
-  begin
-    Listener := FLoggingListeners[I] as IZLoggingListener;
-    try
-      Listener.LogEvent(Event);
-    except
+  fCriticalSection.Enter;
+  try
+    for I := 0 to FLoggingListeners.Count - 1 do
+    begin
+      Listener := FLoggingListeners[I] as IZLoggingListener;
+      try
+        Listener.LogEvent(Event);
+      except
+      end;
     end;
+  finally
+    fCriticalSection.Leave;
   end;
 end;
 
@@ -1378,8 +1408,9 @@ begin
   FURL.UserName := UserName;
   FURL.Password := Password;
   FURL.Port := Port;
+  FURL.Properties.Clear;
   if Assigned(Properties) then
-    FURL.Properties.Text := Properties.Text;
+    FURL.Properties.AddStrings(Properties);
   FURL.LibLocation := LibLocation;
   Result := FURL.URL;
 end;
@@ -1405,7 +1436,10 @@ begin
   UserName := FURL.UserName;
   PassWord := FURL.Password;
   if Assigned(ResultInfo) then
-    ResultInfo.Text := FURL.Properties.Text;
+  begin
+    ResultInfo.Clear;
+    ResultInfo.AddStrings(FURL.Properties);
+  end;
 end;
 
 {**

@@ -61,7 +61,7 @@ uses
 {$IF defined(MSWINDOWS)and not defined(FPC)}
   Windows,
 {$IFEND}
-  ZDbcInterbase6, ZConnection, ZDbcIntfs,
+  ZDbcInterbase6, ZConnection, ZDbcIntfs, ZFastCode,
   ZPlainFirebirdDriver, ZPlainFirebirdInterbaseConstants;
 
 type
@@ -355,7 +355,7 @@ end;
 
 procedure TIBEventThread.UpdateResultBuffer(Length: UShort; Updated: PAnsiChar);
 begin
-  Move(Updated[0], ResultBuffer[0], Length);
+  {$IFDEF FAST_MOVE}ZFastCode{$ELSE}System{$ENDIF}.Move(Updated^, ResultBuffer^, Length);
 end;
 
 procedure TIBEventThread.QueueEvents;
@@ -398,19 +398,31 @@ end;
 procedure TIBEventThread.RegisterEvents;
 var
   sib_event_block: Tsib_event_block;
+  {$IFDEF UNICODE}
+  // Holder for ANSI strings converted from Unicode items of FEvents.
+  // Obligatory! Otherwise pointer returned from EBP will point to
+  // invalid (released) memory.
+  EBPArray: array[1..IB_MAX_EVENT_BLOCK] of AnsiString;
+  {$ENDIF}
 
   function EBP(Index: integer): PAnsiChar;
+  var EvListIndex: Integer;
   begin
-    Inc(Index, (EventGroup * IB_MAX_EVENT_BLOCK));
-    if (Index > Parent.FEvents.Count) then
+    // Index is 1-based, FEvents is 0-based
+    EvListIndex := Index + (EventGroup * IB_MAX_EVENT_BLOCK) - 1;
+    if (EvListIndex >= Parent.FEvents.Count) then
       Result := nil
     else
-  {$IFDEF UNICODE}
-      Result := PAnsiChar(AnsiString(Parent.FEvents[Index - 1]));
-  {$ELSE}
-      Result := PAnsiChar(Parent.FEvents[Index - 1]);
-  {$ENDIF}
+    {$IFDEF UNICODE}
+    begin
+      EBPArray[Index] := AnsiString(Parent.FEvents[EvListIndex]);
+      Result := PAnsiChar(EBPArray[Index]);
+    end;
+    {$ELSE}
+    Result := PAnsiChar(Parent.FEvents[EvListIndex]);
+    {$ENDIF}
   end;
+
 begin
   EventBuffer := nil;
   ResultBuffer := nil;

@@ -61,60 +61,44 @@ uses
   ZPlainMySqlConstants, ZCompatibility, ZDbcLogging, ZDbcUtils;
 
 type
-
-  {** Represents a MYSQL specific connection interface. }
-  IZMySQLStatement = interface (IZStatement)
-    ['{A05DB91F-1E40-46C7-BF2E-25D74978AC83}']
-
-    function IsUseResult: Boolean;
-    function IsPreparedStatement: Boolean;
-    function GetStmtHandle: PZMySqlPrepStmt;
-  end;
-
-  {** Represents a MYSQL prepared Statement specific connection interface. }
-  IZMySQLPreparedStatement = interface (IZMySQLStatement)
-    ['{A05DB91F-1E40-46C7-BF2E-25D74978AC83}']
-  end;
-
-  {** Implements Generic MySQL Statement. }
-  TZMySQLStatement = class(TZAbstractStatement, IZMySQLStatement)
+  {** Implements Prepared MySQL Statement. }
+  TZMySQLEmulatedPreparedStatement = class(TZEmulatedPreparedStatement_A)
   private
-    FHandle: PZMySQLConnect;
+    fMySQLConnection: IZMySQLConnection;
     FPlainDriver: IZMySQLPlainDriver;
-    FUseResult: Boolean;
-
+    FUseDefaults, FUseResult: Boolean;
+    FResultsCount: Integer;
+    fMySQL: PMySQL;
     function CreateResultSet(const SQL: string): IZResultSet;
-    function GetStmtHandle : PZMySqlPrepStmt;
+    procedure FlushPendingResults;
+  protected
+    function GetParamAsString(ParamIndex: Integer): RawByteString; override;
   public
-    constructor Create(PlainDriver: IZMySQLPlainDriver;
-      Connection: IZConnection; Info: TStrings; Handle: PZMySQLConnect);
+    constructor Create(const PlainDriver: IZMySQLPlainDriver;
+      const Connection: IZConnection; const SQL: string; Info: TStrings;
+      Handle: PMySQL); overload;
+    constructor Create(const PlainDriver: IZMySQLPlainDriver;
+      const Connection: IZConnection; const SQL: string; Info: TStrings); overload;
 
-    function ExecuteQuery(const SQL: RawByteString): IZResultSet; override;
-    function ExecuteUpdate(const SQL: RawByteString): Integer; override;
-    function Execute(const SQL: RawByteString): Boolean; override;
+    function ExecuteQueryPrepared: IZResultSet; override;
+    function ExecuteUpdatePrepared: Integer; override;
+    function ExecutePrepared: Boolean; override;
 
     function GetMoreResults: Boolean; override;
+    function GetUpdateCount: Integer; override;
 
-    function IsUseResult: Boolean;
-    function IsPreparedStatement: Boolean;
+    procedure Unprepare; override;
+    procedure Prepare; override;
   end;
 
-  {** Implements Prepared SQL Statement. }
-  TZMySQLEmulatedPreparedStatement = class(TZEmulatedPreparedStatement)
-  private
-    FHandle: PZMySQLConnect;
-    FPlainDriver: IZMySQLPlainDriver;
-    FUseDefaults: Boolean;
-  protected
-    function CreateExecStatement: IZStatement; override;
-    function PrepareAnsiSQLParam(ParamIndex: Integer): RawByteString; override;
+  {** Implements MySQL Statement. }
+  TZMySQLStatement = class(TZMySQLEmulatedPreparedStatement)
   public
-    constructor Create(PlainDriver: IZMySQLPlainDriver;
-      Connection: IZConnection; const SQL: string; Info: TStrings;
-      Handle: PZMySQLConnect);
+    constructor Create(const PlainDriver: IZMySQLPlainDriver;
+      const Connection: IZConnection; const Info: TStrings; Handle: PMySQL); overload;
   end;
 
-  TZMysqlColumnBuffer = Array of PDOBindRecord2;
+  TZMysqlColumnBuffer = Array of TDOBindRecord2;
   { TZMySQLBindBuffer }
   {** Encapsulates a MySQL bind buffer. }
   TZMySQLAbstractBindBuffer = class(TZAbstractObject)
@@ -126,59 +110,47 @@ type
   public
     constructor Create(PlainDriver:IZMysqlPlainDriver;
       const BindCount : Integer; var ColumnArray: TZMysqlColumnBuffer); virtual;
-    function GetColumnArray : TZMysqlColumnBuffer;
     function GetBufferAddress : Pointer;
-    function GetBufferType(ColumnIndex: Integer): TMysqlFieldTypes;
-    function GetBufferIsSigned(ColumnIndex: Integer): Boolean;
   end;
 
   {** Encapsulates a MySQL bind buffer for ResultSets. }
   TZMySQLResultSetBindBuffer = class(TZMySQLAbstractBindBuffer)
   public
-    procedure AddColumn(PlainDriver: IZMysqlPlainDriver; const FieldHandle: PZMySQLField);
+    procedure AddColumn(MYSQL_FIELD: PMYSQL_FIELD);
   end;
 
   {** Encapsulates a MySQL bind buffer for updates. }
   TZMySQLParamBindBuffer = class(TZMySQLAbstractBindBuffer)
-  private
-    FInitialMySQLTypes: array of TMysqlFieldTypes;
-    FInitialLengths: array of ULong;
   public
-    constructor Create(PlainDriver:IZMysqlPlainDriver;
-      const BindCount : Integer; var ColumnArray: TZMysqlColumnBuffer); override;
-    procedure AddColumn(buffertype: TMysqlFieldTypes; const field_length: integer;
-      const Signed: Boolean);
+    procedure AddColumn(buffertype: TMysqlFieldTypes; field_length: integer;
+      is_signed: Boolean);
   end;
   {** Implements Prepared SQL Statement. }
 
   { TZMySQLPreparedStatement }
-
-  TZMySQLPreparedStatement = class(TZAbstractPreparedStatement,
-    IZMySQLPreparedStatement)
+  TZMySQLPreparedStatement = class(TZAbstractPreparedStatement)
   private
-    FHandle: PZMySQLConnect;
+    fMySQL: PMySQL;
     FMySQLConnection: IZMySQLConnection;
-    FStmtHandle: PZMySqlPrepStmt;
+    FMYSQL_STMT: PMYSQL_STMT;
     FPlainDriver: IZMySQLPlainDriver;
-    FUseResult: Boolean;
-    FUseDefaults: Boolean;
+    FUseResult, FUseDefaults: Boolean;
     FPreparablePrefixTokens: TPreparablePrefixTokens;
     FColumnArray: TZMysqlColumnBuffer;
     FParamBindBuffer: TZMySQLParamBindBuffer;
-
-    //function PrepareAnsiSQLQuery: RawByteString;
+    FPrefetchRows: Ulong; //Number of rows to fetch from server at a time when using a cursor.
+    FResultsCount: Integer;
     function CreateResultSet(const SQL: string): IZResultSet;
-
-    function GetFieldType(SQLType: TZSQLType; Var Signed: Boolean): TMysqlFieldTypes;
+    procedure FlushPendingResults;
+    function GetFieldType(SQLType: TZSQLType; Var Signed: Boolean;
+      MySQL_FieldType_Bit_1_IsBoolean: Boolean): TMysqlFieldTypes;
   protected
-    function GetStmtHandle : PZMySqlPrepStmt;
     procedure PrepareInParameters; override;
     procedure BindInParameters; override;
     procedure UnPrepareInParameters; override;
     function GetCompareFirstKeywordStrings: TPreparablePrefixTokens; override;
   public
-    property StmtHandle: PZMySqlPrepStmt read GetStmtHandle;
-    constructor Create(PlainDriver: IZMysqlPlainDriver; Connection: IZConnection;
+    constructor Create(const PlainDriver: IZMysqlPlainDriver; const Connection: IZConnection;
       const SQL: string; Info: TStrings);
     procedure Prepare; override;
     procedure Unprepare; override;
@@ -187,17 +159,16 @@ type
     function ExecuteUpdatePrepared: Integer; override;
     function ExecutePrepared: Boolean; override;
 
-    function IsUseResult: Boolean;
-    function IsPreparedStatement: Boolean;
     function GetMoreResults: Boolean; override;
+    function GetUpdateCount: Integer; override;
   end;
 
   {** Implements callable Postgresql Statement. }
-  TZMySQLCallableStatement = class(TZAbstractCallableStatement, IZMySQLStatement,
+  TZMySQLCallableStatement = class(TZAbstractCallableStatement,
     IZParamNamedCallableStatement)
   private
     FPlainDriver: IZMysqlPlainDriver;
-    FHandle: PZMySQLConnect;
+    fMySQL: PMySQL;
     FQueryHandle: PZMySQLResult;
     FUseResult: Boolean;
     FParamNames: array [0..1024] of RawByteString;
@@ -207,7 +178,6 @@ type
     function GetOutParamSQL: RawByteString;
     function GetSelectFunctionSQL: RawByteString;
     function PrepareAnsiSQLParam(ParamIndex: Integer): RawByteString;
-    function GetStmtHandle : PZMySqlPrepStmt;
   protected
     procedure ClearResultSets; override;
     procedure BindInParameters; override;
@@ -215,9 +185,9 @@ type
     procedure RegisterParamTypeAndName(const ParameterIndex:integer;
       ParamTypeName: String; const ParamName: String; Const ColumnSize, {%H-}Precision: Integer);
   public
-    constructor Create(PlainDriver: IZMySQLPlainDriver;
-      Connection: IZConnection; const SQL: string; Info: TStrings;
-      Handle: PZMySQLConnect);
+    constructor Create(const PlainDriver: IZMySQLPlainDriver;
+      const Connection: IZConnection; const SQL: string; const Info: TStrings;
+      Handle: PMySQL);
 
     function Execute(const SQL: RawByteString): Boolean; override;
     function ExecuteQuery(const SQL: RawByteString): IZResultSet; override;
@@ -229,7 +199,6 @@ type
     function IsUseResult: Boolean;
     function IsPreparedStatement: Boolean;
 
-    function HasMoreResultSets: Boolean; override;
     function GetFirstResultSet: IZResultSet; override;
     function GetPreviousResultSet: IZResultSet; override;
     function GetNextResultSet: IZResultSet; override;
@@ -238,6 +207,7 @@ type
     function EOR: Boolean; override;
     function GetResultSetByIndex(const Index: Integer): IZResultSet; override;
     function GetResultSetCount: Integer; override;
+    function GetMoreResults: Boolean; override;
   end;
 
 implementation
@@ -259,189 +229,207 @@ var
   MySQL56PreparableTokens: TPreparablePrefixTokens absolute MySQL55PreparableTokens; //equals
   MySQL568PreparableTokens: TPreparablePrefixTokens;
 
-{ TZMySQLStatement }
+{ TZMySQLEmulatedPreparedStatement }
+
+procedure TZMySQLEmulatedPreparedStatement.Prepare;
+begin
+  inherited Prepare;
+  FlushPendingResults;
+end;
+
+procedure TZMySQLEmulatedPreparedStatement.Unprepare;
+begin
+  if IsPrepared then begin
+    inherited Unprepare;
+    FlushPendingResults;
+  end;
+  FResultsCount := 0;
+end;
 
 {**
   Constructs this object and assignes the main properties.
-  @param PlainDriver a native MySQL plain driver.
+  @param PlainDriver a native MySQL Plain driver.
   @param Connection a database connection object.
+  @param Info a statement parameters.
   @param Handle a connection handle pointer.
+}
+constructor TZMySQLEmulatedPreparedStatement.Create(
+  const PlainDriver: IZMySQLPlainDriver; const Connection: IZConnection;
+  const SQL: string; Info: TStrings; Handle: PMySQL);
+begin
+  //Keep the old constructors
+  Create(PlainDriver, Connection, SQL, Info);
+end;
+
+{**
+  Constructs this object and assignes the main properties.
+  @param PlainDriver a native MySQL Plain driver.
+  @param Connection a database connection object.
+  @param SQL a statement.
   @param Info a statement parameters.
 }
-constructor TZMySQLStatement.Create(PlainDriver: IZMySQLPlainDriver;
-  Connection: IZConnection; Info: TStrings; Handle: PZMySQLConnect);
+constructor TZMySQLEmulatedPreparedStatement.Create(const PlainDriver: IZMySQLPlainDriver;
+  const Connection: IZConnection; const SQL: string; Info: TStrings);
 begin
-  inherited Create(Connection, Info);
-  FHandle := Handle;
+  inherited create(Connection, SQL, Info);
+  fMySQLConnection := Connection as IZMySQLConnection;
+  fMySQL := fMySQLConnection.GetConnectionHandle;
   FPlainDriver := PlainDriver;
-  ResultSetType := rtScrollInsensitive;
-
   FUseResult := StrToBoolEx(DefineStatementParameter(Self, 'useresult', 'false'));
-end;
-
-{**
-  Checks is use result should be used in result sets.
-  @return <code>True</code> use result in result sets,
-    <code>False</code> store result in result sets.
-}
-function TZMySQLStatement.IsUseResult: Boolean;
-begin
-  Result := FUseResult;
-end;
-
-{**
-  Checks if this is a prepared mysql statement.
-  @return <code>False</code> This is not a prepared mysql statement.
-}
-function TZMySQLStatement.IsPreparedStatement: Boolean;
-begin
-  Result := False;
-end;
-
-function TZMySQLStatement.GetStmtHandle: PZMySqlPrepStmt;
-begin
-  Result := nil;
+  FUseDefaults := StrToBoolEx(DefineStatementParameter(Self, 'defaults', 'true'));
+  if not FUseResult then
+    ResultSetType := rtScrollInsensitive;
+  FResultsCount := 0;
 end;
 
 {**
   Creates a result set based on the current settings.
   @return a created result set object.
 }
-function TZMySQLStatement.CreateResultSet(const SQL: string): IZResultSet;
+function TZMySQLEmulatedPreparedStatement.CreateResultSet(const SQL: string): IZResultSet;
 var
   CachedResolver: TZMySQLCachedResolver;
-  NativeResultSet: TZMySQLResultSet;
+  NativeResultSet: TZAbstractResultSet;
   CachedResultSet: TZCachedResultSet;
 begin
-  NativeResultSet := TZMySQLResultSet.Create(FPlainDriver, Self, SQL, FHandle,
-    FUseResult, nil, CachedLob);
-  NativeResultSet.SetConcurrency(rcReadOnly);
-  if (GetResultSetConcurrency <> rcReadOnly) or (FUseResult
-    and (GetResultSetType <> rtForwardOnly)) then
-  begin
-    CachedResolver := TZMySQLCachedResolver.Create(FPlainDriver, FHandle, Self,
-      NativeResultSet.GetMetaData);
-    CachedResultSet := TZCachedResultSet.Create(NativeResultSet, SQL,
-      CachedResolver, ConSettings);
-    CachedResultSet.SetConcurrency(GetResultSetConcurrency);
-    Result := CachedResultSet;
-  end
-  else
-    Result := NativeResultSet;
+  if (FResultsCount = 1) and (FOpenResultSet <> nil) and (FOpenResultSet <> Pointer(LastResultSet)) then begin
+    Result := IZResultSet(FOpenResultSet);
+    if fUseResult and ((GetResultSetConcurrency = rcUpdatable) or
+       (GetResultSetType = rtScrollInsensitive)) then begin
+      Result.Last; //invoke fetch all -> note this is done on msql_strore_result too
+      Result.BeforeFirst;
+    end;
+  end else begin
+    if FUseResult //server cursor?
+    then NativeResultSet := TZMySQL_Use_ResultSet.Create(FPlainDriver, Self, SQL, fMySQL, nil)
+    else NativeResultSet := TZMySQL_Store_ResultSet.Create(FPlainDriver, Self, SQL, fMySQL, nil);
+    if (GetResultSetConcurrency = rcUpdatable) or
+       ((GetResultSetType = rtScrollInsensitive) and FUseResult) then begin
+      if (GetResultSetConcurrency = rcUpdatable)
+      then CachedResolver := TZMySQLCachedResolver.Create(FPlainDriver,
+          fMySQL, Self, NativeResultSet.GetMetaData)
+      else CachedResolver := nil;
+      CachedResultSet := TZCachedResultSet.CreateWithColumns(NativeResultSet.ColumnsInfo,
+        NativeResultSet, SQL, CachedResolver, ConSettings);
+      if fUseResult then begin
+        CachedResultSet.Last; //invoke fetch all -> note this is done on msql_strore_result too
+        CachedResultSet.BeforeFirst;
+      end;
+      CachedResultSet.SetConcurrency(GetResultSetConcurrency);
+      Result := CachedResultSet;
+      Result.GetMetadata.IsWritable(FirstDbcIndex); //force metadata loading
+    end else
+      Result := NativeResultSet;
+    Inc(FResultsCount);
+  end;
 end;
 
 
 {**
-  Executes an SQL statement that returns a single <code>ResultSet</code> object.
-  @param sql typically this is a static SQL <code>SELECT</code> statement
+  Executes the SQL query in this <code>PreparedStatement</code> object
+  and returns the result set generated by the query.
+
   @return a <code>ResultSet</code> object that contains the data produced by the
-    given query; never <code>null</code>
+    query; never <code>null</code>
 }
-function TZMySQLStatement.ExecuteQuery(const SQL: RawByteString): IZResultSet;
+function TZMySQLEmulatedPreparedStatement.ExecuteQueryPrepared: IZResultSet;
+var RSQL: RawByteString;
 begin
-  Result := inherited ExecuteQuery(SQL);
-  if FPlainDriver.ExecQuery(FHandle, Pointer(ASQL)) = 0 then
-  begin
-    if not FPlainDriver.ResultSetExists(FHandle) then
-      raise EZSQLException.Create(SCanNotOpenResultSet);
-    Result := CreateResultSet(Self.SQL);
-  end
-  else
-    CheckMySQLError(FPlainDriver, FHandle, lcExecute, ASQL, ConSettings);
+  Result := nil;
+  PrepareOpenResultSetForReUse;
+  Prepare;
+  RSQL := ComposeRawSQLQuery;
+  if FPlainDriver.ExecRealQuery(fMySQL, Pointer(RSQL), Length(RSQL)) = 0 then begin
+    if FPlainDriver.Field_Count(fMySQL) = 0 then
+      if GetMoreResults
+      then Result := LastResultSet
+      else raise EZSQLException.Create(SCanNotOpenResultSet)
+    else Result := CreateResultSet(SQL);
+    FOpenResultSet := Pointer(Result);
+  end else
+    CheckMySQLError(FPlainDriver, fMySQL, lcExecute, RSQL, ConSettings);
+  inherited ExecuteQueryPrepared;
 end;
 
 {**
-  Executes an SQL <code>INSERT</code>, <code>UPDATE</code> or
-  <code>DELETE</code> statement. In addition,
+  Executes the SQL INSERT, UPDATE or DELETE statement
+  in this <code>PreparedStatement</code> object.
+  In addition,
   SQL statements that return nothing, such as SQL DDL statements,
   can be executed.
 
-  @param sql an SQL <code>INSERT</code>, <code>UPDATE</code> or
-    <code>DELETE</code> statement or an SQL statement that returns nothing
-  @return either the row count for <code>INSERT</code>, <code>UPDATE</code>
-    or <code>DELETE</code> statements, or 0 for SQL statements that return nothing
+  @return either the row count for INSERT, UPDATE or DELETE statements;
+  or 0 for SQL statements that return nothing
 }
-function TZMySQLStatement.ExecuteUpdate(const SQL: RawByteString): Integer;
+function TZMySQLEmulatedPreparedStatement.ExecuteUpdatePrepared: Integer;
 var
   QueryHandle: PZMySQLResult;
-  HasResultset : Boolean;
+  RSQL: RawByteString;
 begin
-  Result := Inherited ExecuteUpdate(SQL);
-  if FPlainDriver.ExecQuery(FHandle, Pointer(ASQL)) = 0 then
-  begin
-    HasResultSet := FPlainDriver.ResultSetExists(FHandle);
+  Result := -1;
+  Prepare;
+  RSQL := ComposeRawSQLQuery;
+  if FPlainDriver.ExecRealQuery(fMySQL, Pointer(RSQL), Length(RSQL)) = 0 then begin
     { Process queries with result sets }
-    if HasResultSet then
-      begin
-        QueryHandle := FPlainDriver.StoreResult(FHandle);
-        if QueryHandle <> nil then
-        begin
-          Result := FPlainDriver.GetRowCount(QueryHandle);
-          FPlainDriver.FreeResult(QueryHandle);
-        end
-        else
-          Result := FPlainDriver.GetAffectedRows(FHandle);
-        while(FPlainDriver.RetrieveNextRowset(FHandle) = 0) do
-          begin
-           QueryHandle := FPlainDriver.StoreResult(FHandle);
-           if QueryHandle <> nil then
-             begin
-               FPlainDriver.FreeResult(QueryHandle);
-             end;
-           end;
-      end
+    if FPlainDriver.Field_Count(fMySQL) > 0 then begin
+      QueryHandle := FPlainDriver.StoreResult(fMySQL);
+      if QueryHandle <> nil then begin
+        Result := FPlainDriver.GetRowCount(QueryHandle);
+        FPlainDriver.FreeResult(QueryHandle);
+      end else
+        Result := FPlainDriver.GetAffectedRows(fMySQL);
+      while(FPlainDriver.RetrieveNextRowset(fMySQL) = 0) do begin
+        QueryHandle := FPlainDriver.StoreResult(fMySQL);
+        if QueryHandle <> nil
+        then FPlainDriver.FreeResult(QueryHandle);
+      end;
+    end
   { Process regular query }
     else
-      Result := FPlainDriver.GetAffectedRows(FHandle);
-  end
-  else
-    CheckMySQLError(FPlainDriver, FHandle, lcExecute, ASQL, ConSettings);
+      Result := FPlainDriver.GetAffectedRows(fMySQL);
+  end else
+    CheckMySQLError(FPlainDriver, fMySQL, lcExecute, RSQL, ConSettings);
   LastUpdateCount := Result;
+  Inherited ExecutePrepared;
+end;
+
+procedure TZMySQLEmulatedPreparedStatement.FlushPendingResults;
+var FQueryHandle: PZMySQLResult;
+begin
+  while (FPlainDriver.RetrieveNextRowset(fMySQL) = 0) do begin
+    Inc(FResultsCount);
+    FQueryHandle := FPlainDriver.StoreResult(fMySQL);
+    if FQueryHandle <> nil then
+      FPlainDriver.FreeResult(FQueryHandle);
+  end;
 end;
 
 {**
-  Executes an SQL statement that may return multiple results.
-  Under some (uncommon) situations a single SQL statement may return
-  multiple result sets and/or update counts.  Normally you can ignore
-  this unless you are (1) executing a stored procedure that you know may
-  return multiple results or (2) you are dynamically executing an
-  unknown SQL string.  The  methods <code>execute</code>,
-  <code>getMoreResults</code>, <code>getResultSet</code>,
-  and <code>getUpdateCount</code> let you navigate through multiple results.
-
-  The <code>execute</code> method executes an SQL statement and indicates the
-  form of the first result.  You can then use the methods
-  <code>getResultSet</code> or <code>getUpdateCount</code>
-  to retrieve the result, and <code>getMoreResults</code> to
-  move to any subsequent result(s).
-
-  @param sql any SQL statement
-  @return <code>true</code> if the next result is a <code>ResultSet</code> object;
-  <code>false</code> if it is an update count or there are no more results
+  Executes any kind of SQL statement.
+  Some prepared statements return multiple results; the <code>execute</code>
+  method handles these complex statements as well as the simpler
+  form of statements handled by the methods <code>executeQuery</code>
+  and <code>executeUpdate</code>.
+  @see Statement#execute
 }
-function TZMySQLStatement.Execute(const SQL: RawByteString): Boolean;
+function TZMySQLEmulatedPreparedStatement.ExecutePrepared: Boolean;
 var
-  HasResultset : Boolean;
+  RSQL: RawByteString;
 begin
-  Result := inherited Execute(SQL);
-  if FPlainDriver.ExecQuery(FHandle, PAnsiChar(ASQL)) = 0 then
-  begin
-    HasResultSet := FPlainDriver.ResultSetExists(FHandle);
-    { Process queries with result sets }
-    if HasResultSet then
-    begin
+  Result := False;
+  Prepare;
+  RSQL := ComposeRawSQLQuery;
+  if FPlainDriver.ExecRealQuery(fMySQL, Pointer(RSQL), Length(RSQL)) = 0 then begin
+    if FPlainDriver.Field_Count(fMySQL) > 0 then begin
+      { Process queries with result sets }
       Result := True;
       LastResultSet := CreateResultSet(Self.SQL);
-    end
-    { Processes regular query. }
-    else
-    begin
-      Result := False;
-      LastUpdateCount := FPlainDriver.GetAffectedRows(FHandle);
-    end;
-  end
-  else
-    CheckMySQLError(FPlainDriver, FHandle, lcExecute, ASQL, ConSettings);
+      FOpenResultSet := Pointer(LastResultSet);
+    end else { Processes regular query. }
+      LastUpdateCount := FPlainDriver.GetAffectedRows(fMySQL);
+  end else
+    CheckMySQLError(FPlainDriver, fMySQL, lcExecute, RSQL, ConSettings);
+  inherited ExecutePrepared;
 end;
 
 {**
@@ -459,129 +447,51 @@ end;
    <code>false</code> if it is an update count or there are no more results
  @see #execute
 }
-function TZMySQLStatement.GetMoreResults: Boolean;
-var
-  AStatus: integer;
+function TZMySQLEmulatedPreparedStatement.GetMoreResults: Boolean;
 begin
-  Result := inherited GetMoreResults;
-  if FPlainDriver.GetClientVersion >= 40100 then
-  begin
-    AStatus := FPlainDriver.RetrieveNextRowset(FHandle);
-    if AStatus > 0 then
-      CheckMySQLError(FPlainDriver, FHandle, lcExecute, ASQL, ConSettings)
-    else
-      Result := (AStatus = 0);
+  Result := False;
+  if (FOpenResultSet <> nil)
+  then IZResultSet(FOpenResultSet).Close;
+  if FPlainDriver.GetClientVersion >= 40100 then begin
+    if FPlainDriver.RetrieveNextRowset(fMySQL) > 0
+    then CheckMySQLError(FPlainDriver, fMySQL, lcExecute, ASQL, ConSettings);
 
-    if LastResultSet <> nil then
-      LastResultSet.Close;
+    FResultsCount := 0; //Reset -> user is expecting more resultsets
     LastResultSet := nil;
     LastUpdateCount := -1;
-    if FPlainDriver.ResultSetExists(FHandle) then
-      LastResultSet := CreateResultSet(Self.SQL)
-    else
-      LastUpdateCount := FPlainDriver.GetAffectedRows(FHandle);
+    if FPlainDriver.Field_Count(fMySQL) > 0 then begin
+      Result := True;
+      LastResultSet := CreateResultSet(Self.SQL);
+    end else
+      LastUpdateCount := FPlainDriver.GetAffectedRows(fMySQL);
   end;
 end;
 
-{ TZMySQLEmulatedPreparedStatement }
-
-{**
-  Constructs this object and assignes the main properties.
-  @param PlainDriver a native MySQL Plain driver.
-  @param Connection a database connection object.
-  @param Info a statement parameters.
-  @param Handle a connection handle pointer.
-}
-constructor TZMySQLEmulatedPreparedStatement.Create(PlainDriver: IZMySQLPlainDriver;
-  Connection: IZConnection; const SQL: string; Info: TStrings; Handle: PZMySQLConnect);
-begin
-  inherited Create(Connection, SQL, Info);
-  FHandle := Handle;
-  FPlainDriver := PlainDriver;
-  ResultSetType := rtScrollInsensitive;
-  FUseDefaults := StrToBoolEx(DefineStatementParameter(Self, 'defaults', 'true'));
-end;
-
-{**
-  Creates a temporary statement which executes queries.
-  @param Info a statement parameters.
-  @return a created statement object.
-}
-function TZMySQLEmulatedPreparedStatement.CreateExecStatement: IZStatement;
-begin
-  Result := TZMySQLStatement.Create(FPlainDriver, Connection, Info,FHandle);
-end;
-
-{**
-  Prepares an SQL parameter for the query.
-  @param ParameterIndex the first parameter is 1, the second is 2, ...
-  @return a string representation of the parameter.
-}
-function TZMySQLEmulatedPreparedStatement.PrepareAnsiSQLParam(ParamIndex: Integer): RawByteString;
-var
-  Value: TZVariant;
-  TempBytes: TBytes;
-  TempBlob: IZBlob;
+function TZMySQLEmulatedPreparedStatement.GetParamAsString(ParamIndex: Integer): RawByteString;
 begin
   if InParamCount <= ParamIndex then
     raise EZSQLException.Create(SInvalidInputParameterCount);
 
-  Value := InParamValues[ParamIndex];
-  if ClientVarManager.IsNull(Value) then
-    if FUseDefaults and (InParamDefaultValues[ParamIndex] <> '') then
-      Result := ConSettings^.ConvFuncs.ZStringToRaw(InParamDefaultValues[ParamIndex],
-        ConSettings^.CTRL_CP, ConSettings^.ClientCodePage^.CP)
-    else
-      Result := 'NULL'
-  else
-  begin
-    case InParamTypes[ParamIndex] of
-      stBoolean:
-        if ClientVarManager.GetAsBoolean(Value) then
-           Result := '''Y'''
-        else
-           Result := '''N''';
-      stByte, stShort, stWord, stSmall, stLongWord, stInteger, stULong, stLong,
-      stFloat, stDouble, stCurrency, stBigDecimal:
-        Result := ClientVarManager.GetAsRawByteString(Value);
-      stBytes:
-        begin
-          TempBytes := ClientVarManager.GetAsBytes(Value);
-          Result := GetSQLHexAnsiString(PAnsiChar(TempBytes), Length(TempBytes));
-        end;
-      stString, stUnicodeString:
-        Result := FPlainDriver.EscapeString(FHandle, ClientVarManager.GetAsRawByteString(Value), ConSettings, True);
-      stDate:
-        Result := DateTimeToRawSQLDate(ClientVarManager.GetAsDateTime(Value),
-          ConSettings^.WriteFormatSettings, True);
-      stTime:
-        Result := DateTimeToRawSQLTime(ClientVarManager.GetAsDateTime(Value),
-          ConSettings^.WriteFormatSettings, True);
-      stTimestamp:
-        Result := DateTimeToRawSQLTimeStamp(ClientVarManager.GetAsDateTime(Value),
-          ConSettings^.WriteFormatSettings, True);
-      stAsciiStream, stUnicodeStream, stBinaryStream:
-        begin
-          TempBlob := ClientVarManager.GetAsInterface(Value) as IZBlob;
-          if not TempBlob.IsEmpty then
-          begin
-            case InParamTypes[ParamIndex] of
-              stBinaryStream:
-                Result := GetSQLHexAnsiString(PAnsichar(TempBlob.GetBuffer), TempBlob.Length);
-              else
-                if TempBlob.IsClob then
-                  Result := FPlainDriver.EscapeString(FHandle,
-                    TempBlob.GetRawByteString, ConSettings, True)
-                else
-                  Result := FPlainDriver.EscapeString(FHandle,
-                    GetValidatedAnsiStringFromBuffer(TempBlob.GetBuffer,
-                      TempBlob.Length, ConSettings), ConSettings, True);
-            end;
-          end
-          else
-            Result := 'NULL';
-        end;
-    end;
+  Result := ZDbcMySQLUtils.MySQLPrepareAnsiSQLParam(fMySQLConnection,
+    InParamValues[ParamIndex], InParamDefaultValues[ParamIndex], ClientVarManager,
+    InParamTypes[ParamIndex], FUseDefaults);
+end;
+
+{**
+  Returns the current result as an update count;
+  if the result is a <code>ResultSet</code> object or there are no more results, -1
+  is returned. This method should be called only once per result.
+
+  @return the current result as an update count; -1 if the current result is a
+    <code>ResultSet</code> object or there are no more results
+  @see #execute
+}
+function TZMySQLEmulatedPreparedStatement.GetUpdateCount: Integer;
+begin
+  Result := inherited GetUpdateCount;
+  if (Result = -1) and (FPlainDriver.Field_Count(fMySQL) = 0) then begin
+    LastUpdateCount := FPlainDriver.GetAffectedRows(fMySQL);
+    Result := LastUpdateCount;
   end;
 end;
 
@@ -595,7 +505,7 @@ end;
   @param Handle a connection handle pointer.
 }
 constructor TZMySQLPreparedStatement.Create(
-  PlainDriver: IZMySQLPlainDriver; Connection: IZConnection;
+  const PlainDriver: IZMySQLPlainDriver; const Connection: IZConnection;
   const SQL: string; Info: TStrings);
 begin
   if PlainDriver.GetClientVersion      < 40100 then
@@ -623,33 +533,39 @@ begin
 
   inherited Create(Connection, SQL, Info);
   FMySQLConnection := Connection as IZMySQLConnection;
-  FHandle := FMysqlConnection.GetConnectionHandle;
+  fMySQL := FMysqlConnection.GetConnectionHandle;
   FPlainDriver := PlainDriver;
-  ResultSetType := rtScrollInsensitive;
 
   FUseResult := StrToBoolEx(DefineStatementParameter(Self, 'useresult', 'false'));
+  if not FUseResult then
+    ResultSetType := rtScrollInsensitive;
   FUseDefaults := StrToBoolEx(DefineStatementParameter(Self, 'defaults', 'true'));
+  FPrefetchRows := Max(1,{$IFDEF UNICODE}UnicodeToIntDef{$ELSE}RawToIntDef{$ENDIF}(DefineStatementParameter(Self, 'prefetch_rows', '100'),100));
 end;
 
+const FSTMT_ATTR_CURSOR_TYPE: ULong = Ord(CURSOR_TYPE_READ_ONLY);
 procedure TZMySQLPreparedStatement.Prepare;
 begin
-  if not Prepared then
-  begin
-    FStmtHandle := FPlainDriver.InitializePrepStmt(FHandle);
-    if (FStmtHandle = nil) then
-    begin
-      CheckMySQLPrepStmtError(FPlainDriver, FStmtHandle, lcPrepStmt,
+  FlushPendingResults;
+  if not Prepared then begin
+    FMYSQL_STMT := FPlainDriver.stmt_init(fMySQL);
+    if (FMYSQL_STMT = nil) then begin
+      CheckMySQLPrepStmtError(FPlainDriver, FMYSQL_STMT, lcPrepStmt,
         ConvertZMsgToRaw(SFailedtoInitPrepStmt, ZMessages.cCodePage,
           ConSettings^.ClientCodePage^.CP), ConSettings);
       exit;
     end;
-    if (FPlainDriver.PrepareStmt(FStmtHandle, Pointer(ASQL), length(ASQL)) <> 0) then
-    begin
-      CheckMySQLPrepStmtError(FPlainDriver, FStmtHandle, lcPrepStmt,
+    if (FPlainDriver.stmt_prepare(FMYSQL_STMT, Pointer(ASQL), length(ASQL)) <> 0) then begin
+      CheckMySQLPrepStmtError(FPlainDriver, FMYSQL_STMT, lcPrepStmt,
         ConvertZMsgToRaw(SFailedtoPrepareStmt,
         ZMessages.cCodePage, ConSettings^.ClientCodePage^.CP), ConSettings);
-        exit;
-      end;
+      exit;
+    end;
+    //see user comment: http://dev.mysql.com/doc/refman/5.0/en/mysql-stmt-fetch.html
+    if FUseResult and (FPlainDriver.GetClientVersion >= 50020 ) then //supported since 5.0.2
+      FPlainDriver.stmt_attr_set(FMYSQL_STMT, STMT_ATTR_CURSOR_TYPE, @FSTMT_ATTR_CURSOR_TYPE); //we need this to be able to use more than !one! stmt -> keep cached
+    if FPlainDriver.GetClientVersion >= 50060 then //supported since 5.0.6
+      FPlainDriver.stmt_attr_set(FMYSQL_STMT, STMT_ATTR_PREFETCH_ROWS, @FPrefetchRows); //try achieve best performnce. No idea how to calculate it
     LogPrepStmtMessage(lcPrepStmt, ASQL);
     inherited Prepare;
   end;
@@ -657,27 +573,14 @@ end;
 
 procedure TZMySQLPreparedStatement.Unprepare;
 begin
-  if FStmtHandle <> nil then
-    FStmtHandle := FPlainDriver.ClosePrepStmt(FStmtHandle);
   inherited Unprepare;
-end;
-{**
-  Checks is use result should be used in result sets.
-  @return <code>True</code> use result in result sets,
-    <code>False</code> store result in result sets.
-}
-function TZMySQLPreparedStatement.IsUseResult: Boolean;
-begin
-  Result := FUseResult;
-end;
-
-{**
-  Checks if this is a prepared mysql statement.
-  @return <code>True</code> This is a prepared mysql statement.
-}
-function TZMySQLPreparedStatement.IsPreparedStatement: Boolean;
-begin
-  Result := True;
+  if FMYSQL_STMT <> nil then begin
+    FlushPendingResults;
+    //cancel all pending results:
+    //https://mariadb.com/kb/en/library/mysql_stmt_close/
+    FPlainDriver.stmt_close(FMYSQL_STMT);
+    FMYSQL_STMT := nil;
+  end;
 end;
 
 {**
@@ -696,53 +599,24 @@ end;
  @see #execute
 }
 function TZMySQLPreparedStatement.GetMoreResults: Boolean;
-var
-  AStatus: integer;
 begin
-  Result := inherited GetMoreResults;
-  if FPlainDriver.GetClientVersion >= 40100 then
-  begin
-    AStatus := FPlainDriver.RetrieveNextRowset(FHandle);
-    if AStatus > 0 then
-      CheckMySQLError(FPlainDriver, FHandle, lcExecute, ASQL, ConSettings)
-    else
-      Result := (AStatus = 0);
+  Result := False;
+  if (FOpenResultSet <> nil)
+  then IZResultSet(FOpenResultSet).Close;
+  if (FPlainDriver.GetClientVersion >= 40100) and Assigned(FMYSQL_STMT) then begin
+    if FPlainDriver.stmt_next_result(FMYSQL_STMT) > 0
+    then checkMySQLPrepStmtError(FPlainDriver, FMYSQL_STMT, lcExecute, ASQL, ConSettings);
 
-    if LastResultSet <> nil then
-      LastResultSet.Close;
+    FResultsCount := 0; //Reset -> user is expecting more resultsets
     LastResultSet := nil;
     LastUpdateCount := -1;
-    if FPlainDriver.ResultSetExists(FHandle) then
-      LastResultSet := CreateResultSet(Self.SQL)
-    else
-      LastUpdateCount := FPlainDriver.GetAffectedRows(FHandle);
+    if FPlainDriver.stmt_field_count(FMYSQL_STMT) > 0 then begin
+      Result := True;
+      LastResultSet := CreateResultSet(Self.SQL);
+    end else
+      LastUpdateCount := FPlainDriver.stmt_affected_rows(FMYSQL_STMT);
   end;
 end;
-
-{**
-  Prepares an SQL statement and inserts all data values.
-  @return a RawByteString SQL statement.
-}
-(*function TZMySQLPreparedStatement.PrepareAnsiSQLQuery: RawByteString;
-var
-  I: Integer;
-  ParamIndex: Integer;
-begin
-  ParamIndex := 0;
-  Result := '';
-  for I := 0 to High(CachedQueryRaw) do
-    if IsParamIndex[I] then
-    begin
-      if ParamIndex > InParamCount {$IFDEF GENERIC_INDEX}-1{$ENDIF} then
-        raise EZSQLException.Create(SInvalidInputParameterCount);
-      Result := Result + MySQLPrepareAnsiSQLParam(FHandle, InParamValues[ParamIndex],
-        InParamDefaultValues[ParamIndex], ClientVarManager, FPlainDriver,
-        InParamTypes[ParamIndex], FUseDefaults, ConSettings);
-      Inc(ParamIndex);
-    end
-    else
-      Result := Result + CachedQueryRaw[i];
-end;*)
 
 {**
   Creates a result set based on the current settings.
@@ -751,24 +625,40 @@ end;*)
 function TZMySQLPreparedStatement.CreateResultSet(const SQL: string): IZResultSet;
 var
   CachedResolver: TZMySQLCachedResolver;
-  NativeResultSet: TZMySQLPreparedResultSet;
+  NativeResultSet: TZAbstractResultSet;
   CachedResultSet: TZCachedResultSet;
 begin
-  NativeResultSet := TZMySQLPreparedResultSet.Create(FPlainDriver, Self, SQL, FHandle,
-    FUseResult);
-  NativeResultSet.SetConcurrency(rcReadOnly);
-  if (GetResultSetConcurrency <> rcReadOnly) or (FUseResult
-    and (GetResultSetType <> rtForwardOnly)) then
-  begin
-    CachedResolver := TZMySQLCachedResolver.Create(FPlainDriver, FHandle, (Self as IZMysqlStatement),
-      NativeResultSet.GetMetaData);
-    CachedResultSet := TZCachedResultSet.Create(NativeResultSet, SQL,
-      CachedResolver, ConSettings);
-    CachedResultSet.SetConcurrency(GetResultSetConcurrency);
-    Result := CachedResultSet;
-  end
-  else
-    Result := NativeResultSet;
+  if (FResultsCount = 1) and (FOpenResultSet <> nil) and (FOpenResultSet <> Pointer(LastResultSet)) then begin
+    Result := IZResultSet(FOpenResultSet);
+    if fUseResult and ((GetResultSetConcurrency = rcUpdatable) or
+       (GetResultSetType = rtScrollInsensitive)) then begin
+      Result.Last; //invoke fetch all -> note this is done on msql_strore_result too
+      Result.BeforeFirst;
+    end;
+  end else begin
+    if FUseResult
+    then NativeResultSet := TZMySQL_Use_PreparedResultSet.Create(FPlainDriver, Self, SQL, fMySQL, FMYSQL_STMT)
+    else NativeResultSet := TZMySQL_Store_PreparedResultSet.Create(FPlainDriver, Self, SQL, fMySQL, FMYSQL_STMT);
+    if (GetResultSetConcurrency = rcUpdatable) or
+       ((GetResultSetType = rtScrollInsensitive) and FUseResult) then begin
+      if (GetResultSetConcurrency = rcUpdatable)
+      then CachedResolver := TZMySQLCachedResolver.Create(FPlainDriver,
+          fMySQL, Self, NativeResultSet.GetMetaData)
+      else CachedResolver := nil;
+      CachedResultSet := TZCachedResultSet.CreateWithColumns(NativeResultSet.ColumnsInfo,
+        NativeResultSet, SQL, CachedResolver, ConSettings);
+      if fUseResult then begin
+        CachedResultSet.Last; //invoke fetch all -> note this is done on msql_strore_result too
+        CachedResultSet.BeforeFirst;
+      end;
+      CachedResultSet.SetConcurrency(GetResultSetConcurrency);
+      Result := CachedResultSet;
+      Result.GetMetadata.IsWritable(FirstDbcIndex); //force metadata loading
+    end else
+      Result := NativeResultSet;
+    FOpenResultSet := Pointer(Result);
+    Inc(FResultsCount);
+  end;
 end;
 
 procedure TZMysqlPreparedStatement.PrepareInParameters;
@@ -778,31 +668,36 @@ var
   Signed: Boolean;
 begin
   { Initialize Bind Array and Column Array }
+  Assert(FPlainDriver.stmt_param_count(FMYSQL_STMT) = ULong(InParamCount), SInvalidInputParameterCount);
   FParamBindBuffer := TZMySqlParamBindBuffer.Create(FPlainDriver,InParamCount,FColumnArray);
   for i := 0 to InParamCount -1 do
   begin
-    MySQLType := GetFieldType(InParamTypes[i], Signed{%H-});
+    MySQLType := GetFieldType(InParamTypes[i], Signed{%H-}, FMySQLConnection.MySQL_FieldType_Bit_1_IsBoolean);
     FParamBindBuffer.AddColumn(MySQLType, getMySQLFieldSize(MySQLType, ChunkSize), Signed);
   end;
+  if (FPlainDriver.stmt_bind_param(FMYSQL_STMT, FParamBindBuffer.GetBufferAddress) <> 0) then
+    checkMySQLPrepStmtError (FPlainDriver, FMYSQL_STMT, lcPrepStmt,
+      ConvertZMsgToRaw(SBindingFailure, ZMessages.cCodePage,
+      ConSettings^.ClientCodePage^.CP), ConSettings);
 end;
 
 {$WARNINGS OFF} //Len & P might not be init...
 procedure TZMysqlPreparedStatement.BindInParameters;
 var
   PBuffer: Pointer;
+  aTime: TDateTime;
   year, month, day, hour, minute, second, millisecond: word;
-  MyType: TMysqlFieldTypes;
   I: integer;
   OffSet, PieceSize: LongWord;
   TempBlob: IZBlob;
   TempAnsi: RawByteString;
   CharRec: TZCharRec;
-  Signed: Boolean;
-  TempBytes: TBytes;
   ChunkedData: Boolean;
   P: PAnsiChar;
   Len: NativeUInt;
-label JmpClob, JmpInherited, JmpCharRec;
+
+  bind: PDOBindRecord2;
+label JmpClob, JmpInherited, JmpCharRec, JmpChunked;
 begin
   ChunkedData := False;
   //http://dev.mysql.com/doc/refman/5.0/en/storage-requirements.html
@@ -810,56 +705,53 @@ begin
      goto JmpInherited;
   For I := 0 to InParamCount - 1 do
   begin
-    PBuffer := Pointer(FColumnArray[I].buffer);
+    Bind := @FColumnArray[I];
+    PBuffer := Pointer(Bind^.buffer);
     if (InParamValues[I].VType = vtNull) and FUseDefaults and (InParamDefaultValues[I] <> '') then
     begin
-      {EH: Hint we're using the ClientVarManager vor conversions. This works pretty fine
+      {EH: Hint we're using the ClientVarManager for conversions. This works pretty fine
       except for default Date/TimeStamp-Values like "0000-00-00...."
       So i made this workaround here}
       ClientVarManager.SetAsString(InParamValues[I], Copy(InParamDefaultValues[I], 2, Length(InParamDefaultValues[I])-2)); //extract quotes
-      SetLength(FColumnArray[I].buffer, Max(Length(FColumnArray[I].buffer), ChunkSize+1));
-      PTMysqlFieldTypes(@FParamBindBuffer.FbindArray[NativeUInt((I)*FParamBindBuffer.FBindOffsets.size)+FParamBindBuffer.FBindOffsets.buffer_type])^:= FIELD_TYPE_STRING;
-      PULong(@FParamBindBuffer.FbindArray[NativeUInt((I)*FParamBindBuffer.FBindOffsets.size)+FParamBindBuffer.FBindOffsets.buffer_length])^ := Length(FColumnArray[I].buffer);
+      Bind^.buffer_length_address^ := Max(Length(bind^.buffer), ChunkSize+1);
+      SetLength(bind^.buffer, Bind^.buffer_length_address^);
+      bind^.buffer_type_address^:= FIELD_TYPE_STRING;
+      ChunkedData := True;
       goto JmpCharRec; //this skips reset of column-types!
     end;
-    Signed := PByte(@FParamBindBuffer.FbindArray[NativeUInt((I)*FParamBindBuffer.FBindOffsets.size)+FParamBindBuffer.FBindOffsets.is_unsigned])^ = 0;
     if InParamValues[i].vType = vtNull then
       FColumnArray[I].is_null := 1
     else
     begin
       FColumnArray[I].is_null := 0;
-      MyType := FParamBindBuffer.FInitialMySQLTypes[i];
       {allways reset type and length if defaults(strings) have been bound before}
-      PTMysqlFieldTypes(@FParamBindBuffer.FbindArray[NativeUInt((I)*FParamBindBuffer.FBindOffsets.size)+FParamBindBuffer.FBindOffsets.buffer_type])^:= MyType;
-      PULong(@FParamBindBuffer.FbindArray[NativeUInt((I)*FParamBindBuffer.FBindOffsets.size)+FParamBindBuffer.FBindOffsets.buffer_length])^ := FParamBindBuffer.FInitialLengths[I];
-      case MyType of
+      bind^.buffer_address^ := PBuffer; //reset if send chunked before
+      bind^.buffer_type_address^ := Bind^.buffer_type; //reset initial type
+      Bind^.buffer_length_address^ := Length(Bind^.buffer); //reset Buffer_Length
+      case Bind^.buffer_type of
         FIELD_TYPE_TINY:
-          if Signed then
-            PShortInt(PBuffer)^ := ShortInt(ClientVarManager.GetAsUInteger(InParamValues[i]))
-          else
-            PByte(PBuffer)^ := Byte(ClientVarManager.GetAsInteger(InParamValues[i]));
+          if Bind^.is_signed
+          then PShortInt(PBuffer)^ := ClientVarManager.GetAsInteger(InParamValues[i])
+          else PByte(PBuffer)^ := ClientVarManager.GetAsUInteger(InParamValues[i]);
         FIELD_TYPE_SHORT:
-          if Signed then
-            PSmallInt(PBuffer)^ := SmallInt(ClientVarManager.GetAsInteger(InParamValues[i]))
-          else
-            PWord(PBuffer)^ := Word(ClientVarManager.GetAsUInteger(InParamValues[i]));
+          if Bind^.is_signed
+          then PSmallInt(PBuffer)^ := ClientVarManager.GetAsInteger(InParamValues[i])
+          else PWord(PBuffer)^ := ClientVarManager.GetAsUInteger(InParamValues[i]);
         FIELD_TYPE_LONG:
-          if Signed then
-            PLongInt(PBuffer)^ := LongInt(ClientVarManager.GetAsInteger(InParamValues[i]))
-          else
-            PLongWord(PBuffer)^ := LongWord(ClientVarManager.GetAsUInteger(InParamValues[i]));
+          if Bind^.is_signed
+          then PLongInt(PBuffer)^ := ClientVarManager.GetAsInteger(InParamValues[i])
+          else PLongWord(PBuffer)^ := ClientVarManager.GetAsUInteger(InParamValues[i]);
         FIELD_TYPE_LONGLONG:
-          if Signed then
-            PInt64(PBuffer)^ := ClientVarManager.GetAsInteger(InParamValues[i])
-          else
-            PUInt64(PBuffer)^ := ClientVarManager.GetAsUInteger(InParamValues[i]);
+          if Bind^.is_signed
+          then PInt64(PBuffer)^ := ClientVarManager.GetAsInteger(InParamValues[i])
+          else PUInt64(PBuffer)^ := ClientVarManager.GetAsUInteger(InParamValues[i]);
         FIELD_TYPE_FLOAT: PSingle(PBuffer)^:= ClientVarManager.GetAsFloat(InParamValues[i]);
         FIELD_TYPE_DOUBLE: PDouble(PBuffer)^:= ClientVarManager.GetAsFloat(InParamValues[i]);
         FIELD_TYPE_STRING:
           case InParamTypes[i] of
             stBoolean:
               begin
-                FColumnArray[I].Length := 1;
+                Bind^.Length := 1;
                 if ClientVarManager.GetAsBoolean(InParamValues[i]) then
                   PAnsiChar(PBuffer)^ := AnsiChar('Y')
                 else
@@ -868,11 +760,8 @@ begin
             stGUID:
               begin
                 if InParamValues[i].vType = vtBytes then
-                  TempAnsi := {$IFDEF UNICODE}UnicodeStringToASCII7{$ENDIF}(GuidToString(PGUID(@InParamValues[i].vBytes[0])^))
-                else
-                  TempAnsi := ClientVarManager.GetAsRawByteString(InParamValues[i]);
-                FColumnArray[I].Length := 38;
-                System.Move(Pointer(TempAnsi)^, PBuffer^, 39);
+                  InParamValues[i] := EncodeRawByteString({$IFDEF UNICODE}UnicodeStringToASCII7{$ENDIF}(GuidToString(PGUID(@InParamValues[i].vBytes[0])^)));
+                goto JmpCharRec;
               end;
             stAsciiStream, stUnicodeStream:
               begin
@@ -882,22 +771,16 @@ begin
                 else
                   if TempBlob.IsClob then
                   begin
-JmpClob:            CharRec.P := TempBlob.GetPAnsiChar(ConSettings^.ClientCodePage^.CP); //set proper encoding if required
-                    FColumnArray[I].Length := TempBlob.Length;
-                    if FColumnArray[I].Length > Cardinal(ChunkSize)-1  then
+JmpClob:            P := TempBlob.GetPAnsiChar(ConSettings^.ClientCodePage^.CP); //set proper encoding if required
+                    Bind^.Length := TempBlob.Length;
+                    if Bind^.length > Cardinal(ChunkSize)-1  then
                     begin {out of buffer range}
                       {now we've to set the Buffer of binding-record to nil to indicate we send data as chunks}
-                      PPointer(@FParamBindBuffer.FBindArray[NativeUInt((i)*FParamBindBuffer.FBindOffsets.size)+FParamBindBuffer.FBindOffsets.buffer])^ := nil;
+JmpChunked:           Bind^.buffer_address^ := nil;
                       ChunkedData := True;
-                    end
-                    else {within buffer range}
-                    begin
-                      PPointer(@FParamBindBuffer.FBindArray[NativeUInt((i)*FParamBindBuffer.FBindOffsets.size)+FParamBindBuffer.FBindOffsets.buffer])^ := PBuffer; //adjust buffer entry again
-                      System.Move(CharRec.P^, PBuffer^, FColumnArray[I].Length+1); //trailing #0 included
-                    end;
-                  end
-                  else
-                  begin
+                    end else
+                      {$IFDEF FAST_MOVE}ZFastCode{$ELSE}System{$ENDIF}.Move(P^, PBuffer^, Bind^.Length);
+                  end else begin
                     TempAnsi := GetValidatedAnsiStringFromBuffer(TempBlob.GetBuffer,
                               TempBlob.Length, ConSettings);
                     TempBlob := TZAbstractClob.CreateWithData(Pointer(TempAnsi), Length(TempAnsi),
@@ -909,40 +792,55 @@ JmpClob:            CharRec.P := TempBlob.GetPAnsiChar(ConSettings^.ClientCodePa
             else
               begin
 JmpCharRec:     CharRec := ClientVarManager.GetAsCharRec(InParamValues[I], ConSettings^.ClientCodePage^.CP);
-                FColumnArray[I].Length := CharRec.Len;
+                Bind^.length := CharRec.Len;
                 if CharRec.Len > Cardinal(ChunkSize)-1 then
-                begin {out of buffer range}
-                  {now we've to set the Buffer of binding-record to nil to indicate we send data as chunks}
-                  PPointer(@FParamBindBuffer.FBindArray[NativeUInt((i)*FParamBindBuffer.FBindOffsets.size)+FParamBindBuffer.FBindOffsets.buffer])^ := nil;
-                  ChunkedData := True;
-                end
-                else
-                begin {within buffer range}
-                  PPointer(@FParamBindBuffer.FBindArray[NativeUInt((i)*FParamBindBuffer.FBindOffsets.size)+FParamBindBuffer.FBindOffsets.buffer])^ := PBuffer; //adjust buffer entry again
-                  System.Move(CharRec.P^, PBuffer^, CharRec.Len+1); //trailing #0 included
-                end;
+                  goto JmpChunked
+                else {within buffer range}
+                  {$IFDEF FAST_MOVE}ZFastCode{$ELSE}System{$ENDIF}.Move(CharRec.P^, PBuffer^, CharRec.Len); //trailing #0 included
               end;
           end;
         FIELD_TYPE_TINY_BLOB: {stBytes}
           begin
-            TempBytes := ClientVarManager.GetAsBytes(InParamValues[i]);
-            FColumnArray[I].Length := Length(TempBytes);
-            if FColumnArray[I].Length > Cardinal(ChunkSize) then
-            begin {out of buffer range}
-              {now we've to set the Buffer of binding-record to nil to indicate we send data as chunks}
-              PPointer(@FParamBindBuffer.FBindArray[NativeUInt((i)*FParamBindBuffer.FBindOffsets.size)+FParamBindBuffer.FBindOffsets.buffer])^ := nil;
-              ChunkedData := True;
-            end
+            P := Pointer(InParamValues[i].VBytes);
+            Bind^.length := Length(InParamValues[i].VBytes);
+            if Bind^.length > Cardinal(ChunkSize) then
+              {out of buffer range}
+              goto JmpChunked
             else
-            begin {within buffer range}
-              PPointer(@FParamBindBuffer.FBindArray[NativeUInt((i)*FParamBindBuffer.FBindOffsets.size)+FParamBindBuffer.FBindOffsets.buffer])^ := PBuffer; //adjust buffer entry again
-              System.Move(Pointer(TempBytes)^, PBuffer^, Length(TempBytes));
-            end;
+              if P = nil then
+                Bind^.is_null := 1
+              else
+                {$IFDEF FAST_MOVE}ZFastCode{$ELSE}System{$ENDIF}.Move(P^, PBuffer^, CharRec.Len);
+          end;
+        FIELD_TYPE_DATE:
+          begin
+            FillChar(PBuffer^, SizeOf(TMYSQL_TIME), {$IFDEF Use_FastCodeFillChar}#0{$ELSE}0{$ENDIF});
+            aTime := ClientVarManager.GetAsDateTime(InParamValues[i]);
+            DecodeDate(aTime, Year, Month, Day);
+            PMYSQL_TIME(PBuffer)^.neg := Ord(aTime < 0);
+            PMYSQL_TIME(PBuffer)^.year := year;
+            PMYSQL_TIME(PBuffer)^.month := month;
+            PMYSQL_TIME(PBuffer)^.day := day;
+            PMYSQL_TIME(PBuffer)^.time_type := MYSQL_TIMESTAMP_DATE;
+          end;
+        FIELD_TYPE_TIME:
+          begin
+            FillChar(PBuffer^, SizeOf(TMYSQL_TIME), {$IFDEF Use_FastCodeFillChar}#0{$ELSE}0{$ENDIF});
+            aTime := ClientVarManager.GetAsDateTime(InParamValues[i]);
+            DecodeTime(aTime, hour, minute, second, millisecond);
+            PMYSQL_TIME(PBuffer)^.neg := Ord(aTime < 0);
+            PMYSQL_TIME(PBuffer)^.hour := hour;
+            PMYSQL_TIME(PBuffer)^.minute := minute;
+            PMYSQL_TIME(PBuffer)^.second := second;
+            PMYSQL_TIME(PBuffer)^.second_part := millisecond;
+            PMYSQL_TIME(PBuffer)^.time_type := MYSQL_TIMESTAMP_TIME;
           end;
         FIELD_TYPE_DATETIME:
           begin
-            DecodeDateTime(ClientVarManager.GetAsDateTime(InParamValues[i]),
-              Year, Month, Day, hour, minute, second, millisecond);
+            FillChar(PBuffer^, SizeOf(TMYSQL_TIME), {$IFDEF Use_FastCodeFillChar}#0{$ELSE}0{$ENDIF});
+            aTime := ClientVarManager.GetAsDateTime(InParamValues[i]);
+            DecodeDateTime(aTime, Year, Month, Day, hour, minute, second, millisecond);
+            PMYSQL_TIME(PBuffer)^.neg := Ord(aTime < 0);
             PMYSQL_TIME(PBuffer)^.year := year;
             PMYSQL_TIME(PBuffer)^.month := month;
             PMYSQL_TIME(PBuffer)^.day := day;
@@ -950,26 +848,22 @@ JmpCharRec:     CharRec := ClientVarManager.GetAsCharRec(InParamValues[I], ConSe
             PMYSQL_TIME(PBuffer)^.minute := minute;
             PMYSQL_TIME(PBuffer)^.second := second;
             PMYSQL_TIME(PBuffer)^.second_part := millisecond;
+            PMYSQL_TIME(PBuffer)^.time_type := MYSQL_TIMESTAMP_DATETIME;
           end;
         FIELD_TYPE_BLOB:  //used for stBinaryStream only
           begin
             TempBlob := ClientVarManager.GetAsInterface(InParamValues[i]) as IZBlob;
             if TempBlob.IsEmpty then
-              FColumnArray[I].is_null := 1
+              Bind^.is_null := 1
             else
             begin
-              FColumnArray[I].Length := TempBlob.Length;
-              if FColumnArray[I].Length > Cardinal(ChunkSize) then
-              begin {out of buffer range}
-                {now we've to nil the BufferEntry of binding-record to indicate we send data as chunks}
-                PPointer(@FParamBindBuffer.FBindArray[NativeUInt((i)*FParamBindBuffer.FBindOffsets.size)+FParamBindBuffer.FBindOffsets.buffer])^ := nil;
-                ChunkedData := True;
-              end {within buffer range}
+              P := TempBlob.GetBuffer;
+              Bind^.Length := TempBlob.Length;
+              if Bind^.Length > Cardinal(ChunkSize) then
+                {out of buffer range}
+                goto JmpChunked
               else
-              begin
-                PPointer(@FParamBindBuffer.FBindArray[NativeUInt((i)*FParamBindBuffer.FBindOffsets.size)+FParamBindBuffer.FBindOffsets.buffer])^ := PBuffer; //adjust buffer entry again
-                System.Move(TempBlob.GetBuffer^, PBuffer^, FColumnArray[I].Length);
-              end;
+                {$IFDEF FAST_MOVE}ZFastCode{$ELSE}System{$ENDIF}.Move(P^, PBuffer^, Bind^.Length);
             end;
           end;
         FIELD_TYPE_NULL:;
@@ -977,9 +871,9 @@ JmpCharRec:     CharRec := ClientVarManager.GetAsCharRec(InParamValues[I], ConSe
     end;
   end;
 
-  if (FPlainDriver.BindParameters(FStmtHandle, FParamBindBuffer.GetBufferAddress) <> 0) then
+  if ChunkedData and (FPlainDriver.stmt_bind_param(FMYSQL_STMT, FParamBindBuffer.GetBufferAddress) <> 0) then
   begin
-    checkMySQLPrepStmtError (FPlainDriver, FStmtHandle, lcPrepStmt,
+    checkMySQLPrepStmtError (FPlainDriver, FMYSQL_STMT, lcPrepStmt,
       ConvertZMsgToRaw(SBindingFailure, ZMessages.cCodePage,
       ConSettings^.ClientCodePage^.CP), ConSettings);
     exit;
@@ -990,10 +884,11 @@ JmpInherited:
   if ChunkedData then
     // Send large blobs in chuncks
     for I := 0 to InParamCount - 1 do
-      if (FColumnArray[I].is_null = 0) and (PPointer(@FParamBindBuffer.FBindArray[NativeUInt((i)*FParamBindBuffer.FBindOffsets.size)+FParamBindBuffer.FBindOffsets.buffer])^ = nil) then
+    begin
+      Bind := @FColumnArray[I];
+      if (Bind^.is_null = 0) and (Bind^.buffer_address^ = nil) then
       begin
-        MyType := FParamBindBuffer.GetBufferType(I{$IFNDEF GENERIC_INDEX}+1{$ENDIF});
-        case MyType of
+        case Bind^.buffer_type of
           FIELD_TYPE_STRING:
             if inParamTypes[i] in [stAsciiStream, stUnicodeStream] then
             begin
@@ -1027,9 +922,9 @@ JmpInherited:
         begin
           if OffSet+PieceSize > Len then
             PieceSize := Len - OffSet;
-          if (FPlainDriver.SendPreparedLongData(FStmtHandle, I, P, PieceSize) <> 0) then
+          if (FPlainDriver.stmt_send_long_data(FMYSQL_STMT, I, P, PieceSize) <> 0) then
           begin
-            checkMySQLPrepStmtError (FPlainDriver, FStmtHandle, lcPrepStmt,
+            checkMySQLPrepStmtError (FPlainDriver, FMYSQL_STMT, lcPrepStmt,
               ConvertZMsgToRaw(SBindingFailure, ZMessages.cCodePage,
               ConSettings^.ClientCodePage^.CP), ConSettings);
             exit;
@@ -1039,6 +934,7 @@ JmpInherited:
         end;
         TempBlob:=nil;
       end;
+    end;
 end;
 {$WARNINGS ON}
 
@@ -1046,7 +942,6 @@ procedure TZMySQLPreparedStatement.UnPrepareInParameters;
 begin
   if Assigned(FParamBindBuffer) then
     FreeAndNil(FParamBindBuffer);
-  inherited UnPrepareInParameters;
 end;
 
 function TZMysqlPreparedStatement.GetCompareFirstKeywordStrings: TPreparablePrefixTokens;
@@ -1054,11 +949,14 @@ begin
   Result := FPreparablePrefixTokens;
 end;
 
-function TZMysqlPreparedStatement.getFieldType(SQLType: TZSQLType; Var Signed: Boolean): TMysqlFieldTypes;
+function TZMysqlPreparedStatement.getFieldType(SQLType: TZSQLType;
+  Var Signed: Boolean; MySQL_FieldType_Bit_1_IsBoolean: Boolean): TMysqlFieldTypes;
 begin
   Signed := SQLType in [stShort, stSmall, stInteger, stLong];
   case SQLType of
-    stBoolean:                Result := FIELD_TYPE_STRING;//does NOT WORK: FIELD_TYPE_ENUM('Y'/'N'), TINY LEADS to truncations ):
+    stBoolean:  if MySQL_FieldType_Bit_1_IsBoolean
+                then Result := FIELD_TYPE_TINY
+                else Result := FIELD_TYPE_STRING;//does NOT WORK: FIELD_TYPE_ENUM('Y'/'N'), TINY LEADS to truncations ):
     stByte, stShort:          Result := FIELD_TYPE_TINY;
     stWord, stSmall:          Result := FIELD_TYPE_SHORT;
     stLongWord, stInteger:    Result := FIELD_TYPE_LONG;
@@ -1068,8 +966,9 @@ begin
     stCurrency, stBigDecimal: Result := FIELD_TYPE_DOUBLE;
     stString, stUnicodeString,
     stGUID:                   Result := FIELD_TYPE_STRING;
-    stBytes:                  Result := FIELD_TYPE_TINY_BLOB;
-    stDate, stTime,
+    stBytes:                  Result := FIELD_TYPE_TINY_BLOB; //just indicate stBytes
+    stDate:                   Result := FIELD_TYPE_DATE;
+    stTime:                   Result := FIELD_TYPE_TIME;
     stTimestamp:              Result := FIELD_TYPE_DATETIME;
     stAsciiStream,
     stUnicodeStream:          Result := FIELD_TYPE_STRING; //all text data need to submitted as this!
@@ -1089,16 +988,17 @@ end;
 }
 function TZMySQLPreparedStatement.ExecuteQueryPrepared: IZResultSet;
 begin
-  Prepare;
   Result := nil;
+  PrepareOpenResultSetForReUse;
+  Prepare;
   BindInParameters;
-  if (self.FPlainDriver.ExecuteStmt(FStmtHandle) <> 0) then
-      checkMySQLPrepStmtError(FPlainDriver,FStmtHandle, lcExecPrepStmt,
+  if (FPlainDriver.stmt_execute(FMYSQL_STMT) <> 0) then
+      checkMySQLPrepStmtError(FPlainDriver,FMYSQL_STMT, lcExecPrepStmt,
         ConvertZMsgToRaw(SPreparedStmtExecFailure, ZMessages.cCodePage,
         ConSettings^.ClientCodePage^.CP), ConSettings);
-  if FPlainDriver.GetPreparedFieldCount(FStmtHandle) = 0 then
-    raise EZSQLException.Create(SCanNotOpenResultSet);
-  Result := CreateResultSet(SQL);
+  if FPlainDriver.stmt_field_count(FMYSQL_STMT) = 0
+  then raise EZSQLException.Create(SCanNotOpenResultSet)
+  else Result := CreateResultSet(SQL);
   inherited ExecuteQueryPrepared;
 end;
 
@@ -1114,30 +1014,36 @@ end;
 }
 function TZMySQLPreparedStatement.ExecuteUpdatePrepared: Integer;
 begin
+  if Assigned(FOpenResultSet)
+  then IZResultSet(FOpenResultSet).Close;
   Prepare;
   BindInParameters;
-  if (self.FPlainDriver.ExecuteStmt(FStmtHandle) <> 0) then
-    checkMySQLPrepStmtError(FPlainDriver,FStmtHandle, lcExecPrepStmt,
+  if (FPlainDriver.stmt_execute(FMYSQL_STMT) <> 0) then
+    checkMySQLPrepStmtError(FPlainDriver,FMYSQL_STMT, lcExecPrepStmt,
       ConvertZMsgToRaw(SPreparedStmtExecFailure, ZMessages.cCodePage,
         ConSettings^.ClientCodePage^.CP),
       ConSettings);
 
   { Process queries with result sets }
-  if FPlainDriver.GetPreparedFieldCount(FStmtHandle) > 0 then
-  begin
-    FPlainDriver.StorePreparedResult(FStmtHandle);
-    Result := FPlainDriver.GetPreparedAffectedRows(FStmtHandle);
-    if Assigned(FStmtHandle) then
-    begin
-      FPlainDriver.FreePreparedResult(FStmtHandle);
-      while(FPlainDriver.GetPreparedNextResult(FStmtHandle) = 0) do
-        FPlainDriver.FreePreparedResult(FStmtHandle);
-    end;
-  end { Process regular query }
-  else
-    Result := FPlainDriver.GetPreparedAffectedRows(FStmtHandle);
+  if FPlainDriver.stmt_field_count(FMYSQL_STMT) > 0 then begin
+    FPlainDriver.stmt_store_result(FMYSQL_STMT);
+    Result := FPlainDriver.stmt_affected_rows(FMYSQL_STMT);
+    FPlainDriver.stmt_free_result(FMYSQL_STMT);
+  end else { Process regular query }
+    Result := FPlainDriver.stmt_affected_rows(FMYSQL_STMT);
   LastUpdateCount := Result;
   Inherited ExecuteUpdatePrepared;
+end;
+
+procedure TZMySQLPreparedStatement.FlushPendingResults;
+begin
+  if FMYSQL_STMT <> nil then
+    while FPlainDriver.stmt_next_result(FMYSQL_STMT) = 0 do
+      if FPlainDriver.stmt_field_count(FMYSQL_STMT) > 0 then begin
+        FPlainDriver.stmt_store_result(FMYSQL_STMT);
+        FPlainDriver.stmt_free_result(FMYSQL_STMT);
+        Inc(FResultsCount);
+      end;
 end;
 
 {**
@@ -1150,30 +1056,38 @@ end;
 }
 function TZMySQLPreparedStatement.ExecutePrepared: Boolean;
 begin
+  Result := False;
+  PrepareLastResultSetForReUse;
   Prepare;
   BindInParameters;
-  if (FPlainDriver.ExecuteStmt(FStmtHandle) <> 0) then
-    checkMySQLPrepStmtError(FPlainDriver,FStmtHandle, lcExecPrepStmt,
+  if (FPlainDriver.stmt_execute(FMYSQL_STMT) <> 0) then
+    checkMySQLPrepStmtError(FPlainDriver,FMYSQL_STMT, lcExecPrepStmt,
       ConvertZMsgToRaw(SPreparedStmtExecFailure, ZMessages.cCodePage,
         ConSettings^.ClientCodePage^.CP), ConSettings);
-  if FPlainDriver.GetPreparedFieldCount(FStmtHandle) > 0 then
-  begin
+  if FPlainDriver.stmt_field_count(FMYSQL_STMT) > 0 then begin
     Result := True;
     LastResultSet := CreateResultSet(SQL);
-  end
-  { Processes regular query. }
-  else
-  begin
-    Result := False;
-    LastUpdateCount := FPlainDriver.GetPreparedAffectedRows(FStmtHandle);
-  end;
-
+  end else { Processes regular query. }
+    LastUpdateCount := FPlainDriver.stmt_affected_rows(FMYSQL_STMT);
   inherited ExecutePrepared;
 end;
 
-function TZMySQLPreparedStatement.GetStmtHandle: PZMySqlPrepStmt;
+{**
+  Returns the current result as an update count;
+  if the result is a <code>ResultSet</code> object or there are no more results, -1
+  is returned. This method should be called only once per result.
+
+  @return the current result as an update count; -1 if the current result is a
+    <code>ResultSet</code> object or there are no more results
+  @see #execute
+}
+function TZMySQLPreparedStatement.GetUpdateCount: Integer;
 begin
-  Result := FStmtHandle;
+  Result := inherited GetUpdateCount;
+  if (Result = -1) and Assigned(fMySQL) and (FPlainDriver.Field_Count(fMySQL) = 0) then begin
+    LastUpdateCount := FPlainDriver.GetAffectedRows(fMySQL);
+    Result := LastUpdateCount;
+  end;
 end;
 
 { TZMySQLCallableStatement }
@@ -1273,75 +1187,13 @@ end;
     or <code>DELETE</code> statements, or 0 for SQL statements that return nothing
 }
 function TZMySQLCallableStatement.PrepareAnsiSQLParam(ParamIndex: Integer): RawByteString;
-var
-  Value: TZVariant;
-  TempBytes: TBytes;
-  TempBlob: IZBlob;
 begin
-  TempBytes := nil;
   if InParamCount <= ParamIndex then
     raise EZSQLException.Create(SInvalidInputParameterCount);
 
-  Value := InParamValues[ParamIndex];
-  if ClientVarManager.IsNull(Value) then
-    if FUseDefaults and (InParamDefaultValues[ParamIndex] <> '') then
-      Result := ConSettings^.ConvFuncs.ZStringToRaw(InParamDefaultValues[ParamIndex],
-        ConSettings^.CTRL_CP, ConSettings^.ClientCodePage^.CP)
-    else
-      Result := 'NULL'
-  else
-  begin
-    case InParamTypes[ParamIndex] of
-      stBoolean:
-        if ClientVarManager.GetAsBoolean(Value) then
-          Result := '''Y'''
-        else
-          Result := '''N''';
-      stByte, stShort, stWord, stSmall, stLongWord, stInteger, stUlong, stLong,
-      stFloat, stDouble, stCurrency, stBigDecimal:
-        Result := ClientVarManager.GetAsRawByteString(Value);
-      stBytes:
-        begin
-          TempBytes := ClientVarManager.GetAsBytes(Value);
-          Result := GetSQLHexAnsiString(PAnsiChar(TempBytes), Length(TempBytes));
-        end;
-      stString, stUnicodeString:
-        Result := FPlainDriver.EscapeString(FHandle, ClientVarManager.GetAsRawByteString(Value), ConSettings, True);
-      stDate:
-        Result := DateTimeToRawSQLDate(ClientVarManager.GetAsDateTime(Value),
-          ConSettings^.WriteFormatSettings, True);
-      stTime:
-        Result := DateTimeToRawSQLTime(ClientVarManager.GetAsDateTime(Value),
-          ConSettings^.WriteFormatSettings, True);
-      stTimestamp:
-        Result := DateTimeToRawSQLTimeStamp(ClientVarManager.GetAsDateTime(Value),
-          ConSettings^.WriteFormatSettings, True);
-      stAsciiStream, stUnicodeStream, stBinaryStream:
-        begin
-          TempBlob := ClientVarManager.GetAsInterface(Value) as IZBlob;
-          if not TempBlob.IsEmpty then
-            case InParamTypes[ParamIndex] of
-              stBinaryStream:
-                Result := GetSQLHexAnsiString(TempBlob.GetBuffer, TempBlob.Length);
-              else
-                if TempBlob.IsClob then
-                  Result := FPlainDriver.EscapeString(FHandle,
-                    TempBlob.GetRawByteString, ConSettings, True)
-                else
-                  Result := FPlainDriver.EscapeString(FHandle,
-                    GetValidatedAnsiStringFromBuffer(TempBlob.GetBuffer,
-                    TempBlob.Length, ConSettings), ConSettings, True);
-            end
-          else
-            Result := 'NULL';
-        end;
-    end;
-  end;
-end;
-
-function TZMySQLCallableStatement.GetStmtHandle: PZMySqlPrepStmt;
-begin
-  Result := nil;
+  Result := ZDbcMySQLUtils.MySQLPrepareAnsiSQLParam(GetConnection as IZMySQLConnection,
+    InParamValues[ParamIndex], InParamDefaultValues[ParamIndex], ClientVarManager,
+    InParamTypes[ParamIndex], FUseDefaults);
 end;
 
 procedure TZMySQLCallableStatement.ClearResultSets;
@@ -1371,10 +1223,10 @@ begin
       Inc(i);
     end;
   if not (ExecQuery = '') then
-    if FPlainDriver.ExecQuery(Self.FHandle, Pointer(ExecQuery)) = 0 then
+    if FPlainDriver.ExecRealQuery(Self.fMySQL, Pointer(ExecQuery), Length(ExecQuery)) = 0 then
       DriverManager.LogMessage(lcBindPrepStmt, ConSettings^.Protocol, ExecQuery)
     else
-      CheckMySQLError(FPlainDriver, FHandle, lcExecute, ExecQuery, ConSettings);
+      CheckMySQLError(FPlainDriver, fMySQL, lcExecute, ExecQuery, ConSettings);
 end;
 
 {**
@@ -1384,16 +1236,15 @@ end;
 function TZMySQLCallableStatement.CreateResultSet(const SQL: string): IZResultSet;
 var
   CachedResolver: TZMySQLCachedResolver;
-  NativeResultSet: TZMySQLResultSet;
+  NativeResultSet: TZMySQL_Store_ResultSet;
   CachedResultSet: TZCachedResultSet;
 begin
-  NativeResultSet := TZMySQLResultSet.Create(FPlainDriver, Self, SQL, FHandle,
-    FUseResult, @LastUpdateCount, not IsFunction);
-  NativeResultSet.SetConcurrency(rcReadOnly);
+  NativeResultSet := TZMySQL_Store_ResultSet.Create(FPlainDriver, Self, SQL, fMySQL,
+    @LastUpdateCount);
   if (GetResultSetConcurrency <> rcReadOnly) or (FUseResult
     and (GetResultSetType <> rtForwardOnly)) or (not IsFunction) then
   begin
-    CachedResolver := TZMySQLCachedResolver.Create(FPlainDriver, FHandle, Self,
+    CachedResolver := TZMySQLCachedResolver.Create(FPlainDriver, fMySQL, Self,
       NativeResultSet.GetMetaData);
     CachedResultSet := TZCachedResultSet.Create(NativeResultSet, SQL,
       CachedResolver, ConSettings);
@@ -1402,7 +1253,7 @@ begin
       Resultsets}
     CachedResultSet.AfterLast;//Fetch all
     CachedResultSet.BeforeFirst;//Move to first pos
-    NativeResultSet.ReleaseHandle; //Release the handles
+    NativeResultSet.ResetCursor; //Release the handles
     Result := CachedResultSet;
   end
   else
@@ -1442,12 +1293,12 @@ begin
                 FParamTypeNames[ParameterIndex] := '';
 end;
 
-constructor TZMySQLCallableStatement.Create(PlainDriver: IZMySQLPlainDriver;
-  Connection: IZConnection; const SQL: string; Info: TStrings;
-  Handle: PZMySQLConnect);
+constructor TZMySQLCallableStatement.Create(const PlainDriver: IZMySQLPlainDriver;
+  const Connection: IZConnection; const SQL: string; const Info: TStrings;
+  Handle: PMySQL);
 begin
   inherited Create(Connection, SQL, Info);
-  FHandle := Handle;
+  fMySQL := Handle;
   FPlainDriver := PlainDriver;
   ResultSetType := rtScrollInsensitive;
   FUseResult := StrToBoolEx(DefineStatementParameter(Self, 'useresult', 'false'));
@@ -1464,27 +1315,27 @@ function TZMySQLCallableStatement.ExecuteQuery(const SQL: RawByteString): IZResu
 begin
   Result := nil;
   ASQL := SQL;
-  if FPlainDriver.ExecQuery(FHandle, Pointer(SQL)) = 0 then
+  if FPlainDriver.ExecRealQuery(fMySQL, Pointer(ASQL), Length(ASQL)) = 0 then
   begin
     DriverManager.LogMessage(lcExecute, ConSettings^.Protocol, ASQL);
-    if not FPlainDriver.ResultSetExists(FHandle) then
+    if FPlainDriver.Field_Count(fMySQL) = 0 then
       raise EZSQLException.Create(SCanNotOpenResultSet);
     if IsFunction then
       ClearResultSets;
     FResultSets.Add(CreateResultSet(Self.SQL));
-    if FPlainDriver.CheckAnotherRowset(FHandle) then
+    if FPlainDriver.CheckAnotherRowset(fMySQL) then
     begin
-      while FPlainDriver.RetrieveNextRowset(FHandle) = 0 do
-        if FPlainDriver.CheckAnotherRowset(FHandle) then
+      while FPlainDriver.RetrieveNextRowset(fMySQL) = 0 do
+        if FPlainDriver.CheckAnotherRowset(fMySQL) then
           FResultSets.Add(CreateResultSet(Self.SQL))
         else break;
-      CheckMySQLError(FPlainDriver, FHandle, lcExecute, ASQL, ConSettings);
+      CheckMySQLError(FPlainDriver, fMySQL, lcExecute, ASQL, ConSettings);
     end;
     FActiveResultset := FResultSets.Count-1;
     Result := IZResultSet(FResultSets[FActiveResultset]);
   end
   else
-    CheckMySQLError(FPlainDriver, FHandle, lcExecute, ASQL, ConSettings);
+    CheckMySQLError(FPlainDriver, fMySQL, lcExecute, ASQL, ConSettings);
 end;
 
 {**
@@ -1502,25 +1353,24 @@ function TZMySQLCallableStatement.ExecuteUpdate(const SQL: RawByteString): Integ
 begin
   Result := -1;
   ASQL := SQL;
-  if FPlainDriver.ExecQuery(FHandle, PAnsiChar(ASQL)) = 0 then
+  if FPlainDriver.ExecRealQuery(fMySQL, Pointer(ASQL), Length(ASQL)) = 0 then
   begin
     { Process queries with result sets }
-    if FPlainDriver.ResultSetExists(FHandle) then
-    begin
+    if FPlainDriver.Field_Count(fMySQL) > 0 then begin
       ClearResultSets;
       FActiveResultset := 0;
       FResultSets.Add(CreateResultSet(Self.SQL));
-      if FPlainDriver.CheckAnotherRowset(FHandle) then
+      if FPlainDriver.CheckAnotherRowset(fMySQL) then
       begin
         Result := LastUpdateCount;
-        while FPlainDriver.RetrieveNextRowset(FHandle) = 0 do
-          if FPlainDriver.CheckAnotherRowset(FHandle) then
+        while FPlainDriver.RetrieveNextRowset(fMySQL) = 0 do
+          if FPlainDriver.CheckAnotherRowset(fMySQL) then
           begin
             FResultSets.Add(CreateResultSet(Self.SQL));
             inc(Result, LastUpdateCount); //LastUpdateCount will be returned from ResultSet.Open
           end
           else break;
-        CheckMySQLError(FPlainDriver, FHandle, lcExecute, ASQL, ConSettings);
+        CheckMySQLError(FPlainDriver, fMySQL, lcExecute, ASQL, ConSettings);
       end
       else
         Result := LastUpdateCount;
@@ -1528,10 +1378,10 @@ begin
       LastResultSet := IZResultSet(FResultSets[FActiveResultset]);
     end
     else { Process regular query }
-      Result := FPlainDriver.GetAffectedRows(FHandle);
+      Result := FPlainDriver.GetAffectedRows(fMySQL);
   end
   else
-    CheckMySQLError(FPlainDriver, FHandle, lcExecute, ASQL, ConSettings);
+    CheckMySQLError(FPlainDriver, fMySQL, lcExecute, ASQL, ConSettings);
   LastUpdateCount := Result;
 end;
 
@@ -1556,30 +1406,19 @@ end;
   <code>false</code> if it is an update count or there are no more results
 }
 function TZMySQLCallableStatement.Execute(const SQL: RawByteString): Boolean;
-var
-  HasResultset : Boolean;
 begin
   Result := False;
   ASQL := SQL;
-  if FPlainDriver.ExecQuery(FHandle, Pointer(ASQL)) = 0 then
-  begin
+  if FPlainDriver.ExecRealQuery(fMySQL, Pointer(ASQL), Length(ASQL)) = 0 then begin
     DriverManager.LogMessage(lcExecute, ConSettings^.Protocol, ASQL);
-    HasResultSet := FPlainDriver.ResultSetExists(FHandle);
     { Process queries with result sets }
-    if HasResultSet then
-    begin
+    if FPlainDriver.Field_Count(fMySQL) > 0 then begin
       Result := True;
       LastResultSet := CreateResultSet(Self.SQL);
-    end
-    { Processes regular query. }
-    else
-    begin
-      Result := False;
-      LastUpdateCount := FPlainDriver.GetAffectedRows(FHandle);
-    end;
-  end
-  else
-    CheckMySQLError(FPlainDriver, FHandle, lcExecute, ASQL, ConSettings);
+    end else { Processes regular query. }
+      LastUpdateCount := FPlainDriver.GetAffectedRows(fMySQL);
+  end else
+    CheckMySQLError(FPlainDriver, fMySQL, lcExecute, ASQL, ConSettings);
 end;
 
 {**
@@ -1657,15 +1496,6 @@ begin
 end;
 
 {**
-  Are more resultsets retrieved?
-  @result Returns <code>True</code> if more resultsets are retrieved
-}
-function TZMySQLCallableStatement.HasMoreResultSets: Boolean;
-begin
-  Result := FResultSets.Count > 1;
-end;
-
-{**
   Get the first resultset..
   @result <code>IZResultSet</code> if supported
 }
@@ -1732,6 +1562,26 @@ begin
 end;
 
 {**
+  Moves to a <code>Statement</code> object's next result.  It returns
+  <code>true</code> if this result is a <code>ResultSet</code> object.
+  This method also implicitly closes any current <code>ResultSet</code>
+  object obtained with the method <code>getResultSet</code>.
+
+  <P>There are no more results when the following is true:
+  <PRE>
+        <code>(!getMoreResults() && (getUpdateCount() == -1)</code>
+  </PRE>
+
+ @return <code>true</code> if the next result is a <code>ResultSet</code> object;
+   <code>false</code> if it is an update count or there are no more results
+ @see #execute
+}
+function TZMySQLCallableStatement.GetMoreResults: Boolean;
+begin
+  Result := FResultSets.Count > 0;
+end;
+
+{**
   First ResultSet?
   @result <code>True</code> if first ResultSet
 }
@@ -1788,103 +1638,133 @@ begin
   setlength(FBindArray,BindCount*FBindOffsets.size);
 end;
 
-function TZMySQLAbstractBindBuffer.GetColumnArray: TZMysqlColumnBuffer;
-begin
-  result := FPColumnArray^;
-end;
-
 function TZMySQLAbstractBindBuffer.GetBufferAddress: Pointer;
 begin
+  {$R-}
   result := @FBindArray[0];
-end;
-
-function TZMySQLAbstractBindBuffer.GetBufferType(ColumnIndex: Integer): TMysqlFieldTypes;
-begin
-  result := PTMysqlFieldTypes(@FbindArray[NativeUInt((ColumnIndex{$IFNDEF GENERIC_INDEX}-1{$ENDIF})*FBindOffsets.size)+FBindOffsets.buffer_type])^;
-end;
-
-function TZMySQLAbstractBindBuffer.GetBufferIsSigned(ColumnIndex: Integer): Boolean;
-begin
-  result := PByte(@FbindArray[NativeUInt((ColumnIndex{$IFNDEF GENERIC_INDEX}-1{$ENDIF})*FBindOffsets.size)+FBindOffsets.is_unsigned])^ = 0;
+  {$R+}
 end;
 
 { TZMySQLResultSetBindBuffer }
 
-procedure TZMySQLResultSetBindBuffer.AddColumn(PlainDriver: IZMysqlPlainDriver;
-  const FieldHandle: PZMySQLField);
+procedure TZMySQLResultSetBindBuffer.AddColumn(MYSQL_FIELD: PMYSQL_FIELD);
 var
-  buffertype: TMysqlFieldTypes;
   ColOffset: NativeUInt;
+  Bind: PDOBindRecord2;
 begin
-  buffertype := PlainDriver.GetFieldType(FieldHandle);
-  With FPColumnArray^[FAddedColumnCount] do
-  begin
-    case buffertype of
-      FIELD_TYPE_DATE:        Length := sizeOf(MYSQL_TIME);
-      FIELD_TYPE_TIME:        Length := sizeOf(MYSQL_TIME);
-      FIELD_TYPE_DATETIME:    Length := sizeOf(MYSQL_TIME);
-      FIELD_TYPE_TIMESTAMP:   Length := sizeOf(MYSQL_TIME);
-      FIELD_TYPE_TINY:        Length := 1;
-      FIELD_TYPE_SHORT:       Length := 2;
-      FIELD_TYPE_LONG:        Length := 4;
-      FIELD_TYPE_LONGLONG:    Length := 8;
-      FIELD_TYPE_FLOAT:       Length := 4;
-      FIELD_TYPE_DOUBLE:      Length := 8;
-      FIELD_TYPE_BLOB,
-      FIELD_TYPE_MEDIUM_BLOB,
-      FIELD_TYPE_LONG_BLOB,
-      FIELD_TYPE_GEOMETRY:
-        Length := PlainDriver.GetFieldMaxLength(FieldHandle)+1;
-      FIELD_TYPE_VARCHAR,
-      FIELD_TYPE_VAR_STRING,
-      FIELD_TYPE_STRING:
-          Length := Min(MaxBlobSize, Max(PlainDriver.GetFieldLength(FieldHandle), PlainDriver.GetFieldMaxLength(FieldHandle)))+1;
-    else
-      Length := PlainDriver.GetFieldLength(FieldHandle);
-    end;
-    SetLength(Buffer, Length);
+  Bind := @FPColumnArray^[FAddedColumnCount];
+  bind^.buffer_type := MYSQL_FIELD^._type; //safe initialtype
+  bind^.binary := (MYSQL_FIELD^.flags and BINARY_FLAG) <> 0;
+  case MYSQL_FIELD^._type of
+    FIELD_TYPE_BIT: case MYSQL_FIELD^.length of
+                      0..8  : bind^.Length := SizeOf(Byte);
+                      9..16 : bind^.Length := SizeOf(Word);
+                      17..32: bind^.Length := SizeOf(LongWord);
+                      else    bind^.Length := SizeOf(UInt64);
+                    end;
+    FIELD_TYPE_DATE:        bind^.Length := sizeOf(TMYSQL_TIME);
+    FIELD_TYPE_TIME:        bind^.Length := sizeOf(TMYSQL_TIME);
+    FIELD_TYPE_DATETIME:    bind^.Length := sizeOf(TMYSQL_TIME);
+    FIELD_TYPE_TIMESTAMP:   bind^.Length := sizeOf(TMYSQL_TIME);
+    FIELD_TYPE_TINY:        bind^.Length := 1;
+    FIELD_TYPE_SHORT:       bind^.Length := 2;
+    FIELD_TYPE_LONG:        bind^.Length := 4;
+    FIELD_TYPE_LONGLONG:    bind^.Length := 8;
+    FIELD_TYPE_INT24: //we've no 3Byte integers... so let's convert them
+      begin
+        bind^.Length := 4;
+        bind^.buffer_type := FIELD_TYPE_LONG;
+      end;
+    FIELD_TYPE_FLOAT:       bind^.Length := 4;
+    FIELD_TYPE_DOUBLE:      bind^.Length := 8;
+    FIELD_TYPE_BLOB,
+    FIELD_TYPE_TINY_BLOB,
+    FIELD_TYPE_MEDIUM_BLOB,
+    FIELD_TYPE_LONG_BLOB,
+    FIELD_TYPE_GEOMETRY:    bind^.Length := 0;//http://bugs.mysql.com/file.php?id=12361&bug_id=33086
+    FIELD_TYPE_VARCHAR,
+    FIELD_TYPE_VAR_STRING,
+    FIELD_TYPE_STRING:
+      begin
+        bind^.buffer_type := FIELD_TYPE_STRING;
+        bind^.Length := MYSQL_FIELD^.length+Byte(Ord(not bind^.Binary));
+        bind^.Length := (((bind^.Length -1) shr 3)+1) shl 3; //8Byte Aligned
+      end;
+    FIELD_TYPE_NEWDECIMAL,
+    FIELD_TYPE_DECIMAL:
+      begin //force binary conversion to double values!
+        bind^.buffer_type := FIELD_TYPE_DOUBLE;
+        bind^.Length := 8;
+      end;
+  else
+    bind^.Length := (((MYSQL_FIELD^.length -1) shr 3)+1) shl 3; //8Byte Aligned
+    //Length := MYSQL_FIELD^.length;
   end;
-  ColOffset := NativeUInt((FAddedColumnCount)*FBindOffsets.size);
-  PTMysqlFieldTypes(@FbindArray[ColOffset+FBindOffsets.buffer_type])^ := buffertype;
-  PULong(@FbindArray[ColOffset+FBindOffsets.buffer_length])^ := FPColumnArray^[FAddedColumnCount].length;
-  PByte(@FbindArray[ColOffset+FBindOffsets.is_unsigned])^:= PlainDriver.GetFieldFlags(FieldHandle) and UNSIGNED_FLAG;
-  PPointer(@FbindArray[ColOffset+FBindOffsets.buffer])^:= @FPColumnArray^[FAddedColumnCount].buffer[0];
-  PPointer(@FbindArray[ColOffset+FBindOffsets.length])^:= @FPColumnArray^[FAddedColumnCount].length;
-  PPointer(@FbindArray[ColOffset+FBindOffsets.is_null])^:= @FPColumnArray^[FAddedColumnCount].is_null;
+  SetLength(Bind^.Buffer, bind^.Length+LongWord(Ord(
+    (bind^.buffer_type in [FIELD_TYPE_STRING, FIELD_TYPE_ENUM, FIELD_TYPE_SET]) and not bind^.Binary)));
+  ColOffset := NativeUInt(FAddedColumnCount*FBindOffsets.size);
+  Bind^.mysql_bind := @FbindArray[ColOffset]; //save address
+  bind^.buffer_address := @FbindArray[ColOffset+FBindOffsets.buffer]; //save address
+  Bind^.buffer_Length_address := @FbindArray[ColOffset+FBindOffsets.buffer_length]; //save address
+  Bind^.buffer_type_address := @FbindArray[ColOffset+FBindOffsets.buffer_type];
+  Bind^.is_signed := MYSQL_FIELD.flags and UNSIGNED_FLAG = 0;
+  Bind^.buffer_type_address^ := bind^.buffer_type;
+
+  PULong(Bind^.buffer_Length_address)^ := Bind^.length;
+  PByte(@FbindArray[ColOffset+FBindOffsets.is_unsigned])^:= Ord(not Bind^.is_signed);
+  PPointer(@FbindArray[ColOffset+FBindOffsets.buffer])^:= Pointer(Bind^.buffer);
+  PPointer(@FbindArray[ColOffset+FBindOffsets.length])^:= @Bind^.length;
+  PPointer(@FbindArray[ColOffset+FBindOffsets.is_null])^:= @Bind^.is_null;
   Inc(FAddedColumnCount);
 end;
 
 { TZMySQLParamBindBuffer }
 
-constructor TZMySQLParamBindBuffer.Create(PlainDriver:IZMysqlPlainDriver;
-  const BindCount : Integer; var ColumnArray: TZMysqlColumnBuffer);
-begin
-  inherited Create(PlainDriver, BindCount, ColumnArray);
-  SetLength(FInitialMySQLTypes, BindCount);
-  SetLength(FInitialLengths, BindCount);
-end;
-
 procedure TZMySQLParamBindBuffer.AddColumn(buffertype: TMysqlFieldTypes;
-  const field_length: integer; const Signed: Boolean);
+  field_length: integer; is_signed: Boolean);
 var
   ColOffset:NativeUInt;
+  Bind: PDOBindRecord2;
 begin
-  FInitialMySQLTypes[FAddedColumnCount] := buffertype;
-  //ludob: mysql adds terminating #0 on top of data. Avoid buffer overrun.
-  FInitialLengths[FAddedColumnCount] := field_length+
-    Ord(buffertype in [FIELD_TYPE_ENUM, FIELD_TYPE_DECIMAL, FIELD_TYPE_MEDIUM_BLOB,
-      FIELD_TYPE_LONG_BLOB, FIELD_TYPE_BLOB, FIELD_TYPE_VAR_STRING, FIELD_TYPE_STRING]);
-  SetLength(FPColumnArray^[FAddedColumnCount].buffer, FInitialLengths[FAddedColumnCount]);
+  ColOffset:=NativeUInt(FAddedColumnCount*FBindOffsets.size);
 
-  FPColumnArray^[FAddedColumnCount].is_null := Ord(buffertype = FIELD_TYPE_NULL);
-  ColOffset:=NativeUInt((FAddedColumnCount)*FBindOffsets.size);
-  PTMysqlFieldTypes(@FbindArray[ColOffset+FBindOffsets.buffer_type])^ := buffertype;
-  PULong(@FbindArray[ColOffset+FBindOffsets.buffer_length])^ := FInitialLengths[FAddedColumnCount];
-  PByte(@FbindArray[ColOffset+FBindOffsets.is_unsigned])^ := Ord(not Signed);
-  PPointer(@FbindArray[ColOffset+FBindOffsets.buffer])^ := @FPColumnArray^[FAddedColumnCount].buffer[0];
-  PPointer(@FbindArray[ColOffset+FBindOffsets.length])^ := @FPColumnArray^[FAddedColumnCount].length;
-  PPointer(@FbindArray[ColOffset+FBindOffsets.is_null])^ := @FPColumnArray^[FAddedColumnCount].is_null;
+  Bind := @FPColumnArray^[FAddedColumnCount];
+  Bind^.mysql_bind := @FbindArray[ColOffset]; //save address
+  bind^.buffer_address := @FbindArray[ColOffset+FBindOffsets.buffer]; //save address
+  Bind^.buffer_Length_address := @FbindArray[ColOffset+FBindOffsets.buffer_length]; //save address
+  Bind^.buffer_type := buffertype; //save initial type
+  Bind^.is_signed := is_signed;
+  Bind^.buffer_type_address := @FbindArray[ColOffset+FBindOffsets.buffer_type];
+
+  //ludob: mysql adds terminating #0 on top of data. Avoid buffer overrun.
+  Bind^.length := field_length+Ord(buffertype in
+    [FIELD_TYPE_ENUM, FIELD_TYPE_DECIMAL, FIELD_TYPE_MEDIUM_BLOB,
+     FIELD_TYPE_LONG_BLOB, FIELD_TYPE_BLOB, FIELD_TYPE_VAR_STRING, FIELD_TYPE_STRING]);
+  SetLength(Bind^.buffer, Bind^.length);
+
+  Bind^.is_null := Ord(buffertype = FIELD_TYPE_NULL);
+  Bind^.buffer_type_address^ := buffertype;
+  PULong(Bind^.buffer_Length_address)^ := Bind^.length;
+  PByte(@FbindArray[ColOffset+FBindOffsets.is_unsigned])^ := Ord(not is_signed);
+  bind^.buffer_address^ := Pointer(Bind^.buffer);
+  PPointer(@FbindArray[ColOffset+FBindOffsets.length])^ := @Bind^.length;
+  PPointer(@FbindArray[ColOffset+FBindOffsets.is_null])^ := @Bind^.is_null;
   Inc(FAddedColumnCount);
+end;
+
+{ TZMySQLStatement }
+
+{**
+  Constructs this object and assignes the main properties.
+  @param PlainDriver a native MySQL Plain driver.
+  @param Connection a database connection object.
+  @param Info a statement parameters.
+  @param Handle a connection handle pointer.
+}
+constructor TZMySQLStatement.Create(const PlainDriver: IZMySQLPlainDriver;
+  const Connection: IZConnection; const Info: TStrings; Handle: PMySQL);
+begin
+  inherited Create(PlainDriver, Connection, '', Info, Handle);
 end;
 
 initialization

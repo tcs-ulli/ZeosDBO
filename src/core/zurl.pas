@@ -56,13 +56,13 @@ uses
   SysUtils;
 
 type
+  // List of URL properties that could operate with URL-escaped strings
   TZURLStringList = Class(TStringList)
   protected
-    function GetTextStr: string; override;
-    procedure SetTextStr(const Value: string); override;
     function GetURLText: String;
+    procedure SetURLText(const Value: string);
   public
-    property URLText: String read GetURLText;
+    property URLText: String read GetURLText write SetURLText;
   end;
 
   TZURL = class
@@ -92,7 +92,6 @@ type
     function GetURL: string;
     procedure SetURL(const Value: string);
     procedure DoOnPropertiesChange(Sender: TObject);
-    function GetParamAndValue(AString: String; Var Param, Value: String): Boolean;
     procedure AddValues(Values: TStrings);
   public
     constructor Create; overload;
@@ -119,26 +118,34 @@ type
 
 implementation
 
-uses ZCompatibility, StrUtils, ZFastCode;
+uses ZCompatibility, ZFastCode, ZSysUtils;
+
+// escape the ';' char to #9 and LineEnding to ';'
+function Escape(const S: string): string; {$IFDEF WITH_INLINE}inline;{$ENDIF}
+begin
+  Result := ReplaceChar(';', #9, S);
+  Result := StringReplace(Result, LineEnding, ';', [rfReplaceAll]);
+end;
+
+// unescape the ';' to LineEnding and #9 char to ';'
+function UnEscape(const S: string): string; {$IFDEF WITH_INLINE}inline;{$ENDIF}
+begin
+  Result := StringReplace(S, ';', LineEnding, [rfReplaceAll]);
+  Result := ReplaceChar(#9, ';', Result);
+end;
 
 {TZURLStringList}
-function TZURLStringList.GetTextStr: string;
-begin
-  Result := inherited GetTextStr;
-  Result := StringReplace(Result, #9, ';', [rfReplaceAll]); //unescape the #9 char to ';'
-end;
-
-procedure TZURLStringList.SetTextStr(const Value: string);
-begin
-  inherited SetTextStr(StringReplace(Value, ';', #9, [rfReplaceAll])); //escape the ';' char to #9
-end;
 
 function TZURLStringList.GetURLText: String;
 begin
-  Result := StringReplace(GetTextStr, ';', #9, [rfReplaceAll]); //keep all ';' escaped
-  Result := StringReplace(Result, LineEnding, ';', [rfReplaceAll]);  //return a URL-usable string
+  Result := Escape(Text);
   if Result[Length(Result)] = ';' then
-    Result := Copy(Result, 1, Length(Result)-1);
+    SetLength(Result, Length(Result)-1);
+end;
+
+procedure TZURLStringList.SetURLText(const Value: string);
+begin
+  Text := UnEscape(Value);
 end;
 
 { TZURL }
@@ -204,7 +211,7 @@ end;
 
 procedure TZURL.SetHostName(const Value: string);
 begin
-  FHostName := StringReplace(Value, ';', #9, [rfReplaceAll]); //escape the ';' char to #9
+  FHostName := Escape(Value);
 end;
 
 procedure TZURL.SetConnPort(const Value: Integer);
@@ -214,68 +221,50 @@ end;
 
 function TZURL.GetDatabase: string;
 begin
-  Result := StringReplace(FDatabase, #9, ';', [rfReplaceAll]); //unescape the #9 char to ';'
+  Result := UnEscape(FDatabase);
 end;
 
 procedure TZURL.SetDatabase(const Value: string);
 begin
-  FDatabase := StringReplace(Value, ';', #9, [rfReplaceAll]); //escape the ';' char to #9
+  FDatabase := Escape(Value);
 end;
 
 function TZURL.GetUserName: string;
 begin
-  Result := StringReplace(FUserName, #9, ';', [rfReplaceAll]); //unescape the #9 char to ';'
+  Result := UnEscape(FUserName);
 end;
 
 procedure TZURL.SetUserName(const Value: string);
 begin
-  FUserName := StringReplace(Value, ';', #9, [rfReplaceAll]); //escape the ';' char to #9
+  FUserName := Escape(Value);
 end;
 
 function TZURL.GetPassword: string;
 begin
-  Result := StringReplace(FPassword, #9, ';', [rfReplaceAll]); //unescape the #9 char to ';'
+  Result := UnEscape(FPassword);
 end;
 
 procedure TZURL.SetPassword(const Value: string);
 begin
-  FPassword := StringReplace(Value, ';', #9, [rfReplaceAll]); //escape the ';' char to #9
+  FPassword := Escape(Value);
 end;
 
 function TZURL.GetLibLocation: String;
 begin
-  Result := StringReplace(FLibLocation, #9, ';', [rfReplaceAll]); //unescape the #9 char to ';'
+  Result := UnEscape(FLibLocation);
 end;
 
 procedure TZURL.SetLibLocation(const Value: String);
 begin
-  FLibLocation := StringReplace(Value, ';', #9, [rfReplaceAll]); //escape the ';' char to #9
+  FLibLocation := Escape(Value);
 end;
 
 function TZURL.GetURL: string;
 var
-  hasParamPart : boolean;
-  procedure AddParamPart(const ParamPart: String);
-  begin
-    if hasParamPart then
-      Result := Result + ';'
-    else
-      Result := Result + '?';
-    Result := Result + ParamPart;
-    hasParamPart := True;
-  end;
-
+  Params: string;
 begin
-  Result := '';
-  hasParamPart := false;
-
-  // Prefix
-  Result := Result + Prefix + ':';
-
-  // Protocol
-  Result := Result + Protocol + ':';
-
-  Result := Result + '//'; //Allways set the doubleslash  to avoid unix '/' path issues if host is empty
+  // Prefix, Protocol and always set the doubleslash to avoid unix '/' path issues if host is empty
+  Result := Prefix + ':' + Protocol + ':' + '//';
 
   // HostName/Port
   if HostName <> '' then
@@ -289,21 +278,23 @@ begin
   if Database <> '' then
     Result := Result + '/' + FDatabase;
 
-  // UserName
+  // Join the params
+
+  Params := '';
+
   if FUserName <> '' then
-    AddParamPart('username=' + FUserName);
-
-  // Password
+    AppendSepString(Params, 'username=' + FUserName, ';');
   if FPassword <> '' then
-    AddParamPart('password=' + FPassword);
-
-  // Properties
+    AppendSepString(Params, 'password=' + FPassword, ';');
   if Properties.Count > 0 then
-    AddParamPart(Properties.GetURLText); //Adds the escaped string
+    AppendSepString(Params, Properties.URLText, ';'); //Adds the escaped string
+  if FLibLocation <> '' then
+    AppendSepString(Params, 'LibLocation='+ FLibLocation, ';');
 
-  // LibLocation
-    if FLibLocation <> '' then
-      AddParamPart('LibLocation='+ FLibLocation);
+  // Construct the final string
+
+  if Params <> '' then
+    Result := Result + '?' + Params;
 end;
 
 procedure TZURL.SetURL(const Value: string);
@@ -313,9 +304,7 @@ var
   AHostName: string;
   APort: string;
   ADatabase: string;
-  AUserName: string;
-  APassword: string;
-  AProperties: TStrings;
+  AProperties: string;
   AValue: string;
   I: Integer;
 begin
@@ -324,142 +313,96 @@ begin
   AHostName := '';
   APort := '';
   ADatabase := '';
-  AUserName := '';
-  APassword := '';
-  AProperties := TStringList.Create;
+  AProperties := '';
 
-  try
-    AValue := Value;
+  // Strip out the parameters
+  BreakString(Value, '?', AValue, AProperties);
 
-    // APrefix
-    I := ZFastCode.Pos(':', AValue);
-    if I = 0 then
-      raise Exception.Create('TZURL.SetURL - The prefix is missing');
-    APrefix := Copy(AValue, 1, I - 1);
-    Delete(AValue, 1, I);
+  // APrefix
+  I := ZFastCode.Pos(':', AValue);
+  if I = 0 then
+    raise Exception.Create('TZURL.SetURL - The prefix is missing');
+  BreakString(AValue, ':', APrefix, AValue);
 
-    // AProtocol
-    I := ZFastCode.Pos(':', AValue);
-    if I = 0 then
-      raise Exception.Create('TZURL.SetURL - The protocol is missing');
-    AProtocol := Copy(AValue, 1, I - 1);
-    Delete(AValue, 1, I);
+  // AProtocol
+  I := ZFastCode.Pos(':', AValue);
+  if I = 0 then
+    raise Exception.Create('TZURL.SetURL - The protocol is missing');
+  BreakString(AValue, ':', AProtocol, AValue);
 
-    // AHostName
-    if ZFastCode.Pos('//', AValue) = 1 then
-    begin
-      Delete(AValue, 1, 2);
-      if (ZFastCode.Pos(':', AValue) > 0) and
-         ((ZFastCode.Pos(':', AValue) < ZFastCode.Pos('/', AValue)) or
-         (ZFastCode.Pos('/', AValue)=0)) then
-        AHostName := Copy(AValue, 1, ZFastCode.Pos(':', AValue) - 1)
-      else if ZFastCode.Pos('/', AValue) > 0 then
-        AHostName := Copy(AValue, 1, ZFastCode.Pos('/', AValue) - 1)
-      else if ZFastCode.Pos('?', AValue) > 0 then
-        AHostName := Copy(AValue, 1, ZFastCode.Pos('?', AValue) - 1)
-      else
-        AHostName := AValue;
-
-      Delete(AValue, 1, Length(AHostName));
-
-      // APort
-      if ZFastCode.Pos(':', AValue) = 1 then
-      begin
-        Delete(AValue, 1, 1);
-        if ZFastCode.Pos('/', AValue) > 0 then
-          APort := Copy(AValue, 1, ZFastCode.Pos('/', AValue) - 1)
-        else if ZFastCode.Pos('?', AValue) > 0 then
-          APort := Copy(AValue, 1, ZFastCode.Pos('?', AValue) - 1)
-        else
-          APort := AValue;
-
-        Delete(AValue, 1, Length(APort));
-      end;
-    end;
-
-    if ZFastCode.Pos('/', AValue) = 1 then
-      Delete(AValue, 1, 1);
-
+  if StartsWith(AValue, '//') then
+  begin
+    Delete(AValue, 1, Length('//'));
+    // Strip "hostname[:port]" out of "/database"
+    BreakString(AValue, '/', AValue, ADatabase);
+    // AHostName, APort
+    BreakString(AValue, ':', AHostName, APort);
+  end
+  else
+  begin
+    // Likely a database delimited by / so remove the /
+    if StartsWith(AValue, '/') then
+      Delete(AValue, 1, Length('/'));
     // ADatabase
-    I := ZFastCode.Pos('?', AValue);
-    if I > 0 then
-    begin
-      ADatabase := Copy(AValue, 1, I - 1);
-      Delete(AValue, 1, I);
-      AProperties.Text := StringReplace(AValue, ';', LineEnding, [rfReplaceAll]);
-    end
-    else
-      ADatabase := AValue;
-
-    FPrefix := APrefix;
-    FProtocol := AProtocol;
-    FHostName := AHostName;
-    FPort := StrToIntDef(APort, 0);
-    FDatabase := ADatabase;
-    FUserName := AUserName;
-    FPassword := APassword;
-    FProperties.Text := AProperties.Text;
-  finally
-    AProperties.Free;
+    ADatabase := AValue;
   end;
+
+  FPrefix := APrefix;
+  FProtocol := AProtocol;
+  FHostName := AHostName;
+  FPort := StrToIntDef(APort, 0);
+  FDatabase := ADatabase;
+
+  // Clear fields that MUST be assigned from properties even if empty.
+  // LibLocation should remain uncleared
+  FUserName := '';
+  FPassword := '';
+  FProperties.URLText := AProperties; // will launch DoOnPropertiesChange
 end;
 
 procedure TZURL.DoOnPropertiesChange(Sender: TObject);
-begin
-  FProperties.OnChange := nil;
-  try
-    if FProperties.Values['UID'] <> '' then
-    begin
-      UserName := FProperties.Values['UID'];
-      FProperties.Delete(FProperties.IndexOfName('UID'));
-    end;
 
-    if FProperties.Values['PWD'] <> '' then
-    begin
-      Password := FProperties.Values['PWD'];
-      FProperties.Delete(FProperties.IndexOfName('PWD'));
-    end;
-
-    if FProperties.Values['username'] <> '' then
-    begin
-      UserName := FProperties.Values['username'];
-      FProperties.Delete(FProperties.IndexOfName('username'));
-    end;
-
-    if FProperties.Values['password'] <> '' then
-    begin
-      Password := FProperties.Values['password'];
-      FProperties.Delete(FProperties.IndexOfName('password'));
-    end;
-
-    if FProperties.Values['LibLocation'] <> '' then
-    begin
-      LibLocation := FProperties.Values['LibLocation'];
-      FProperties.Delete(FProperties.IndexOfName('LibLocation'));
-    end;
-
-  finally
-    FProperties.OnChange := DoOnPropertiesChange;
+  // Return a value named ValueName from FProperties and delete the item
+  function ExtractValueFromProperties(const ValueName: string): string;
+  var I: Integer;
+  begin
+    Result := '';
+    I := FProperties.IndexOfName(ValueName);
+    if I = -1 then Exit;
+    Result := FProperties.ValueFromIndex[I];
+    FProperties.Delete(I);
   end;
+
+var
+  S: string;
+begin
+  FProperties.OnChange := nil; // prevent re-entering
+
+  // Assign UserName, Password and LibLocation if they're set in Properties
+  S := ExtractValueFromProperties('UID');
+  if S <> '' then
+    UserName := S;
+
+  S := ExtractValueFromProperties('username');
+  if S <> '' then
+    UserName := S;
+
+  S := ExtractValueFromProperties('PWD');
+  if S <> '' then
+    Password := S;
+
+  S := ExtractValueFromProperties('password');
+  if S <> '' then
+    Password := S;
+
+  S := ExtractValueFromProperties('LibLocation');
+  if S <> '' then
+    LibLocation := S;
+
+  FProperties.OnChange := DoOnPropertiesChange;
 
   if Assigned(FOnPropertiesChange) then
     FOnPropertiesChange(Sender);
-end;
-
-function TZURL.GetParamAndValue(AString: String; Var Param, Value: String): Boolean;
-var
-  DelimPos: Integer;
-begin
-  DelimPos := PosEx('=', AString);
-  Result := DelimPos <> 0;
-  Param := '';
-  Value := '';
-  if DelimPos <> 0 then
-  begin
-    Param := Copy(AString, 1, DelimPos -1);
-    Value := Copy(AString, DelimPos+1, Length(AString)-DelimPos);
-    Result := Value <> ''; //avoid loosing empty but added Params. e.g TestIdentifierQuotes
-  end;
 end;
 
 procedure TZURL.AddValues(Values: TStrings);
@@ -467,12 +410,17 @@ var
   I: Integer;
   Param, Value: String;
 begin
-  for i := 0 to Values.Count -1 do
-    if GetParamAndValue(Values[i], Param{%H-}, Value{%H-}) then
+  FProperties.BeginUpdate; // prevent calling OnChange on every iteration
+  for I := 0 to Values.Count -1 do
+  begin
+    BreakString(Values[I], '=', Param{%H-}, Value{%H-});
+    if Value <> '' then
       FProperties.Values[Param] := Value
     else
-      FProperties.Add(Values[i]);
+      if FProperties.IndexOf(Values[I]) = -1 then //add unique params only!
+        FProperties.Add(Values[I]);
+  end;
+  FProperties.EndUpdate;
 end;
 
 end.
-

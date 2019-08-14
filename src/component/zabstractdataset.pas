@@ -218,7 +218,17 @@ end;
 }
 destructor TZAbstractDataset.Destroy;
 begin
+  AfterCancel := nil;
+  BeforeCancel := nil;
+  if State in [dsEdit, dsInsert]
+  then Cancel;
+
   FreeAndNil(FDetailDataSets);
+  if Assigned(FUpdateObject) then
+  begin
+    FUpdateObject.DataSet := nil;
+    SetUpdateObject(nil);
+  end;
   inherited Destroy;
 end;
 
@@ -650,7 +660,7 @@ begin
         CachedResultSet.PostUpdates
       else
         CachedResultSet.PostUpdatesCached;
-
+    UpdateCursorPos;
     if not (State in [dsInactive]) then
       Resync([]);
 
@@ -678,8 +688,8 @@ procedure TZAbstractDataset.CommitUpdates;
 begin
   CheckBrowseMode;
 
-  if CachedResultSet <> nil then
-    CachedResultSet.CancelUpdates;
+  if (CachedResultSet <> nil) and CachedResultSet.IsPendingUpdates then
+    CachedResultSet.DisposeCachedUpdates;
 end;
 
 {**
@@ -805,8 +815,8 @@ var
     if Properties.Values['KeyFields'] <> '' then
       KeyFields := Properties.Values['KeyFields']
     else
-      KeyFields := DefineKeyFields(Fields);
-    FieldRefs := DefineFields(Self, KeyFields, OnlyDataFields);
+      KeyFields := DefineKeyFields(Fields, Connection.DbcConnection.GetMetadata.GetIdentifierConvertor);
+    FieldRefs := DefineFields(Self, KeyFields, OnlyDataFields, Connection.DbcConnection.GetDriver.GetTokenizer);
     Temp := VarArrayCreate([0, Length(FieldRefs) - 1], varVariant);
 
     for I := 0 to Length(FieldRefs) - 1 do

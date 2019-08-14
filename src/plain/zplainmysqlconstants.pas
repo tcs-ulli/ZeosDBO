@@ -61,6 +61,7 @@ interface
 
 {$I ZPlain.inc}
 
+//{$A-} //pack the records!   EH: nope this is wrong!
 uses
    ZCompatibility;
 
@@ -178,8 +179,10 @@ const
       {MYSQL_OPT_SSL_ENFORCE}                   50703
     );
 type
+  my_bool = byte;
+
   PUSED_MEM=^USED_MEM;
-  USED_MEM = packed record
+  USED_MEM = record
     next:       PUSED_MEM;
     left:       Integer;
     size:       Integer;
@@ -189,7 +192,7 @@ type
   ERR_PROC = procedure;
 
   PMEM_ROOT = ^MEM_ROOT;
-  MEM_ROOT = packed record
+  MEM_ROOT = record
     free:          PUSED_MEM;
     used:          PUSED_MEM;
     pre_alloc:     PUSED_MEM;
@@ -221,8 +224,8 @@ type
 
   MYSQL_FIELD_OFFSET = UInt;
 
-  PMYSQL_OPTIONS   = ^_MYSQL_OPTIONS;
-  _MYSQL_OPTIONS = record
+  PMYSQL_OPTIONS   = ^TMYSQL_OPTIONS;
+  TMYSQL_OPTIONS = record
     connect_timeout:          UInt;
     read_timeout:             UInt;
     write_timeout:            UInt;
@@ -263,45 +266,43 @@ type
     local_infile_userdata:    Pointer;
   end;
 
-    PZMySQLConnect = Pointer;
-    PZMySQLResult = Pointer;
-    PZMySQLRow = Pointer;
-    PZMySQLField = Pointer;
-    PZMySQLRowOffset = Pointer;
-    PZMySqlPrepStmt = Pointer;
-    PZMysqlBindArray = Pointer;
+  PZMySQLResult = Pointer;
+  PZMySQLRow = Pointer;
+  PZMySQLField = Pointer;
+  PZMySQLRowOffset = Pointer;
+  PZMysqlBindArray = Pointer;
 
 { Enum Field Types }
-      TMysqlFieldTypes = (
-  FIELD_TYPE_DECIMAL   = 0,
-  FIELD_TYPE_TINY      = 1,
-  FIELD_TYPE_SHORT     = 2,
-  FIELD_TYPE_LONG      = 3,
-  FIELD_TYPE_FLOAT     = 4,
-  FIELD_TYPE_DOUBLE    = 5,
-  FIELD_TYPE_NULL      = 6,
-  FIELD_TYPE_TIMESTAMP = 7,
-  FIELD_TYPE_LONGLONG  = 8,
-  FIELD_TYPE_INT24     = 9,
-  FIELD_TYPE_DATE      = 10,
-  FIELD_TYPE_TIME      = 11,
-  FIELD_TYPE_DATETIME  = 12,
-  FIELD_TYPE_YEAR      = 13,
-  FIELD_TYPE_NEWDATE   = 14,
-  FIELD_TYPE_VARCHAR   = 15, //<--ADDED by fduenas 20-06-2006
-  FIELD_TYPE_BIT       = 16, //<--ADDED by fduenas 20-06-2006
-  FIELD_TYPE_NEWDECIMAL = 246, //<--ADDED by fduenas 20-06-2006
-  FIELD_TYPE_ENUM      = 247,
-  FIELD_TYPE_SET       = 248,
-  FIELD_TYPE_TINY_BLOB = 249,
-  FIELD_TYPE_MEDIUM_BLOB = 250,
-  FIELD_TYPE_LONG_BLOB = 251,
-  FIELD_TYPE_BLOB      = 252,
-  FIELD_TYPE_VAR_STRING = 253,
-  FIELD_TYPE_STRING    = 254,
-  FIELD_TYPE_GEOMETRY  = 255
-    );
-  PTMysqlFieldTypes=^TMysqlFieldTypes;
+  PMysqlFieldTypes = ^TMysqlFieldTypes;
+  TMysqlFieldTypes = (
+    FIELD_TYPE_DECIMAL   = 0,
+    FIELD_TYPE_TINY      = 1,
+    FIELD_TYPE_SHORT     = 2,
+    FIELD_TYPE_LONG      = 3,
+    FIELD_TYPE_FLOAT     = 4,
+    FIELD_TYPE_DOUBLE    = 5,
+    FIELD_TYPE_NULL      = 6,
+    FIELD_TYPE_TIMESTAMP = 7,
+    FIELD_TYPE_LONGLONG  = 8,
+    FIELD_TYPE_INT24     = 9,
+    FIELD_TYPE_DATE      = 10,
+    FIELD_TYPE_TIME      = 11,
+    FIELD_TYPE_DATETIME  = 12,
+    FIELD_TYPE_YEAR      = 13,
+    FIELD_TYPE_NEWDATE   = 14,
+    FIELD_TYPE_VARCHAR   = 15, //<--ADDED by fduenas 20-06-2006
+    FIELD_TYPE_BIT       = 16, //<--ADDED by fduenas 20-06-2006
+    FIELD_TYPE_NEWDECIMAL = 246, //<--ADDED by fduenas 20-06-2006
+    FIELD_TYPE_ENUM      = 247,
+    FIELD_TYPE_SET       = 248,
+    FIELD_TYPE_TINY_BLOB = 249,
+    FIELD_TYPE_MEDIUM_BLOB = 250,
+    FIELD_TYPE_LONG_BLOB = 251,
+    FIELD_TYPE_BLOB      = 252,
+    FIELD_TYPE_VAR_STRING = 253,
+    FIELD_TYPE_STRING    = 254,
+    FIELD_TYPE_GEOMETRY  = 255);
+
   { Options for mysql_set_option }
   TMySqlSetOption = (
     MYSQL_OPTION_MULTI_STATEMENTS_ON,
@@ -314,6 +315,12 @@ type
     STMT_ATTR_PREFETCH_ROWS
   );
 
+  Tenum_cursor_type = (
+    CURSOR_TYPE_NO_CURSOR   = 0,
+    CURSOR_TYPE_READ_ONLY   = 1,
+    CURSOR_TYPE_FOR_UPDATE  = 2,
+    CURSOR_TYPE_SCROLLABLE  = 4
+  );
   TMysqlShutdownLevel = (
     SHUTDOWN_DEFAULT = 0,
     SHUTDOWN_WAIT_CONNECTIONS = MYSQL_SHUTDOWN_KILLABLE_CONNECT,
@@ -374,7 +381,7 @@ TMYSQL_CLIENT_OPTIONS =
     MYSQL_TIMESTAMP_TIME = 2
   );
 
-  MYSQL_TIME = record
+  TMYSQL_TIME = record
     year:                UInt;
     month:               UInt;
     day:                 UInt;
@@ -382,11 +389,10 @@ TMYSQL_CLIENT_OPTIONS =
     minute:              UInt;
     second:              UInt;
     second_part:         ULong;
-    neg:                 Byte;
+    neg:                 my_bool;
     time_type:           mysql_timestamp_type;
-    padding:             UInt;    //ludob alignment is different? Mysql returns 36 bytes.
   end;
-  PMYSQL_TIME = ^MYSQL_TIME;
+  PMYSQL_TIME = ^TMYSQL_TIME;
 
   PLIST = ^LIST;
   LIST = record
@@ -424,7 +430,7 @@ TMYSQL_CLIENT_OPTIONS =
     // 4.1.22 definition
     length:           PULong;
     is_null:          PByte;
-    buffer:           PAnsiChar;
+    buffer:           Pointer;
     buffer_type:      TMysqlFieldTypes;
     buffer_length:    ULong;
     //internal fields
@@ -446,7 +452,7 @@ TMYSQL_CLIENT_OPTIONS =
     // 5.0.67 definition
     length:            PULong;
     is_null:           PByte;
-    buffer:            PAnsiChar;
+    buffer:            Pointer;
     error:             PByte;
     buffer_type:       TMysqlFieldTypes;
     buffer_length:     ULong;
@@ -469,7 +475,7 @@ TMYSQL_CLIENT_OPTIONS =
     // 5.1.30 definition (Still valid for 5.6.25)
     length:            PULong;
     is_null:           PByte;
-    buffer:            PAnsiChar;
+    buffer:            Pointer;
     error:             PByte;
     row_ptr:           PByte;
     store_param_funct: Pointer;
@@ -493,7 +499,7 @@ TMYSQL_CLIENT_OPTIONS =
     // 6.0.8 definition
     length:            PULong;
     is_null:           PByte;
-    buffer:            PAnsiChar;
+    buffer:            Pointer;
     error:             PByte;
     row_ptr:           PByte;
     store_param_funct: Pointer;
@@ -513,7 +519,7 @@ TMYSQL_CLIENT_OPTIONS =
   end;
 
   // offsets to used MYSQL_BINDxx members. Filled by GetBindOffsets
-  MYSQL_BINDOFFSETS=record
+  MYSQL_BINDOFFSETS = record
     buffer_type   :NativeUint;
     buffer_length :NativeUint;
     is_unsigned   :NativeUint;
@@ -521,17 +527,23 @@ TMYSQL_CLIENT_OPTIONS =
     length        :NativeUint;
     is_null       :NativeUint;
     size          :integer;    //size of MYSQL_BINDxx
-    end;
-
-  PDOBindRecord2 = record
-    buffer:    Array of Byte;
-    length:    ULong;
-    is_null:   Byte;
   end;
 
-  PMYSQL = ^MYSQL;
+  PDOBindRecord2 = ^TDOBindRecord2;
+  TDOBindRecord2 = record
+    buffer:                 Array of Byte; //data place holder
+    buffer_address:         PPointer; //we don't need reserved mem in all case, but we need to set the address
+    buffer_length_address:  PULong; //set buffer_Length on the fly e.g. lob reading!
+    buffer_type:            TMysqlFieldTypes; //save exact type
+    buffer_type_address:    PMysqlFieldTypes;
+    length:                 ULong; //current length of our or retrieved data
+    is_null:                Byte; //null indicator
+    binary:                 Boolean; //binary field or not? Just for reading!
+    is_signed:              Boolean; //signed ordinals or not? Just for reading!
+    mysql_bind:             Pointer; //Save exact address of bind for lob reading
+  end;
 
-  MYSQL  = pointer;
+  PMYSQL  = pointer;
 
   PMY_CHARSET_INFO = ^MY_CHARSET_INFO;
   MY_CHARSET_INFO = record

@@ -1,7 +1,7 @@
 {*********************************************************}
 {                                                         }
 {                 Zeos Database Objects                   }
-{         Interbase Database Connectivity Classes         }
+{         Sybase SQL Anywhere Connectivity Classes        }
 {                                                         }
 {        Originally written by Sergey Merkuriev           }
 {                                                         }
@@ -87,14 +87,13 @@ type
   private
     FSQLCA: TZASASQLCA;
     FHandle: PZASASQLCA;
+    FPLainDriver: IZASAPlainDriver;
   private
     procedure StartTransaction; virtual;
     function DetermineASACharSet: String;
   protected
     procedure InternalCreate; override;
   public
-    destructor Destroy; override;
-
     function GetDBHandle: PZASASQLCA;
     function GetPlainDriver: IZASAPlainDriver;
 //    procedure CreateNewDatabase(SQL: String);
@@ -111,7 +110,7 @@ type
       const Value: string);
 
     procedure Open; override;
-    procedure Close; override;
+    procedure InternalClose; override;
   end;
 
   {** Implements a specialized cached resolver for ASA. }
@@ -170,6 +169,7 @@ end;
 constructor TZASADriver.Create;
 begin
   inherited Create;
+  AddSupportedProtocol(AddPlainDriverToCache(TZASA12PlainDriver.Create, 'asa'));
   AddSupportedProtocol(AddPlainDriverToCache(TZASA7PlainDriver.Create));
   AddSupportedProtocol(AddPlainDriverToCache(TZASA8PlainDriver.Create));
   AddSupportedProtocol(AddPlainDriverToCache(TZASA9PlainDriver.Create));
@@ -200,9 +200,7 @@ end;
 }
 function TZASADriver.GetTokenizer: IZTokenizer;
 begin
-  if Tokenizer = nil then
-    Tokenizer := TZSybaseTokenizer.Create;
-  Result := Tokenizer;
+  Result := TZSybaseTokenizer.Create; { thread save! Allways return a new Tokenizer! }
 end;
 
 {**
@@ -211,9 +209,7 @@ end;
 }
 function TZASADriver.GetStatementAnalyser: IZStatementAnalyser;
 begin
-  if Analyser = nil then
-    Analyser := TZSybaseStatementAnalyser.Create;
-  Result := Analyser;
+  Result := TZSybaseStatementAnalyser.Create; { thread save! Allways return a new Analyser! }
 end;
 
 { TZASAConnection }
@@ -227,15 +223,14 @@ end;
   garbage collected. Certain fatal errors also result in a closed
   Connection.
 }
-procedure TZASAConnection.Close;
+procedure TZASAConnection.InternalClose;
 begin
   if Closed or (not Assigned(PlainDriver))then
      Exit;
 
-  if AutoCommit then
-    Commit
-  else
-    Rollback;
+  if AutoCommit
+  then Commit
+  else Rollback;
 
   GetPlainDriver.db_string_disconnect( FHandle, nil);
   CheckASAError( GetPlainDriver, FHandle, lcDisconnect, ConSettings);
@@ -251,8 +246,6 @@ begin
 
   DriverManager.LogMessage(lcDisconnect, ConSettings^.Protocol,
       'DISCONNECT FROM "'+ConSettings^.Database+'"');
-
-  inherited Close;
 end;
 
 {**
@@ -368,18 +361,7 @@ function TZASAConnection.CreateRegularStatement(
 begin
   if IsClosed then
      Open;
-  Result := TZASAStatement.Create(Self, Info);
-end;
-
-{**
-  Destroys this object and cleanups the memory.
-}
-destructor TZASAConnection.Destroy;
-begin
-  if not Closed then
-    Close;
-
-  inherited;
+  Result := TZASAPreparedStatement.Create(Self, Info);
 end;
 
 {**
@@ -397,7 +379,9 @@ end;
 }
 function TZASAConnection.GetPlainDriver: IZASAPlainDriver;
 begin
-  Result := PlainDriver as IZASAPlainDriver;
+  if fPlainDriver = nil then
+    fPlainDriver := PlainDriver as IZASAPlainDriver;
+  Result := fPlainDriver;
 end;
 
 {**

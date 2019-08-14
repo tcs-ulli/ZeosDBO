@@ -83,6 +83,7 @@ unit ZPlainAdo;
 interface
 
 {$I ZPlain.inc}
+{$IFDEF ENABLE_ADO}
 
 uses Windows, Classes, ActiveX;
 
@@ -1645,7 +1646,7 @@ type
 // *********************************************************************//
   CoConnection = class
     class function Create: Connection15;
-    class function CreateRemote(const MachineName: string): Connection15;
+    class function CreateRemote(const MachineName: WideString): Connection15;
   end;
 
 // *********************************************************************//
@@ -1657,7 +1658,7 @@ type
 // *********************************************************************//
   CoRecord_ = class
     class function Create: _Record;
-    class function CreateRemote(const MachineName: string): _Record;
+    class function CreateRemote(const MachineName: WideString): _Record;
   end;
 
 // *********************************************************************//
@@ -1669,7 +1670,7 @@ type
 // *********************************************************************//
   CoStream = class
     class function Create: _Stream;
-    class function CreateRemote(const MachineName: string): _Stream;
+    class function CreateRemote(const MachineName: WideString): _Stream;
   end;
 
 // *********************************************************************//
@@ -1681,7 +1682,7 @@ type
 // *********************************************************************//
   CoCommand = class
     class function Create: _Command;
-    class function CreateRemote(const MachineName: string): _Command;
+    class function CreateRemote(const MachineName: WideString): _Command;
   end;
 
 // *********************************************************************//
@@ -1693,7 +1694,7 @@ type
 // *********************************************************************//
   CoRecordset = class
     class function Create: Recordset15;
-    class function CreateRemote(const MachineName: string): Recordset15;
+    class function CreateRemote(const MachineName: WideString): Recordset15;
   end;
 
 // *********************************************************************//
@@ -1705,24 +1706,21 @@ type
 // *********************************************************************//
   CoParameter = class
     class function Create: _Parameter;
-    class function CreateRemote(const MachineName: string): _Parameter;
+    class function CreateRemote(const MachineName: WideString): _Parameter;
   end;
 
+{$ENDIF ENABLE_ADO}
 implementation
+{$IFDEF ENABLE_ADO}
 
 uses ComObj;
 
 class function CoConnection.Create: Connection15;
 begin
-  try
-    Result := CreateComObject(CLASS_Connection) as Connection15;
-  except
-    CoInitialize(nil);
-    Result := CreateComObject(CLASS_Connection) as Connection15;
-  end;
+  Result := CreateComObject(CLASS_Connection) as Connection15;
 end;
 
-class function CoConnection.CreateRemote(const MachineName: string): Connection15;
+class function CoConnection.CreateRemote(const MachineName: WideString): Connection15;
 begin
   Result := CreateRemoteComObject(MachineName, CLASS_Connection) as Connection15;
 end;
@@ -1732,7 +1730,7 @@ begin
   Result := CreateComObject(CLASS_Record_) as _Record;
 end;
 
-class function CoRecord_.CreateRemote(const MachineName: string): _Record;
+class function CoRecord_.CreateRemote(const MachineName: WideString): _Record;
 begin
   Result := CreateRemoteComObject(MachineName, CLASS_Record_) as _Record;
 end;
@@ -1742,7 +1740,7 @@ begin
   Result := CreateComObject(CLASS_Stream) as _Stream;
 end;
 
-class function CoStream.CreateRemote(const MachineName: string): _Stream;
+class function CoStream.CreateRemote(const MachineName: WideString): _Stream;
 begin
   Result := CreateRemoteComObject(MachineName, CLASS_Stream) as _Stream;
 end;
@@ -1752,7 +1750,7 @@ begin
   Result := CreateComObject(CLASS_Command) as _Command;
 end;
 
-class function CoCommand.CreateRemote(const MachineName: string): _Command;
+class function CoCommand.CreateRemote(const MachineName: WideString): _Command;
 begin
   Result := CreateRemoteComObject(MachineName, CLASS_Command) as _Command;
 end;
@@ -1762,7 +1760,7 @@ begin
   Result := CreateComObject(CLASS_Recordset) as Recordset15;
 end;
 
-class function CoRecordset.CreateRemote(const MachineName: string): Recordset15;
+class function CoRecordset.CreateRemote(const MachineName: WideString): Recordset15;
 begin
   Result := CreateRemoteComObject(MachineName, CLASS_Recordset) as Recordset15;
 end;
@@ -1772,10 +1770,11 @@ begin
   Result := CreateComObject(CLASS_Parameter) as _Parameter;
 end;
 
-class function CoParameter.CreateRemote(const MachineName: string): _Parameter;
+class function CoParameter.CreateRemote(const MachineName: WideString): _Parameter;
 begin
   Result := CreateRemoteComObject(MachineName, CLASS_Parameter) as _Parameter;
 end;
 
+{$ENDIF ENABLE_ADO}
 end.
 

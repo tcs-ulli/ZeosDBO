@@ -56,7 +56,7 @@ interface
 {$I ZDbc.inc}
 
 uses
-  Types, Classes, {$IFDEF MSEgui}mclasses,{$ENDIF} SysUtils, Contnrs,
+  Types, Classes, {$IFDEF MSEgui}mclasses,{$ENDIF} SysUtils, Contnrs, StrUtils,
   ZVariant, ZDbcIntfs, ZDbcCache, ZDbcCachedResultSet, ZCompatibility,
   ZSelectSchema, {$IFDEF OLDFPC}ZClasses,{$ENDIF} ZCollections;
 
@@ -71,8 +71,8 @@ type
     FNewValue: Boolean;
     FDefaultValue: string;
   public
-    constructor Create(ColumnIndex: Integer; ColumnName: string;
-      ColumnType: TZSQLType; NewValue: Boolean; DefaultValue: string);
+    constructor Create(ColumnIndex: Integer; const ColumnName: string;
+      ColumnType: TZSQLType; NewValue: Boolean; const DefaultValue: string);
 
     property ColumnIndex: Integer read FColumnIndex write FColumnIndex;
     property ColumnName: string read FColumnName write FColumnName;
@@ -108,17 +108,17 @@ type
     FWhereAll: Boolean;
     FUpdateAll: Boolean;
 
+    FUpdateStatements : TZHashMap;
+  protected
     InsertStatement   : IZPreparedStatement;
     UpdateStatement   : IZPreparedStatement;
     DeleteStatement   : IZPreparedStatement;
 
-    FUpdateStatements : TZHashMap;
-  protected
     procedure CopyResolveParameters(FromList, ToList: TObjectList);
-    function ComposeFullTableName(Catalog, Schema, Table: string): string;
+    function ComposeFullTableName(const Catalog, Schema, Table: string): string;
     function DefineTableName: string;
 
-    function CreateResolverStatement(SQL : String):IZPreparedStatement;
+    function CreateResolverStatement(const SQL : String):IZPreparedStatement;
 
     procedure DefineCalcColumns(Columns: TObjectList;
       RowAccessor: TZRowAccessor);
@@ -129,7 +129,7 @@ type
     procedure DefineWhereAllColumns(Columns: TObjectList; IgnoreKeyColumn: Boolean = False);
     function CheckKeyColumn(ColumnIndex: Integer): Boolean; virtual;
 
-    procedure FillStatement(Statement: IZPreparedStatement;
+    procedure FillStatement(const Statement: IZPreparedStatement;
       Params: TObjectList; OldRowAccessor, NewRowAccessor: TZRowAccessor);
 
     property Connection: IZConnection read FConnection write FConnection;
@@ -148,7 +148,7 @@ type
     property UpdateAll: Boolean read FUpdateAll write FUpdateAll;
 
   public
-    constructor Create(Statement: IZStatement; Metadata: IZResultSetMetadata);
+    constructor Create(const Statement: IZStatement; const Metadata: IZResultSetMetadata);
     destructor Destroy; override;
 
     function FormWhereClause(Columns: TObjectList;
@@ -177,7 +177,8 @@ type
 
 implementation
 
-uses ZMessages, ZSysUtils, ZDbcMetadata, ZDbcUtils;
+uses ZMessages, ZSysUtils, ZDbcMetadata, ZDbcUtils
+  {$IFDEF FAST_MOVE}, ZFastCode{$ENDIF};
 
 { TZResolverParameter }
 
@@ -190,7 +191,7 @@ uses ZMessages, ZSysUtils, ZDbcMetadata, ZDbcUtils;
   @param DefaultValue a default column value to evalute on server.
 }
 constructor TZResolverParameter.Create(ColumnIndex: Integer;
-  ColumnName: string; ColumnType: TZSQLType; NewValue: Boolean; DefaultValue: string);
+  const ColumnName: string; ColumnType: TZSQLType; NewValue: Boolean; const DefaultValue: string);
 begin
   FColumnType := ColumnType;
   FColumnIndex := ColumnIndex;
@@ -205,8 +206,8 @@ end;
   Creates a cached resolver and assignes the main properties.
   @param ResultSet a related ResultSet object.
 }
-constructor TZGenericCachedResolver.Create(Statement: IZStatement;
-  Metadata: IZResultSetMetadata);
+constructor TZGenericCachedResolver.Create(const Statement: IZStatement;
+  const Metadata: IZResultSetMetadata);
 begin
   FStatement := Statement;
   FConnection := Statement.GetConnection;
@@ -282,18 +283,16 @@ end;
   @param Table a table name.
   @return a fully qualified table name.
 }
-function TZGenericCachedResolver.ComposeFullTableName(Catalog, Schema,
+function TZGenericCachedResolver.ComposeFullTableName(const Catalog, Schema,
   Table: string): string;
 begin
-  if Table <> '' then
-  begin
+  if Table <> '' then begin
     Result := IdentifierConvertor.Quote(Table);
-    if Schema <> '' then
+    if (Schema <> '') and FDatabaseMetadata.GetDatabaseInfo.SupportsSchemasInDataManipulation then
       Result := IdentifierConvertor.Quote(Schema) + '.' + Result;
-    if Catalog <> '' then
+    if (Catalog <> '') and FDatabaseMetadata.GetDatabaseInfo.SupportsCatalogsInDataManipulation then
       Result := IdentifierConvertor.Quote(Catalog) + '.' + Result;
-  end
-  else
+  end else
     Result := '';
 end;
 
@@ -319,7 +318,7 @@ begin
     raise EZSQLException.Create(SCanNotUpdateThisQueryType);
 end;
 
-function TZGenericCachedResolver.CreateResolverStatement(SQL: String): IZPreparedStatement;
+function TZGenericCachedResolver.CreateResolverStatement(const SQL: String): IZPreparedStatement;
 var
   Temp : TStrings;
 begin
@@ -567,7 +566,7 @@ end;
   @param OldRowAccessor an accessor object to old column values.
   @param NewRowAccessor an accessor object to new column values.
 }
-procedure TZGenericCachedResolver.FillStatement(Statement: IZPreparedStatement;
+procedure TZGenericCachedResolver.FillStatement(const Statement: IZPreparedStatement;
   Params: TObjectList; OldRowAccessor, NewRowAccessor: TZRowAccessor);
 var
   I: Integer;
@@ -575,6 +574,7 @@ var
   Current: TZResolverParameter;
   RowAccessor: TZRowAccessor;
   WasNull: Boolean;
+  TempBytes: TBytes;
 begin
   WasNull := False;
   for I := 0 to Params.Count - 1 do
@@ -621,8 +621,14 @@ begin
       stString, stUnicodeString:
         Statement.SetCharRec(I {$IFNDEF GENERIC_INDEX}+1{$ENDIF},
           RowAccessor.GetCharRec(ColumnIndex, WasNull));
-      stBytes, stGUID:
+      stBytes:
         Statement.SetBytes(I {$IFNDEF GENERIC_INDEX}+1{$ENDIF}, RowAccessor.GetBytes(ColumnIndex, WasNull));
+      stGUID: begin
+          TempBytes := RowAccessor.GetBytes(ColumnIndex, WasNull);
+          if Length(TempBytes) <> 16
+          then raise EZSQLException.Create('The rowaccessor did not return 16 bytes while trying to set a GUID.');
+          Statement.SetGuid(I {$IFNDEF GENERIC_INDEX}+1{$ENDIF}, PGUID(@TempBytes[0])^);
+        end;
       stDate:
         Statement.SetDate(I {$IFNDEF GENERIC_INDEX}+1{$ENDIF}, RowAccessor.GetDate(ColumnIndex, WasNull));
       stTime:
@@ -655,6 +661,7 @@ function TZGenericCachedResolver.FormWhereClause(Columns: TObjectList;
 var
   I, N: Integer;
   Current: TZResolverParameter;
+  Condition: string;
 begin
   Result := '';
   N := Columns.Count - WhereColumns.Count;
@@ -662,20 +669,19 @@ begin
   for I := 0 to WhereColumns.Count - 1 do
   begin
     Current := TZResolverParameter(WhereColumns[I]);
-    if Result <> '' then
-      Result := Result + ' AND ';
 
-    Result := Result + IdentifierConvertor.Quote(Current.ColumnName);
+    Condition := IdentifierConvertor.Quote(Current.ColumnName);
     if OldRowAccessor.IsNull(Current.ColumnIndex) then
     begin
-      Result := Result + ' IS NULL ';
+      Condition := Condition + ' IS NULL';
       Columns.Delete(N);
     end
     else
     begin
-      Result := Result + '=?';
+      Condition := Condition + '=?';
       Inc(N);
     end;
+    AppendSepString(Result, Condition, ' AND ');
   end;
 
   if Result <> '' then
@@ -693,17 +699,7 @@ var
   I: Integer;
   Current: TZResolverParameter;
   TableName: string;
-  Temp1, Temp2: string;
-  l1: Integer; 
-
-  procedure Append(const app: String); 
-  begin 
-    if Length(Temp1) < l1 + length(app) then 
-      SetLength(Temp1, 2 * (length(app) + l1)); 
-    Move(app[1], Temp1[l1+1], length(app)*SizeOf(Char)); 
-    Inc(l1, length(app)); 
-  end; 
-
+  Temp1: string;
 begin
   TableName := DefineTableName;
   DefineInsertColumns(Columns);
@@ -713,20 +709,15 @@ begin
     Exit;
   end;
 
-  Temp1 := '';    l1 := 0; 
-  SetLength(Temp2, 2 * Columns.Count - 1); 
-  for I := 0 to Columns.Count - 1 do 
-  begin 
-    Current := TZResolverParameter(Columns[I]); 
-    if Temp1 <> '' then 
-      Append(','); 
-    Append(IdentifierConvertor.Quote(Current.ColumnName)); 
-    if I > 0 then 
-      Temp2[I*2] := ','; 
-    Temp2[I*2+1] := '?'; 
-  end; 
-  SetLength(Temp1, l1); 
-  Result := Format('INSERT INTO %s (%s) VALUES (%s)', [TableName, Temp1, Temp2]);
+  Temp1 := '';
+  for I := 0 to Columns.Count - 1 do
+  begin
+    Current := TZResolverParameter(Columns[I]);
+    AppendSepString(Temp1, IdentifierConvertor.Quote(Current.ColumnName), ',');
+  end;
+
+  Result := 'INSERT INTO '+TableName+' ('+Temp1+') VALUES ('+
+    DupeString('?,', Columns.Count - 1) + '?' +')';
 end;
 
 {**
@@ -755,12 +746,10 @@ begin
   for I := 0 to Columns.Count - 1 do
   begin
     Current := TZResolverParameter(Columns[I]);
-    if Temp <> '' then
-      Temp := Temp + ',';
-    Temp := Temp + IdentifierConvertor.Quote(Current.ColumnName) + '=?';
+    AppendSepString(Temp, IdentifierConvertor.Quote(Current.ColumnName) + '=?', ',');
   end;
 
-  Result := Format('UPDATE %s SET %s', [TableName, Temp]);
+  Result := 'UPDATE '+TableName+' SET '+Temp;
   DefineWhereKeyColumns(Columns);
   Result := Result + FormWhereClause(Columns, OldRowAccessor);
 end;
@@ -772,11 +761,8 @@ end;
 }
 function TZGenericCachedResolver.FormDeleteStatement(Columns: TObjectList;
   OldRowAccessor: TZRowAccessor): string;
-var
-  TableName: string;
 begin
-  TableName := DefineTableName;
-  Result := Format('DELETE FROM %s', [TableName]);
+  Result := 'DELETE FROM '+ DefineTableName;
   DefineWhereKeyColumns(Columns);
   Result := Result + FormWhereClause(Columns, OldRowAccessor);
 end;
@@ -799,12 +785,10 @@ begin
   for I := 0 to Columns.Count - 1 do
   begin
     Current := TZResolverParameter(Columns[I]);
-    if Result <> '' then
-      Result := Result + ',';
     if Current.DefaultValue <> '' then
-      Result := Result + Current.DefaultValue
+      AppendSepString(Result, Current.DefaultValue, ',')
     else
-      Result := Result + 'NULL';
+      AppendSepString(Result, 'NULL', ',');
   end;
   Result := 'SELECT ' + Result;
 end;
@@ -849,7 +833,7 @@ begin
       begin
         if DeleteStatement = nil then
         begin
-        SQL := FormDeleteStatement(FDeleteParams, OldRowAccessor);
+          SQL := FormDeleteStatement(FDeleteParams, OldRowAccessor);
           If Assigned(DeleteStatement) and (SQL <> DeleteStatement.GetSQL) then
             DeleteStatement := nil;
           If not Assigned(DeleteStatement) then
@@ -919,6 +903,7 @@ var
   ResultSet: IZResultSet;
   Metadata: IZResultSetMetadata;
   Current: TZResolverParameter;
+  Len: NativeUInt;
 begin
   if not FCalcDefaults then
      Exit;
@@ -968,10 +953,10 @@ begin
               stBigDecimal:
                 RowAccessor.SetBigDecimal(Current.ColumnIndex, ResultSet.GetBigDecimal(I));
               stString, stAsciiStream, stUnicodeString, stUnicodeStream:
-                if FConnection.GetConSettings^.ClientCodePage^.IsStringFieldCPConsistent then
-                  RowAccessor.SetRawByteString(Current.ColumnIndex, ResultSet.GetRawByteString(I))
+                if RowAccessor.IsRaw then
+                  RowAccessor.SetPAnsiChar(Current.ColumnIndex, ResultSet.GetPAnsiChar(I, Len), @Len)
                 else
-                  RowAccessor.SetUnicodeString(Current.ColumnIndex, ResultSet.GetUnicodeString(I));
+                  RowAccessor.SetPWideChar(Current.ColumnIndex, ResultSet.GetPWideChar(I, Len), @Len);
               stBytes, stGUID:
                 RowAccessor.SetBytes(Current.ColumnIndex, ResultSet.GetBytes(I));
               stDate:

@@ -156,13 +156,14 @@ type
     property NativeResolver: IZCachedResolver read FNativeResolver;
     {END PATCH [1214009] CalcDefaults in TZUpdateSQL and Added Methods to GET the DB NativeResolver}
   public
-    constructor CreateWithStatement(SQL: string; Statement: IZStatement;
+    constructor CreateWithStatement(const SQL: string; const Statement: IZStatement;
       ConSettings: PZConSettings);
-    constructor CreateWithColumns(ColumnsInfo: TObjectList; SQL: string;
+    constructor CreateWithColumns(ColumnsInfo: TObjectList; const SQL: string;
       ConSettings: PZConSettings);
     destructor Destroy; override;
 
     procedure Close; override;
+    procedure ResetCursor; override;
 
     //======================================================================
     // Methods for accessing results by column index
@@ -170,6 +171,8 @@ type
 
     function IsNull(ColumnIndex: Integer): Boolean; override;
     function GetPChar(ColumnIndex: Integer): PChar; override;
+    function GetPAnsiChar(ColumnIndex: Integer; out Len: NativeUInt): PAnsiChar; override;
+    function GetPWideChar(ColumnIndex: Integer; out Len: NativeUInt): PWideChar; override;
     function GetString(ColumnIndex: Integer): String; override;
     function GetAnsiString(ColumnIndex: Integer): AnsiString; override;
     function GetUTF8String(ColumnIndex: Integer): UTF8String; override;
@@ -298,10 +301,14 @@ type
 
     property ResultSet: IZResultSet read FResultSet write FResultSet;
   public
-    constructor Create(ResultSet: IZResultSet; SQL: string;
-      Resolver: IZCachedResolver; ConSettings: PZConSettings);
+    constructor Create(const ResultSet: IZResultSet; const SQL: string;
+      const Resolver: IZCachedResolver; ConSettings: PZConSettings);
+    constructor CreateWithColumns(const ColumnsInfo: TObjectList;
+      const ResultSet: IZResultSet; const SQL: string;
+      const Resolver: IZCachedResolver; ConSettings: PZConSettings);
 
     procedure Close; override;
+    procedure ResetCursor; override;
     function GetMetaData: IZResultSetMetaData; override;
 
     function IsAfterLast: Boolean; override;
@@ -323,8 +330,8 @@ uses ZMessages, ZDbcResultSetMetadata, ZDbcGenericResolver, ZDbcUtils, ZEncoding
   @param Statement an SQL statement object.
   @param SQL an SQL query.
 }
-constructor TZAbstractCachedResultSet.CreateWithStatement(SQL: string;
-  Statement: IZStatement; ConSettings: PZConSettings);
+constructor TZAbstractCachedResultSet.CreateWithStatement(const SQL: string;
+  const Statement: IZStatement; ConSettings: PZConSettings);
 begin
   inherited Create(Statement, SQL, nil, ConSettings);
   FCachedUpdates := False;
@@ -336,7 +343,7 @@ end;
   @param ColumnsInfo a columns info for cached rows.
 }
 constructor TZAbstractCachedResultSet.CreateWithColumns(
-  ColumnsInfo: TObjectList; SQL: string; ConSettings: PZConSettings);
+  ColumnsInfo: TObjectList; const SQL: string; ConSettings: PZConSettings);
 begin
   inherited Create(nil, SQL, nil, ConSettings);
 
@@ -418,7 +425,7 @@ function TZAbstractCachedResultSet.AppendRow(Row: PZRowBuffer): PZRowBuffer;
 begin
   if LocateRow(FInitialRowsList, Row.Index) < 0 then
   begin
-    FRowAccessor.AllocBuffer(Result);
+    FRowAccessor.AllocBuffer(Result{%H-});
     FRowAccessor.CopyBuffer(Row, Result);
     FInitialRowsList.Add(Result);
     FCurrentRowsList.Add(Row);
@@ -532,7 +539,11 @@ end;
 }
 function TZAbstractCachedResultSet.IsPendingUpdates: Boolean;
 begin
-  Result := FInitialRowsList.Count > 0;
+  //patch by Soner
+  Result := Assigned(FInitialRowsList) and (FInitialRowsList.Count > 0);
+  //Original:  Result := FInitialRowsList.Count > 0;
+  //this can cause error if you Call TZQuery.UpdatesPending at DoBeforeClose;
+  //because FInitialRowsList can be nil if nothing inserted/deleted/modified
 end;
 
 {**
@@ -722,18 +733,9 @@ begin
   FInitialRowsList := TList.Create;
   FCurrentRowsList := TList.Create;
 
-  if ConSettings^.ClientCodePage^.IsStringFieldCPConsistent then
-  begin
-    FRowAccessor := TZRawRowAccessor.Create(ColumnsInfo, ConSettings);
-    FOldRowAccessor := TZRawRowAccessor.Create(ColumnsInfo, ConSettings);
-    FNewRowAccessor := TZRawRowAccessor.Create(ColumnsInfo, ConSettings);
-  end
-  else
-  begin
-    FRowAccessor := TZUnicodeRowAccessor.Create(ColumnsInfo, ConSettings);
-    FOldRowAccessor := TZUnicodeRowAccessor.Create(ColumnsInfo, ConSettings);
-    FNewRowAccessor := TZUnicodeRowAccessor.Create(ColumnsInfo, ConSettings);
-  end;
+  FRowAccessor := TZRowAccessor.Create(ColumnsInfo, ConSettings);
+  FOldRowAccessor := TZRowAccessor.Create(ColumnsInfo, ConSettings);
+  FNewRowAccessor := TZRowAccessor.Create(ColumnsInfo, ConSettings);
 
   FRowAccessor.AllocBuffer(FUpdatedRow);
   FRowAccessor.AllocBuffer(FInsertedRow);
@@ -789,6 +791,23 @@ begin
   end;
 end;
 
+procedure TZAbstractCachedResultSet.ResetCursor;
+var
+  I: Integer;
+begin
+  if Assigned(FRowAccessor) then
+  begin
+    for I := 0 to FRowsList.Count - 1 do
+      FRowAccessor.DisposeBuffer(PZRowBuffer(FRowsList[I]));
+    for I := 0 to FInitialRowsList.Count - 1 do
+      FRowAccessor.DisposeBuffer(PZRowBuffer(FInitialRowsList[I]));
+    FRowsList.Clear;
+    FInitialRowsList.Clear;
+    FCurrentRowsList.Clear;
+  end;
+  inherited ResetCursor;
+end;
+
 //======================================================================
 // Methods for accessing results by column index
 //======================================================================
@@ -836,6 +855,22 @@ begin
   else
     Result := Pointer(FRawTemp); // no RTL conversion!
   {$ENDIF}
+end;
+
+function TZAbstractCachedResultSet.GetPAnsiChar(ColumnIndex: Integer; out Len: NativeUInt): PAnsiChar;
+begin
+{$IFNDEF DISABLE_CHECKING}
+  CheckAvailable;
+{$ENDIF}
+  Result := FRowAccessor.GetPAnsiChar(ColumnIndex, LastWasNull, Len);
+end;
+
+function TZAbstractCachedResultSet.GetPWideChar(ColumnIndex: Integer; out Len: NativeUInt): PWideChar;
+begin
+{$IFNDEF DISABLE_CHECKING}
+  CheckAvailable;
+{$ENDIF}
+  Result := FRowAccessor.GetPWideChar(ColumnIndex, LastWasNull, Len);
 end;
 
 {**
@@ -2251,8 +2286,8 @@ end;
   @param ResultSet a wrapped resultset object.
   @param Resolver a cached updates resolver object.
 }
-constructor TZCachedResultSet.Create(ResultSet: IZResultSet; SQL: string;
-  Resolver: IZCachedResolver; ConSettings: PZConSettings);
+constructor TZCachedResultSet.Create(const ResultSet: IZResultSet; const SQL: string;
+  const Resolver: IZCachedResolver; ConSettings: PZConSettings);
 begin
   inherited Create(ResultSet.GetStatement, SQL, nil, ConSettings);
   FResultSet := ResultSet;
@@ -2260,7 +2295,7 @@ begin
   {BEGIN PATCH [1214009] CalcDefaults in TZUpdateSQL and Added Methods to GET the DB NativeResolver}
   FNativeResolver := Resolver;
   {END PATCH [1214009] CalcDefaults in TZUpdateSQL and Added Methods to GET the DB NativeResolver}
-  if Statement.GetConnection.GetIZPlainDriver.IsAnsiDriver and
+  if (ConSettings^.ClientCodePage^.Encoding in [ceAnsi, ceUTF8]) and
     ConSettings^.ClientCodePage^.IsStringFieldCPConsistent then
       FStringFieldAssignFromResultSet := ZStringFieldAssignFromResultSet_AnsiRec
     else
@@ -2401,6 +2436,31 @@ begin
   FResultSet := nil;
 end;
 
+constructor TZCachedResultSet.CreateWithColumns(const ColumnsInfo: TObjectList;
+  const ResultSet: IZResultSet; const SQL: string;
+  const Resolver: IZCachedResolver; ConSettings: PZConSettings);
+begin
+  inherited Create(ResultSet.GetStatement, SQL, nil, ConSettings);
+  FResultSet := ResultSet;
+  FResolver := Resolver;
+  {BEGIN PATCH [1214009] CalcDefaults in TZUpdateSQL and Added Methods to GET the DB NativeResolver}
+  FNativeResolver := Resolver;
+  {END PATCH [1214009] CalcDefaults in TZUpdateSQL and Added Methods to GET the DB NativeResolver}
+  if (ConSettings^.ClientCodePage^.Encoding in [ceAnsi, ceUTF8]) and
+    ConSettings^.ClientCodePage^.IsStringFieldCPConsistent then
+      FStringFieldAssignFromResultSet := ZStringFieldAssignFromResultSet_AnsiRec
+    else
+      FStringFieldAssignFromResultSet := ZStringFieldAssignFromResultSet_Unicode;
+  ZDbcUtils.CopyColumnsInfo(ColumnsInfo, Self.ColumnsInfo);
+  inherited Open;
+end;
+
+procedure TZCachedResultSet.ResetCursor;
+begin
+  If Assigned(FResultset) then
+    FResultset.ResetCursor;
+  inherited ResetCursor;
+end;
 {**
   Retrieves the  number, types and properties of
   this <code>ResultSet</code> object's columns.
@@ -2408,7 +2468,10 @@ end;
 }
 function TZCachedResultSet.GetMetadata: IZResultSetMetadata;
 begin
-  Result := ResultSet.GetMetadata;
+  If Assigned(FResultset) then
+    Result := ResultSet.GetMetadata
+  else
+    Result := nil;
 end;
 
 {**

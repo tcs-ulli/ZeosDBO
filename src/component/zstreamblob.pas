@@ -117,7 +117,7 @@ begin
           Buffer := Blob.GetBuffer;
       end
     else
-    Buffer := Blob.GetBuffer;
+      Buffer := Blob.GetBuffer;
     ASize := Blob.Length;
     {$IFNDEF WITH_MM_CAN_REALLOC_EXTERNAL_MEM}
     if Mode = bmReadWrite then
@@ -140,6 +140,7 @@ destructor TZBlobStream.Destroy;
 var
   ATmp: AnsiString;
   UTmp: ZWideString;
+  UnCachedLob: IZUnCachedLob;
 begin
   if Mode in [bmWrite, bmReadWrite] then
   begin
@@ -198,19 +199,19 @@ begin
                   ceAnsi:
                     if (ZCompatibleCodePages(FConSettings^.ClientCodePage^.CP, zCP_UTF8)) then
                       if (ZCompatibleCodePages(FConSettings^.CTRL_CP, zCP_UTF8)) then
-                        if (ZCompatibleCodePages(ZDefaultSystemCodePage, zCP_UTF8)) then
+                        if (ZCompatibleCodePages(ZOSCodePage, zCP_UTF8)) then
                         {no idea what to do with ansiencoding, if everything if set to UTF8!}
                         begin
                           SetLength(ATmp, Size-2);
-                          System.Move(Memory^, Pointer(ATmp)^, Size -2);
+                          {$IFDEF FAST_MOVE}ZFastCode{$ELSE}System{$ENDIF}.Move(Memory^, Pointer(ATmp)^, Size -2);
                           UTmp := ZWideString(ATmp); //random success
                           Blob.SetPWideChar(Pointer(UTmp), Length(UTmp));
                         end
                         else
                           {$IFDEF WITH_MM_CAN_REALLOC_EXTERNAL_MEM} //set data directly -> no move
-                          Blob.SetBlobData(Memory, Size -1, ZDefaultSystemCodePage) //use only one #0 terminator
+                          Blob.SetBlobData(Memory, Size -1, ZOSCodePage) //use only one #0 terminator
                           {$ELSE} //need to move data
-                          Blob.SetPAnsiChar(Memory, ZDefaultSystemCodePage, Size -2)
+                          Blob.SetPAnsiChar(Memory, ZOSCodePage, Size -2)
                           {$ENDIF}
                       else
                         {$IFDEF WITH_MM_CAN_REALLOC_EXTERNAL_MEM} //set data directly -> no move
@@ -260,15 +261,17 @@ begin
     end
     else
       Blob.Clear;
-    try
+    //try
       if Assigned(FField.Dataset) then
         THackedDataset(FField.DataSet).DataEvent(deFieldChange, NativeInt(FField));
-    except
-        ApplicationHandleException(Self);
-    end;
+    //except ApplicationHandleException(Self); end; //commented see https://sourceforge.net/p/zeoslib/tickets/226/
   end
   else
+  begin
     SetPointer(nil, 0); //don't forget! Keep Lob mem alive!
+    if Supports(Blob, IZUnCachedLob, UnCachedLob) then
+      UnCachedLob.FlushBuffer;
+  end;
 
   inherited Destroy;
 end;

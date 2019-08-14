@@ -62,10 +62,10 @@ const
   NTWDBLIB_DLL_LOCATION ='ntwdblib.dll';
   LIBSYBDB_WINDOWS_DLL_LOCATION = 'libsybdb.dll';
   LIBSYBDB_LINUX_DLL_LOCATION = 'libsybdb.so';
-  FREETDS_MSSQL_WINDOWS_DLL_LOCATION = 'msdblibr.dll';
+  FREETDS_MSSQL_WINDOWS_DLL_LOCATION = 'sybdb.dll';
   FREETDS_LINUX_DLL_LOCATION = 'dblib.so';
   FREETDS_OSX_DLL_LOCATION = 'dblib.dylib';
-  FREETDS_SYBASE_WINDOWS_DLL_LOCATION = 'sybdblibd.dll';
+  FREETDS_SYBASE_WINDOWS_DLL_LOCATION = 'sybdb.dll';
 type
   {** Represents a generic interface to DBLIB native API. }
   IZDBLibPlainDriver = interface (IZPlainDriver)
@@ -103,6 +103,7 @@ type
     function dbCmdRow(dbProc: PDBPROCESS): RETCODE;
     function dbNumCols(dbProc: PDBPROCESS): DBINT;
     function dbColName(dbProc: PDBPROCESS; Column: DBINT): PAnsiChar;
+    function dbColSource(dbProc: PDBPROCESS; Column: DBINT): PAnsiChar;
     function dbColType(dbProc: PDBPROCESS; Column: DBINT): DBINT;
     function dbcoltypeinfo(Proc: PDBPROCESS; Column: Integer): PDBTYPEINFO;
     function dbColLen(dbProc: PDBPROCESS; Column: DBINT): DBInt;
@@ -199,6 +200,7 @@ type
     function dbbind(Proc: PDBPROCESS; Column, VarType, VarLen: Integer; VarAddr: PByte): RETCODE;
 
     function dbColName(dbProc: PDBPROCESS; Column: DBINT): PAnsiChar;
+    function dbColSource(dbProc: PDBPROCESS; Column: DBINT): PAnsiChar;
     function dbColType(dbProc: PDBPROCESS; Column: DBINT): DBINT;
     function dbcoltypeinfo(dbProc: PDBPROCESS; Column: Integer): PDBTYPEINFO;
     function dbColLen(dbProc: PDBPROCESS; Column: DBINT): DBInt;
@@ -295,6 +297,7 @@ type
     function dbbind(Proc: PDBPROCESS; Column, VarType, VarLen: Integer; VarAddr: PByte): RETCODE;
 
     function dbColName(dbProc: PDBPROCESS; Column: DBINT): PAnsiChar;
+    function dbColSource(dbProc: PDBPROCESS; Column: DBINT): PAnsiChar;
     function dbColType(dbProc: PDBPROCESS; Column: DBINT): DBINT;
     function dbcoltypeinfo(dbProc: PDBPROCESS; Column: Integer): PDBTYPEINFO;
     function dbColLen(dbProc: PDBPROCESS; Column: DBINT): DBInt;
@@ -394,6 +397,7 @@ type
     FreeTDSAPI: TFreeTDSAPI;
   protected
     function Clone: IZPlainDriver; override; abstract;
+    procedure LoadCodePages; override;
   public
     constructor Create; override;
     destructor Destroy; override;
@@ -465,6 +469,7 @@ type
     constructor Create; override;
     function GetProtocol: string; override;
     function GetDescription: string; override;
+    function dbsetlversion({%H-}Login: PLOGINREC): RETCODE; override;
     function dbsetversion: RETCODE; override;
   end;
 
@@ -516,53 +521,57 @@ uses SysUtils, ZPlainLoader, ZEncoding, {$IFDEF FPC}DOS{$ELSE}Windows{$ENDIF};
 
 procedure AddSybaseCodePages(PlainDriver: TZAbstractPlainDriver);
 begin
-  { MultiByte }
-  PlainDriver.AddCodePage('874THAIBIN', 1, ceAnsi, 874); {Windows Thailändisch, ISO8859-11, binäre Sortierung}
-  PlainDriver.AddCodePage('932JPN', 2, ceAnsi, 932); {Japanese Shift-JIS mit Microsoft-Erweiterungen}
-  PlainDriver.AddCodePage('936ZHO', 3, ceAnsi, 936); {Vereinfachtes Chinesisch, PRC GBK}
-  PlainDriver.AddCodePage('949KOR', 4, ceAnsi, 949); {Korean KS C 5601-1987-Codierung, Wansung}
-  PlainDriver.AddCodePage('950ZHO_HK', 5, ceAnsi, 950); {Traditionelles Chinesisch, Big 5-Kodierung mit HKSCS}
-  PlainDriver.AddCodePage('950ZHO_TW', 6, ceAnsi, 950); {Traditionelles Chinesisch, Big 5-Kodierung}
-  PlainDriver.AddCodePage('EUC_CHINA', 21, ceAnsi, zCP_GB2312); {GB2312-80 Simplified Chinese}
-  PlainDriver.AddCodePage('EUC_JAPAN', 22, ceAnsi, zCP_SHIFTJS); {Japanisch EUC JIS X 0208-1990 und JIS X 0212-1990-Zeichensatz}
-  PlainDriver.AddCodePage('EUC_KOREA', 23, ceAnsi, 1361); { Koreanisch KS C 5601-1992 8-Bit-Zeichensatz, Johab}
-  PlainDriver.AddCodePage('EUC_TAIWAN', 24, ceAnsi, 964); {EUC-TW-Kodierung}
-  PlainDriver.AddCodePage('UCA', 29, ceUTF16, zCP_UTF16, 'utf8'); {UCA	UCA-Standardkollatierung}
-  PlainDriver.AddCodePage('UTF8BIN', 30, ceUTF8, zCP_UTF8); {UTF-8, 8-Bit-Mehrbyte-Zeichensatz für Unicode, binäre Reihenfolge}
-
-  { SingleByte }
-  PlainDriver.AddCodePage('1250LATIN2', 7, ceAnsi, zCP_WIN1250); {Windows Latin 2, Mittel- und Osteuropa}
-  PlainDriver.AddCodePage('1250POL', 8, ceAnsi, zCP_WIN1251); {Windows Latin 2, Polnisch}
-  PlainDriver.AddCodePage('1251CYR', 9, ceAnsi, 1251); {Windows Kyrillisch}
-  PlainDriver.AddCodePage('1252LATIN1', 10, ceAnsi, 1252); { Windows Latin 1, Western}
-  PlainDriver.AddCodePage('1252LT1ACC', 11, ceAnsi, 1252); {Windows-Spezial Latin 1, Western, Zeichen mit Akzent nicht gleich}
-  PlainDriver.AddCodePage('1252NOR', 12, ceAnsi, 1252); {Windows Latin 1, Norwegisch}
-  PlainDriver.AddCodePage('1252SPA', 13, ceAnsi, 1252); {Windows Latin 1, Spanisch}
-  PlainDriver.AddCodePage('1252SWEFIN', 14, ceAnsi, 1252); {Windows Latin 1, Schwedisch/Finnisch}
-  PlainDriver.AddCodePage('1253ELL', 15, ceAnsi, 1253); {Windows Griechisch, ISO8859-7 mit Erweiterungen}
-  PlainDriver.AddCodePage('1254TRK', 16, ceAnsi, 1254); {Windows Türkisch, ISO8859-9 mit Erweiterungen}
-  PlainDriver.AddCodePage('1254TRKALT', 17, ceAnsi, 1254); {Windows Türkisch, ISO8859-9 mit Erweiterungen, I mit I-Punkt gleich I ohne I-Punkt}
-  PlainDriver.AddCodePage('1255HEB', 18, ceAnsi, 1255); {Windows Hebräisch, ISO8859-8 mit Erweiterungen}
-  PlainDriver.AddCodePage('1256ARA', 19, ceAnsi, 1256); {Windows Arabisch, ISO8859-6 mit Erweiterungen}
-  PlainDriver.AddCodePage('1257LIT', 20, ceAnsi, 1257); {Windows Baltische Staaten, Litauisch}
-  PlainDriver.AddCodePage('ISO1LATIN1', 25, ceAnsi, zCP_L1_ISO_8859_1); {ISO8859-1, ISO Latin 1, Western, Latin 1-Sortierreihenfolge}
-  PlainDriver.AddCodePage('ISO9LATIN1', 26, ceAnsi, zCP_L9_ISO_8859_15); {	ISO8859-15, ISO Latin 9, Western, Latin 1-Sortierreihenfolge}
-  PlainDriver.AddCodePage('ISO_1', 27, ceAnsi, zCP_L1_ISO_8859_1); {ISO8859-1, ISO Latin 1, Western}
-  PlainDriver.AddCodePage('ISO_BINENG', 28, ceAnsi, zCP_us_ascii); {Binäre Sortierreihenfolge, Englisch ISO/ASCII 7-Bit-Zuordnung nach Groß- und Kleinschreibung}
+// codepages as found in "SAP Adaptive Server Enterprise 16.0 > Configuration Guide for UNIX Adaptive Server Enterprise 16.0 > Localization Support"
+  PlainDriver.AddCodePage('ascii_8', 1, ceAnsi, zCP_us_ascii);
+  PlainDriver.AddCodePage('big5', 2, ceAnsi, zCP_Big5);
+  PlainDriver.AddCodePage('cp437', 3, ceAnsi, zCP_DOS437);
+  PlainDriver.AddCodePage('cp850', 4, ceAnsi, zCP_DOS850);
+  PlainDriver.AddCodePage('cp852', 5, ceAnsi, zCP_DOS852);
+  PlainDriver.AddCodePage('cp855', 6, ceAnsi, zCP_DOS855);
+  PlainDriver.AddCodePage('cp857', 7, ceAnsi, zCP_DOS857);
+  PlainDriver.AddCodePage('cp858', 8, ceAnsi, zCP_DOS858);
+  PlainDriver.AddCodePage('cp860', 9, ceAnsi, zCP_DOS860);
+  PlainDriver.AddCodePage('cp864', 10, ceAnsi, zCP_DOS864);
+  PlainDriver.AddCodePage('cp866', 11, ceAnsi, zCP_DOS866);
+  PlainDriver.AddCodePage('cp869', 12, ceAnsi, zCP_DOS869);
+  PlainDriver.AddCodePage('cp874', 13, ceAnsi, zCP_WIN874);
+  PlainDriver.AddCodePage('cp932', 14, ceAnsi, zCP_SHIFTJS);
+  PlainDriver.AddCodePage('cp936', 15, ceAnsi, zCP_GB2312);
+  PlainDriver.AddCodePage('cp950', 16, ceAnsi, zCP_Big5);
+  PlainDriver.AddCodePage('cp1250', 17, ceAnsi, zCP_WIN1250);
+  PlainDriver.AddCodePage('cp1251', 18, ceAnsi, zCP_WIN1251);
+  PlainDriver.AddCodePage('cp1252', 19, ceAnsi, zCP_WIN1252);
+  PlainDriver.AddCodePage('cp1253', 20, ceAnsi, zCP_WIN1253);
+  PlainDriver.AddCodePage('cp1254', 21, ceAnsi, zCP_WIN1254);
+  PlainDriver.AddCodePage('cp1255', 22, ceAnsi, zCP_WIN1255);
+  PlainDriver.AddCodePage('cp1256', 23, ceAnsi, zCP_WIN1256);
+  PlainDriver.AddCodePage('cp1257', 24, ceAnsi, zCP_WIN1257);
+  PlainDriver.AddCodePage('cp1258', 25, ceAnsi, zCP_WIN1258);
+  PlainDriver.AddCodePage('gb18030', 26, ceAnsi, zCP_GB18030);
+  PlainDriver.AddCodePage('iso_1', 27, ceAnsi, zCP_L1_ISO_8859_1);
+  PlainDriver.AddCodePage('iso88592', 28, ceAnsi, zCP_L2_ISO_8859_2);
+  PlainDriver.AddCodePage('iso88595', 29, ceAnsi, zCP_L5_ISO_8859_5);
+  PlainDriver.AddCodePage('iso88596', 30, ceAnsi, zCP_L6_ISO_8859_6);
+  PlainDriver.AddCodePage('iso88597', 31, ceAnsi, zCP_L7_ISO_8859_7);
+  PlainDriver.AddCodePage('iso88598', 32, ceAnsi, zCP_L8_ISO_8859_8);
+  PlainDriver.AddCodePage('iso88599', 33, ceAnsi, zCP_L5_ISO_8859_9);
+  PlainDriver.AddCodePage('iso15', 34, ceAnsi, zCP_L9_ISO_8859_15);
+  PlainDriver.AddCodePage('sjis', 35, ceAnsi, zCP_SHIFTJS);
+  PlainDriver.AddCodePage('utf8', 36, ceUTF8, zCP_UTF8);
 end;
 
 procedure AddmMSCodePages(PlainDriver: TZAbstractPlainDriver);
 begin
   { SingleByte }
-  PlainDriver.AddCodePage('WIN1250', 1, ceAnsi, zCP_WIN1250, '', 1, False); {Microsoft Windows Codepage 1250 (East European)}
-  PlainDriver.AddCodePage('WIN1251', 2, ceAnsi, zCP_WIN1251, '', 1, False); {Microsoft Windows Codepage 1251 (Cyrl)}
-  PlainDriver.AddCodePage('WIN1252', 3, ceAnsi, zCP_WIN1252, '', 1, False); {Microsoft Windows Codepage 1252 (ANSI), USASCCI}
-  PlainDriver.AddCodePage('WIN1253', 4, ceAnsi, zCP_WIN1253, '', 1, False); {Microsoft Windows Codepage 1253 (Greek)}
-  PlainDriver.AddCodePage('WIN1254', 5, ceAnsi, zCP_WIN1254, '', 1, False); {Microsoft Windows Codepage 1254 (Turk)}
-  PlainDriver.AddCodePage('WIN1255', 6, ceAnsi, zCP_WIN1255, '', 1, False); {Microsoft Windows Codepage 1255 (Hebrew)}
-  PlainDriver.AddCodePage('WIN1256', 7, ceAnsi, cCP_WIN1256, '', 1, False); {Microsoft Windows Codepage 1256 (Arab)}
-  PlainDriver.AddCodePage('WIN1257', 8, ceAnsi, zCP_WIN1257, '', 1, False); {Microsoft Windows Codepage 1257 (BaltRim)}
-  PlainDriver.AddCodePage('WIN1258', 9, ceAnsi, zCP_WIN1258, '', 1, False); {Microsoft Windows Codepage 1258 (Viet), TCVN-5712}
+  PlainDriver.AddCodePage('WINDOWS-1250', 1, ceAnsi, zCP_WIN1250, '', 1, False); {Microsoft Windows Codepage 1250 (East European)}
+  PlainDriver.AddCodePage('WINDOWS-1251', 2, ceAnsi, zCP_WIN1251, '', 1, False); {Microsoft Windows Codepage 1251 (Cyrl)}
+  PlainDriver.AddCodePage('WINDOWS-1252', 3, ceAnsi, zCP_WIN1252, '', 1, False); {Microsoft Windows Codepage 1252 (ANSI), USASCCI}
+  PlainDriver.AddCodePage('WINDOWS-1253', 4, ceAnsi, zCP_WIN1253, '', 1, False); {Microsoft Windows Codepage 1253 (Greek)}
+  PlainDriver.AddCodePage('WINDOWS-1254', 5, ceAnsi, zCP_WIN1254, '', 1, False); {Microsoft Windows Codepage 1254 (Turk)}
+  PlainDriver.AddCodePage('WINDOWS-1255', 6, ceAnsi, zCP_WIN1255, '', 1, False); {Microsoft Windows Codepage 1255 (Hebrew)}
+  PlainDriver.AddCodePage('WINDOWS-1256', 7, ceAnsi, zCP_WIN1256, '', 1, False); {Microsoft Windows Codepage 1256 (Arab)}
+  PlainDriver.AddCodePage('WINDOWS-1257', 8, ceAnsi, zCP_WIN1257, '', 1, False); {Microsoft Windows Codepage 1257 (BaltRim)}
+  PlainDriver.AddCodePage('WINDOWS-1258', 9, ceAnsi, zCP_WIN1258, '', 1, False); {Microsoft Windows Codepage 1258 (Viet), TCVN-5712}
 end;
 
 { Handle sql server error messages }
@@ -689,8 +698,10 @@ begin
   while I < SQLMessages.Count do begin
     lMesageEntry := PDBLibMessage(SQLMessages[I]);
     if (dbProc = nil) or (lMesageEntry^.dbProc = dbProc) or (lMesageEntry^.dbProc = nil) then begin
-      if lMesageEntry^.Severity > EXINFO then
-        AddToErrorMsg(String(lMesageEntry^.MsgText));
+      if lMesageEntry^.Severity > EXINFO then begin
+        if lMesageEntry^.MsgNo <> 5701
+        then AddToErrorMsg(String(lMesageEntry^.MsgText));
+      end;
       Dispose(lMesageEntry);
       SQLMessages.Delete(I);
     end
@@ -966,6 +977,13 @@ end;
 function TZDBLibBasePlainDriver.dbColName(dbProc: PDBPROCESS; Column: Integer): PAnsiChar;
 begin
   Result := DBLibAPI.dbColName(dbProc, Column);
+end;
+
+function TZDBLibBasePlainDriver.dbColSource(dbProc: PDBPROCESS; Column: Integer): PAnsiChar;
+begin
+  if Assigned(DBLibAPI.dbColSource)
+  then Result := DBLibAPI.dbColSource(dbProc, Column)
+  else Result := nil;
 end;
 
 function TZDBLibBasePlainDriver.dbColType(dbProc: PDBPROCESS; Column: Integer): Integer;
@@ -1568,6 +1586,13 @@ begin
   Result := SybaseAPI.dbColName(dbProc, Column);
 end;
 
+function TZDBLibSybaseASE125PlainDriver.dbColSource(dbProc: PDBPROCESS; Column: DBINT): PAnsiChar;
+begin
+  if Assigned(SybaseAPI.dbColSource)
+  then Result := SybaseAPI.dbColSource(dbProc, Column)
+  else Result := nil;
+end;
+
 function TZDBLibSybaseASE125PlainDriver.dbColType(dbProc: PDBPROCESS; Column: DBINT): DBINT;
 begin
   Result := SybaseAPI.dbColType(dbProc, Column);
@@ -2152,8 +2177,8 @@ end;
 function TZFreeTDSBasePlainDriver.dbLogin: PLOGINREC;
 begin
   Result := inherited dbLogin;
-  if not Assigned(Result)  then
-    if not  (dbsetlversion(Result) = DBSUCCEED ) then
+  if Assigned(Result)  then
+    if not (dbsetlversion(Result) = DBSUCCEED ) then
     begin
       dbloginfree(Result);
       Result := nil;
@@ -2266,6 +2291,14 @@ begin
     Result := False;
 end;
 
+procedure TZFreeTDSBasePlainDriver.LoadCodePages;
+begin
+  AddCodePage('UTF-8', 1, ceUTF8, zCP_UTF8,  '', 4, True);
+  AddCodePage('ISO-8859-1', 2, ceAnsi, zCP_L1_ISO_8859_1, '', 1, True);
+  AddCodePage('ASCII', 3, ceAnsi, zCP_us_ascii, '', 1, True);
+  //AddCodePage('UTF-16', 4, ceUTF16, zCP_UTF16, '', 2, True);
+end;
+
 { TZFreeTDS42MsSQLPlainDriver }
 function TZFreeTDS42MsSQLPlainDriver.Clone: IZPlainDriver;
 begin
@@ -2275,6 +2308,7 @@ end;
 procedure TZFreeTDS42MsSQLPlainDriver.LoadCodePages;
 begin
   AddmMSCodePages(Self);
+  inherited;
 end;
 
 constructor TZFreeTDS42MsSQLPlainDriver.Create;
@@ -2320,8 +2354,7 @@ end;
 
 procedure TZFreeTDS42SybasePlainDriver.LoadCodePages;
 begin
-  AddCodePage('Not implemented!', -1);
-   { TODO -oEgonHugeist : Must be completed!!!! }
+  inherited;
 end;
 
 constructor TZFreeTDS42SybasePlainDriver.Create;
@@ -2366,7 +2399,7 @@ end;
 
 procedure TZFreeTDS50PlainDriver.LoadCodePages;
 begin
-  AddSybaseCodePages(Self);
+  inherited;
 end;
 
 constructor TZFreeTDS50PlainDriver.Create;
@@ -2387,7 +2420,12 @@ end;
 
 function TZFreeTDS50PlainDriver.dbsetversion: RETCODE;
 begin
-  Result := FreeTDSAPI.dbsetversion(TDSDBVERSION_46);
+  Result := FreeTDSAPI.dbsetversion(TDSDBVERSION_100);
+end;
+
+function TZFreeTDS50PlainDriver.dbsetlversion(Login: PLOGINREC): RETCODE;
+begin
+  Result := FreeTDSAPI.dbsetlversion(Login, DBVERSION_100);
 end;
 
 { TZFreeTDS70PlainDriver }

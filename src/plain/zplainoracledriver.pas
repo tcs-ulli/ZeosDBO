@@ -740,8 +740,6 @@ type
     OCIDescribeAny: function(svchp: POCISvcCtx; errhp: POCIError;
       objptr: Pointer; objnm_len: ub4; objptr_typ: ub1; info_level: ub1;
       objtyp: ub1; dschp: POCIDescribe): sword; cdecl;
-  {private
-    OracleAPI: OracleOCI_API;}
   protected
     procedure LoadApi; override;
     function Clone: IZPlainDriver; override;
@@ -1550,7 +1548,7 @@ begin
   AddCodePage('EL8PC737', 382, ceAnsi, zCP_DOS737);
   AddCodePage('AR8ASMO8X', 500, ceAnsi, zCP_DOS708);
   AddCodePage('AR8ADOS720', 558, ceAnsi, zCP_DOS720);
-  AddCodePage('AR8MSWIN1256', 560, ceAnsi, cCP_WIN1256);
+  AddCodePage('AR8MSWIN1256', 560, ceAnsi, zCP_WIN1256);
   AddCodePage('JA16EUC', 830, ceAnsi, zCP_euc_JP_win);
   AddCodePage('JA16SJIS', 832, ceAnsi, zCP_csISO2022JP);
   AddCodePage('JA16EUCTILDE', 837, ceAnsi);

@@ -43,12 +43,16 @@
 
 {$DEFINE PUREPASCAL}
 
-{$DEFINE WITH_VARIANT_UINT64}         // System.TVariant supports UInt64 Values
+{$DEFINE MISS_VARIANTCLEAR}           //oleaut32 external function VariantClear is missing
+{$DEFINE WITH_EARGUMENTEXCEPTION}     // EArgumentException is supported since?????
+{.$DEFINE WITH_VARIANT_UINT64}         // System.TVariant supports UInt64 Values
 {$DEFINE WITH_VARIANT_UNICODESTRING}  // System.TVariant supports UnicodeString Values
 {$DEFINE WITH_TFIELD_FREEBUFFERS} //TField has virtual FreeBuffers procedure
+{$DEFINE TFIELD_HAS_ASBYTES}          // TField.AsBytes is supported
 {$DEFINE TFIELD_HAS_ASLARGEINT}       // TField-baseclass hase AsLargeIntProperty
 {$DEFINE HAVE_UNKNOWN_CIRCULAR_REFERENCE_ISSUES} //seems FPC behaves different to Delphi. Some weired ref issues arrive if Ancastor units using Descendants in implementation uses section??
 {$DEFINE NEED_TYPED_UINT64_CONSTANTS}
+{$DEFINE WITH_PUREPASCAL_INTPOWER}
 {$IFDEF SYSTEMINLINE} //global FPC define
   {$DEFINE WITH_INLINE}           // compiler supports inline methodes
 {$ENDIF}
@@ -72,7 +76,7 @@
 //    {$IF FPC_FULLVERSION>=20400}  // 2.4.0 status is unknown. 2.4.2+ should be generally fine.
 //      {$DEFINE FPC2_4UP}
 //    {$IFEND}
-
+    {$DEFINE WITH_PARAM_ASLARGEINT} //supportet since FPC 2.0.4 -> see http://zeoslib.sourceforge.net/viewtopic.php?p=68484#p68484
     {$DEFINE WITH_FTWIDESTRING}  // Supported from somewhere between 2.2 and 2.4
 
     {$IF FPC_FULLVERSION>=20500}  // Upgrade to 2.6.x asap.
@@ -95,12 +99,10 @@
 
     {$IF FPC_FULLVERSION>=20602}
        {$DEFINE HAVE_TBYTES}         // TBytes is declared only in FPC 2.6.2 instead of 2.6.0 as declared...
-       {$DEFINE WITH_EARGUMENTEXCEPTION}     // EArgumentException is supported since?????
-       {$DEFINE TFIELD_HAS_ASBYTES}          // TField.AsBytes is supported
     {$ENDIF}
 
     {$IFDEF LCL}
-      {.$DEFINE WITH_LCONVENCODING} //Only available for Lazarus
+      {$DEFINE WITH_LCONVENCODING} //Only available for Lazarus
     {$ENDIF}
     {$DEFINE LAZARUSUTF8HACK} // Places that fixed for the Lazarus convention that all strings are UTF8  are marked with this
                               // ifdef. But probably most of them are adhoc hacks, and need revisiting in time.
@@ -121,18 +123,26 @@
   {$ENDIF}
   {$IF FPC_FULLVERSION>20700}       // will be introduced in 2.7+
     {$DEFINE WITH_TRECORDBUFFER}
-    {$DEFINE WITH_TBOOKMARK}        // Have TBookmark
+    {$ifndef MSEgui} 
+      {$DEFINE WITH_TBOOKMARK}        // Have TBookmark
+    {$endif}
     {$DEFINE TFIELD_HAS_ASBYTES}          // TField.AsBytes is supported
     {$DEFINE TFIELD_HAS_ASLARGEINT}  // TFIeld.AsLargeInt is supported
     {$UNDEF WITH_FPC_BOF_BUG}
     {$UNDEF WITH_FPC_MODIFIED_BUG}
     {$DEFINE WITH_RAWBYTESTRING}          // Have RawByteString CP $FFFFF
-    {$DEFINE WITH_FPC_STRING_CONVERSATION} //After string conversations to RawByteString like AnsiZoUTF8 the results are equal to original value
+    {$DEFINE WITH_FPC_STRING_CONVERSATION} //After string conversations to RawByteString like AnsiToUTF8 the results are equal to original value
     {$DEFINE WITH_DEFAULTSYSTEMCODEPAGE}
     {$DEFINE MISS_RBS_SETSTRING_OVERLOAD} //SetString overload for RawByteString is missing
     {$IFNDEF FPC_HAS_BUILTIN_WIDESTR_MANAGER} //Hack for *nix systems where i couldn't locate this define )):
       {$DEFINE FPC_HAS_BUILTIN_WIDESTR_MANAGER}
     {$ENDIF}
+    {$DEFINE WITH_RAWBYTESTRING_CONVERSION_BUG} //2.7 gen did bad conversions with possible data-loss here
+  {$IFEND}
+  {$IF FPC_FULLVERSION>30000}       // will be introduced in 3.0+
+    {.$UNDEF MISS_RBS_SETSTRING_OVERLOAD} //SetString overload for RawByteString is available now
+    {$UNDEF WITH_RAWBYTESTRING_CONVERSION_BUG} //issue seems to be fixed
+    {$DEFINE WITH_VIRTUAL_TFIELD_BIND} //TField has procedure Bind(Binding: Boolean);
   {$IFEND}
 
   // todo
@@ -154,4 +164,4 @@
       {$DEFINE LCONVENCODING_HAS_CP852_FUNCTIONS}
     {$ifend}
   {$ifend}
-{$ENDIF}
+{$ENDIF}

@@ -235,7 +235,8 @@ end;
 
 procedure TZUpdateSqlEditor.Edit;
 begin
-  EditUpdateSQL(TZUpdateSQL(Component));
+  if EditUpdateSQL(TZUpdateSQL(Component)) then
+    Designer.Modified;
 end;
 
 { Global Interface functions }
@@ -323,7 +324,7 @@ begin
       {$ELSE}
         if not (FieldDefs[I].DataType in [ftBlob..ftTypedBinary]) then
       {$ENDIF}
-          List.AddObject(FieldDefs[I].Name, Pointer(not FieldDefs[I].Required));
+          List.AddObject(FieldDefs[I].Name, Pointer(Ord(not FieldDefs[I].Required)));
     finally
       List.EndUpdate;
     end;
@@ -637,8 +638,11 @@ begin
     if ShowModal = mrOk then
     begin
       for Index := low(TUpdateKind) to high(TUpdateKind) do
-        UpdateSQL.SQL[Index] := SQLText[Index];
-      Result := True;
+        if UpdateSQL.SQL[Index].Text <> SQLText[Index].Text then
+        begin
+          UpdateSQL.SQL[Index] := SQLText[Index];
+          Result := True;
+        end;
     end;
   finally
     for Index := Low(TUpdateKind) to High(TUpdateKind) do
@@ -805,12 +809,14 @@ end;
 procedure TZUpdateSQLEditForm.GetTableFieldNames;
 var
   ResultSet: IZResultSet;
+  MetaData: IZDatabaseMetadata;
 begin
   if Assigned(DataSet) and Assigned(DataSet.Connection) and Assigned(DataSet.Connection.dbcConnection)then
   begin
     KeyFieldList.Clear;
     UpdateFieldList.Clear;
-    ResultSet := DataSet.Connection.DbcConnection.GetMetadata.GetColumns('', '', UpdateTableName.Text, '');
+    MetaData := DataSet.Connection.DbcConnection.GetMetadata;
+    ResultSet := MetaData.GetColumns('', '', MetaData.AddEscapeCharToWildcards(UpdateTableName.Text), '');
     if Assigned(ResultSet) then
     begin
       while ResultSet.Next do

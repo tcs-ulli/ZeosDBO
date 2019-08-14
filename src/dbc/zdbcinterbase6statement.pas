@@ -65,7 +65,6 @@ type
   {** Implements Prepared SQL Statement. }
 
   { TZInterbase6PreparedStatement }
-
   TZInterbase6PreparedStatement = class(TZAbstractPreparedStatement)
   private
     FParamSQLData: IZParamsSQLDA;
@@ -74,10 +73,11 @@ type
     FCodePageArray: TWordDynArray;
     FStatusVector: TARRAY_ISC_STATUS;
     FStmtHandle: TISC_STMT_HANDLE;
-    FStatementType: TZIbSqlStatementType;
+    FInitialStatementType, FStatementType: TZIbSqlStatementType;
     FMemPerRow, FArrayOffSet: Integer;
     FPreparedRowsOfArray: Integer;
     FTypeTokens: TRawByteStringDynArray;
+    FZBufferSize: LongWord;
     function ExecuteInternal: Integer;
     function InternalPrepare(const SQL: RawByteString; PrepareParams: Boolean): TZIbSqlStatementType;
   protected
@@ -86,8 +86,8 @@ type
     procedure UnPrepareInParameters; override;
     function CheckInterbase6Error(const Sql: RawByteString = '') : Integer;
   public
-    constructor Create(Connection: IZConnection; const SQL: string; Info: TStrings); overload;
-    constructor Create(Connection: IZConnection; Info: TStrings); overload;
+    constructor Create(const Connection: IZConnection; const SQL: string; Info: TStrings); overload;
+    constructor Create(const Connection: IZConnection; Info: TStrings); overload;
     procedure Close; override;
 
     procedure Prepare; override;
@@ -100,10 +100,9 @@ type
     procedure SetDataArray(ParameterIndex: Integer; const Value; const SQLType: TZSQLType; const VariantType: TZVariantType = vtNull); override;
   end;
   TZInterbase6Statement = class(TZInterbase6PreparedStatement);
-type
+
   TZInterbase6CallableStatement = class(TZAbstractPreparedCallableStatement)
   private
-    FProcSQL: RawByteString;
     FParamSQLData: IZParamsSQLDA;
     FResultXSQLDA: IZSQLDA;
     FIBConnection: IZInterbase6Connection;
@@ -120,7 +119,7 @@ type
     procedure BindInParameters; override;
     procedure UnPrepareInParameters; override;
   public
-    constructor Create(Connection: IZConnection; const SQL: string; Info: TStrings);
+    constructor Create(const Connection: IZConnection; const SQL: string; Info: TStrings);
     procedure Close; override;
 
     procedure Prepare(SelectProc: Boolean); reintroduce;
@@ -133,7 +132,8 @@ type
 
 implementation
 
-uses ZSysUtils, ZDbcUtils, ZPlainFirebirdDriver, ZDbcInterbase6ResultSet;
+uses Math, ZSysUtils, ZDbcUtils, ZFastCode, ZPlainFirebirdDriver,
+  ZDbcInterbase6ResultSet;
 
 { TZInterbase6PreparedStatement }
 function TZInterbase6PreparedStatement.ExecuteInternal: Integer;
@@ -141,31 +141,32 @@ begin
   With FIBConnection do
   begin
     case FStatementType of
-      stSelect: //AVZ Get many rows - only need to use execute not execute2
+      stSelect, stSelectForUpdate: //AVZ Get many rows - only need to use execute not execute2
         GetPlainDriver.isc_dsql_execute(@FStatusVector, GetTrHandle, @FStmtHandle,
           GetDialect, FParamSQLData.GetData);
       stExecProc:
         GetPlainDriver.isc_dsql_execute2(@FStatusVector, GetTrHandle, @FStmtHandle,
           GetDialect, FParamSQLData.GetData, FResultXSQLDA.GetData); //expecting a result
       else
-        GetPlainDriver.isc_dsql_execute2(@FStatusVector, GetTrHandle, @FStmtHandle,
-          GetDialect, FParamSQLData.GetData, nil) //not expecting a result
+        GetPlainDriver.isc_dsql_execute(@FStatusVector, GetTrHandle, @FStmtHandle,
+          GetDialect, FParamSQLData.GetData) //not expecting a result
     end;
     Result := ZDbcInterbase6Utils.CheckInterbase6Error(GetPlainDriver,
       FStatusVector, ConSettings, lcExecute, ASQL);
+    if Result <> DISCONNECT_ERROR then
+      LastUpdateCount := GetAffectedRows(GetPlainDriver, FStmtHandle, FStatementType, ConSettings);
   end;
 end;
 
 function TZInterbase6PreparedStatement.InternalPrepare(const SQL: RawByteString;
   PrepareParams: Boolean): TZIbSqlStatementType;
 begin
-  with Self.FIBConnection do
-  begin
+  with Self.FIBConnection do begin
     Result := ZDbcInterbase6Utils.PrepareStatement(GetPlainDriver,
       GetDBHandle, GetTrHandle, GetDialect, SQL, ConSettings, FStmtHandle); //allocate handle if required or reuse it
-    if PrepareParams and (Result in [stInsert, stUpdate, stDelete]) then
+    if PrepareParams and (Result in [stInsert, stUpdate, stDelete, stExecProc, stSelectForUpdate]) then
       PrepareInParameters;
-    if Result in [stSelect, stExecProc] then
+    if Result in [stSelect, stExecProc, stSelectForUpdate] then
     begin
       FResultXSQLDA := TZSQLDA.Create(GetPlainDriver, GetDBHandle, GetTrHandle, ConSettings);
       PrepareResultSqlData(GetPlainDriver, GetDialect,
@@ -250,7 +251,7 @@ end;
   @param Dialect a dialect Interbase SQL must be 1 or 2 or 3.
   @param Info a statement parameters.
 }
-constructor TZInterbase6PreparedStatement.Create(Connection: IZConnection;
+constructor TZInterbase6PreparedStatement.Create(const Connection: IZConnection;
   const SQL: string; Info: TStrings);
 begin
   inherited Create(Connection, SQL, Info);
@@ -260,9 +261,11 @@ begin
   FCodePageArray[ConSettings^.ClientCodePage^.ID] := ConSettings^.ClientCodePage^.CP; //reset the cp if user wants to wite another encoding e.g. 'NONE' or DOS852 vc WIN1250
   ResultSetType := rtForwardOnly;
   FStmtHandle := 0;
+  FZBufferSize := {$IFDEF UNICODE}UnicodeToUInt64Def{$ELSE}RawToUInt64Def{$ENDIF}(ZDbcUtils.DefineStatementParameter(Self, 'internal_buffer_size', ''), 131072); //128KB by default
+  FZBufferSize := Min(FZBufferSize, FIBConnection.GetXSQLDAMaxSize);
 end;
 
-constructor TZInterbase6PreparedStatement.Create(Connection: IZConnection;
+constructor TZInterbase6PreparedStatement.Create(const Connection: IZConnection;
   Info: TStrings);
 begin
   Create(Connection,'', Info);
@@ -271,12 +274,10 @@ end;
 procedure TZInterbase6PreparedStatement.Close;
 begin
   inherited Close;
-  if FStmtHandle <> 0 then // Free statement-handle! On the other hand: Exception!
-  begin
+  if (FStmtHandle <> 0) then begin// Free statement-handle! On the other hand: Exception!
     FreeStatement(FIBConnection.GetPlainDriver, FStmtHandle, DSQL_drop);
     FStmtHandle := 0;
   end;
-  FParamSQLData := nil;
 end;
 
 procedure TZInterbase6PreparedStatement.Prepare;
@@ -286,31 +287,35 @@ procedure TZInterbase6PreparedStatement.Prepare;
     FStatementType := InternalPrepare(GetExecuteBlockString(FParamSQLData,
       IsParamIndex, InParamCount, Iteration, CachedQueryRaw,
       FIBConnection.GetPlainDriver, FMemPerRow, FPreparedRowsOfArray,
-        FTypeTokens), False);
+        FTypeTokens, FInitialStatementType, FZBufferSize), False);
   end;
 begin
-  if (not Prepared)  then
+  if (not Prepared) then
   begin
     FStatementType := InternalPrepare(ASQL, ArrayCount > 0);
+    FInitialStatementType := FStatementType;
     if (FStatementType in [stInsert, stUpdate, stDelete]) and (ArrayCount > 0) and (FStmtHandle <> 0) then
       PrepareArray(ArrayCount);
     CheckInterbase6Error(ASQL);
     inherited Prepare;
-  end
-  else
-    if (ArrayCount > 0 ) and ((FArrayOffSet+FPreparedRowsOfArray >= ArrayCount ) or (FArrayOffSet = 0)) then
-    begin
-      PrepareArray(ArrayCount-FArrayOffSet);
-      CheckInterbase6Error(ASQL);
-      inherited Prepare;
-    end;
+  end else if (ArrayCount > 0 ) and ((FArrayOffSet+FPreparedRowsOfArray >= ArrayCount ) or (FArrayOffSet = 0)) then begin
+    PrepareArray(ArrayCount-FArrayOffSet);
+    CheckInterbase6Error(ASQL);
+    inherited Prepare;
+  end else if FInitialStatementType <> FStatementType then begin
+    FreeStatement(FIBConnection.GetPlainDriver, FStmtHandle, DSQL_UNPREPARE);
+    FPreparedRowsOfArray := 0;
+    FStatementType := InternalPrepare(ASQL, False);
+    inherited Prepare; //log action and prepare params
+  end;
 end;
 
 procedure TZInterbase6PreparedStatement.Unprepare;
 begin
-  if FStmtHandle <> 0 then //check if prepare did fail. otherwise we unprepare the handle
+  if (FStmtHandle <> 0) then //check if prepare did fail. otherwise we unprepare the handle
     FreeStatement(FIBConnection.GetPlainDriver, FStmtHandle, DSQL_UNPREPARE); //unprepare avoids new allocation for the stmt handle
   FResultXSQLDA := nil;
+  FParamSQLData := nil;
   SetLength(FTypeTokens, 0);
   FMemPerRow := 0;
   inherited Unprepare;
@@ -325,35 +330,30 @@ end;
   @see Statement#execute
 }
 function TZInterbase6PreparedStatement.ExecutePrepared: Boolean;
+var iError: Integer;
 begin
   Prepare;
-  with FIBConnection do
-  begin
-    BindInParameters;
-    ExecuteInternal;
-    LastUpdateCount := GetAffectedRows(GetPlainDriver, FStmtHandle, FStatementType, ConSettings);
+  PrepareLastResultSetForReUse;
+  BindInParameters;
+  iError := ExecuteInternal;
 
-    case FStatementType of
-      stInsert, stDelete, stUpdate, stSelectForUpdate:
-        Result := False;
-      else
-        Result := True;
-    end;
+  case FStatementType of
+    stInsert, stDelete, stUpdate, stSelectForUpdate:
+      Result := False;
+    else
+      Result := True;
+  end;
 
-    { Create ResultSet if possible else free Statement Handle }
+  { Create ResultSet if possible else free Statement Handle }
+  if iError <> DISCONNECT_ERROR then
     if (FStatementType in [stSelect, stExecProc]) and (FResultXSQLDA.GetFieldCount <> 0) then
-    begin
-      LastResultSet := CreateIBResultSet(SQL, Self,
-      TZInterbase6XSQLDAResultSet.Create(Self, SQL, FStmtHandle,
-      FResultXSQLDA, CachedLob, FStatementType));
-    end
+      if not Assigned(LastResultSet) then
+        LastResultSet := CreateIBResultSet(SQL, Self,
+          TZInterbase6XSQLDAResultSet.Create(Self, SQL, FStmtHandle,
+            FResultXSQLDA, True, CachedLob, FStatementType))
+      else
     else
       LastResultSet := nil;
-
-    { Autocommit statement. }
-    if Connection.GetAutoCommit then
-      Connection.Commit;
-  end;
   inherited ExecutePrepared;
 end;
 
@@ -368,29 +368,27 @@ function TZInterbase6PreparedStatement.ExecuteQueryPrepared: IZResultSet;
 var
   iError : Integer; //Check for database disconnect AVZ
 begin
-  Result := nil;
   Prepare;
-  with FIBConnection do
-  begin
-    if Assigned(FOpenResultSet) then
-      IZResultSet(FOpenResultSet).Close;
-    FOpenResultSet := nil;
+  PrepareOpenResultSetForReUse;
+  BindInParameters;
+  iError := ExecuteInternal;
 
-    BindInParameters;
-    iError := ExecuteInternal;
-
+  if (iError <> DISCONNECT_ERROR) then begin
     if (FStatementType in [stSelect, stExecProc]) and ( FResultXSQLDA.GetFieldCount <> 0) then
-    begin
-      if (iError <> DISCONNECT_ERROR) then
-        Result := CreateIBResultSet(SQL, Self,
-          TZInterbase6XSQLDAResultSet.Create(Self, SQL, FStmtHandle,
-          FResultXSQLDA, CachedLob, FStatementType));
-      FOpenResultSet := Pointer(Result);
-    end
-    else
-      if (iError <> DISCONNECT_ERROR) then    //AVZ
-        raise EZSQLException.Create(SCanNotRetrieveResultSetData);
+      if Assigned(FOpenResultSet) then
+        Result := IZResultSet(FOpenResultSet)
+      else
+      begin
+          Result := CreateIBResultSet(SQL, Self,
+            TZInterbase6XSQLDAResultSet.Create(Self, SQL, FStmtHandle,
+              FResultXSQLDA, False, CachedLob, FStatementType));
+        FOpenResultSet := Pointer(Result);
+      end
+  end else begin
+    Result := nil;
+    raise EZSQLException.Create(SCanNotRetrieveResultSetData);
   end;
+
   inherited ExecuteQueryPrepared;
 end;
 
@@ -409,31 +407,15 @@ var
   iError : Integer; //Implementation for graceful disconnect AVZ
 begin
   Prepare;
-  with FIBConnection do
-  begin
-    BindInParameters;
-    iError := ExecuteInternal;
-
-    Result := GetAffectedRows(GetPlainDriver, FStmtHandle, FStatementType, ConSettings);
-    LastUpdateCount := Result;
-
-    case FStatementType of
-      stCommit, stRollback, stUnknown: Result := -1;
-      stSelect: FreeStatement(GetPlainDriver, FStmtHandle, DSQL_CLOSE);  //AVZ
-    end;
-
-    { Autocommit statement. }
-    if Connection.GetAutoCommit and ( FStatementType <> stSelect ) then
-      Connection.Commit;
+  BindInParameters;
+  iError := ExecuteInternal;
+  Result := LastUpdateCount;
+  case FStatementType of
+    stCommit, stRollback, stUnknown: Result := -1;
+    stSelect: if (iError <> DISCONNECT_ERROR) then
+      FreeStatement(FIBConnection.GetPlainDriver, FStmtHandle, DSQL_CLOSE);  //AVZ
   end;
   inherited ExecuteUpdatePrepared;
-
-  //Trail for the disconnection of the database gracefully - AVZ
-  if (iError = DISCONNECT_ERROR) then
-  begin
-    Result := DISCONNECT_ERROR;
-  end;
-
 end;
 
 procedure TZInterbase6PreparedStatement.SetDataArray(ParameterIndex: Integer;
@@ -487,7 +469,7 @@ end;
   @param Dialect a dialect Interbase SQL must be 1 or 2 or 3.
   @param Info a statement parameters.
 }
-constructor TZInterbase6CallableStatement.Create(Connection: IZConnection;
+constructor TZInterbase6CallableStatement.Create(const Connection: IZConnection;
   const SQL: string; Info: TStrings);
 begin
   inherited Create(Connection, SQL, Info);
@@ -571,8 +553,7 @@ end;
 procedure TZInterbase6CallableStatement.Close;
 begin
   inherited Close;
-  if FStmtHandle <> 0 then // Free statement-handle! On the other hand: Exception!
-  begin
+  if FStmtHandle <> 0 then begin// Free statement-handle! On the other hand: Exception!
     FreeStatement(FIBConnection.GetPlainDriver, FStmtHandle, DSQL_DROP);
     FStmtHandle := 0;
   end;
@@ -588,13 +569,13 @@ end;
   and <code>executeUpdate</code>.
   @see Statement#execute
 }
-{$HINTS OFF}
 function TZInterbase6CallableStatement.ExecutePrepared: Boolean;
+var RS: IZResultSet;
 begin
-  Result := False;
   Prepare(False);
-  with FIBConnection do
-  begin
+  PrepareLastResultSetForReUse;
+  PrepareOpenResultSetForReUse;
+  with FIBConnection do begin
     BindInParameters;
     DriverManager.LogMessage(lcExecute, ConSettings^.Protocol, ASQL);
     ExecuteInternal;
@@ -602,25 +583,24 @@ begin
     LastUpdateCount := GetAffectedRows(GetPlainDriver, FStmtHandle, FStatementType, ConSettings);
     Result := not (FStatementType in [stInsert, stDelete, stUpdate, stSelectForUpdate]);
 
-    if (FStatementType in [stSelect, stExecProc])
-      and (FResultXSQLDA.GetFieldCount <> 0) then
-      LastResultSet := TZInterbase6XSQLDAResultSet.Create(Self, SQL,
-        FStmtHandle, FResultXSQLDA, CachedLob, FStatementType)
-    else
-    begin
-      { Fetch data and fill Output params }
-        AssignOutParamValuesFromResultSet(TZInterbase6XSQLDAResultSet.Create(
-          Self, SQL, FStmtHandle, FResultXSQLDA, CachedLob, FStatementType),
+    if (FStatementType in [stSelect, stExecProc]) and (FResultXSQLDA.GetFieldCount <> 0) then
+      if not Assigned(LastResultSet) then
+        LastResultSet := TZInterbase6XSQLDAResultSet.Create(Self, SQL,
+          FStmtHandle, FResultXSQLDA, True, CachedLob, FStatementType)
+      else begin
+        { Fetch data and fill Output params }
+        LastResultSet := nil;
+        if not Assigned(FOpenResultSet) then
+        begin
+          RS := TZInterbase6XSQLDAResultSet.Create(Self, SQL, FStmtHandle,
+            FResultXSQLDA, False, CachedLob, FStatementType);
+          FOpenResultSet := Pointer(RS);
+        end;
+        AssignOutParamValuesFromResultSet(IZResultSet(FOpenResultSet),
             OutParamValues, OutParamCount , FDBParamTypes);
-      LastResultSet := nil;
-    end;
-
-    { Autocommit statement. }
-    if GetAutoCommit then
-      Commit;
+      end;
   end;
 end;
-{$HINTS ON}
 
 {**
   Executes the SQL query in this <code>PreparedStatement</code> object
@@ -630,10 +610,10 @@ end;
     query; never <code>null</code>
 }
 function TZInterbase6CallableStatement.ExecuteQueryPrepared: IZResultSet;
-label JmpExit;
 begin
   Result := nil;
   Prepare(True);
+  PrepareOpenResultSetForReUse;
   with FIBConnection do
   begin
     BindInParameters;
@@ -641,10 +621,15 @@ begin
     DriverManager.LogMessage(lcExecute, ConSettings^.Protocol, FProcSql);
     ExecuteInternal;
     if (FStatementType in [stSelect, stExecProc]) and (FResultXSQLDA.GetFieldCount <> 0) then
-      Result := TZInterbase6XSQLDAResultSet.Create(Self, Self.SQL, FStmtHandle,
-        FResultXSQLDA, CachedLob, FStatementType);
+      if Assigned(FOpenResultSet) then
+        Result := IZResultSet(FOpenResultSet)
+      else
+      begin
+        Result := TZInterbase6XSQLDAResultSet.Create(Self, Self.SQL,
+          FStmtHandle, FResultXSQLDA, False, CachedLob, FStatementType);
+        FOpenResultSet := Pointer(Result);
+      end;
   end;
-  JmpExit:
 end;
 
 {**
@@ -658,8 +643,10 @@ end;
   or 0 for SQL statements that return nothing
 }
 function TZInterbase6CallableStatement.ExecuteUpdatePrepared: Integer;
+var RS: IZResultSet;
 begin
   Prepare(False);
+  PrepareOpenResultSetForReUse;
   with FIBConnection do
   begin
     BindInParameters;
@@ -670,11 +657,13 @@ begin
     Result := GetAffectedRows(GetPlainDriver, FStmtHandle, FStatementType, ConSettings);
     LastUpdateCount := Result;
     { Fetch data and fill Output params }
-    AssignOutParamValuesFromResultSet(TZInterbase6XSQLDAResultSet.Create(Self, SQL, FStmtHandle,
-      FResultXSQLDA, CachedLob, FStatementType), OutParamValues, OutParamCount , FDBParamTypes);
-    { Autocommit statement. }
-    if GetAutoCommit then
-      Commit;
+    if not Assigned(FOpenResultSet) then
+    begin
+      RS := TZInterbase6XSQLDAResultSet.Create(Self, SQL, FStmtHandle,
+        FResultXSQLDA, False, CachedLob, FStatementType);
+      FOpenResultSet := Pointer(RS);
+    end;
+    AssignOutParamValuesFromResultSet(IZResultSet(FOpenResultSet), OutParamValues, OutParamCount , FDBParamTypes);
   end;
 end;
 

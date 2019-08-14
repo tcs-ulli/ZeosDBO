@@ -54,6 +54,7 @@ unit ZAdoToken;
 interface
 
 {$I ZParseSql.inc}
+{$IFDEF ENABLE_ADO}
 
 uses
   Classes, SysUtils, ZTokenizer, ZGenericSqlToken, ZCompatibility;
@@ -63,7 +64,7 @@ type
   TZAdoSQLQuoteState = class (TZQuoteState)
   public
     function NextToken(Stream: TStream; FirstChar: Char;
-      Tokenizer: TZTokenizer): TZToken; override;
+      {%H-}Tokenizer: TZTokenizer): TZToken; override;
 
     function EncodeString(const Value: string; QuoteChar: Char): string; override;
     function DecodeString(const Value: string; QuoteChar: Char): string; override;
@@ -75,7 +76,13 @@ type
     procedure CreateTokenStates; override;
   end;
 
+{$ENDIF ENABLE_ADO}
 implementation
+{$IFDEF ENABLE_ADO}
+
+{$IFDEF FAST_MOVE}
+uses ZFastCode;
+{$ENDIF}
 
 { TZAdoSQLQuoteState }
 
@@ -92,9 +99,10 @@ var
   ReadChar: Char;
   LastChar: Char;
 begin
-  Result.Value := FirstChar;
+  Result.Value := '';
+  InitBuf(FirstChar);
   LastChar := #0;
-  while Stream.Read(ReadChar, SizeOf(Char)) > 0 do
+  while Stream.Read(ReadChar{%H-}, SizeOf(Char)) > 0 do
   begin
     if ((LastChar = FirstChar) and (ReadChar <> FirstChar)
       and (FirstChar <> '[')) or ((FirstChar = '[') and (LastChar = ']')) then
@@ -102,13 +110,14 @@ begin
       Stream.Seek(-SizeOf(Char), soFromCurrent);
       Break;
     end;
-    Result.Value := Result.Value + ReadChar;
+    ToBuf(ReadChar, Result.Value);
     if (LastChar = FirstChar) and (ReadChar = FirstChar) then
       LastChar := #0
     else LastChar := ReadChar;
   end;
+  FlushBuf(Result.Value);
 
-  if CharInSet(FirstChar, ['"', '[']) then
+  if (FirstChar = '"') or (FirstChar='[') then
     Result.TokenType := ttQuotedIdentifier
   else Result.TokenType := ttQuoted;
 end;
@@ -160,7 +169,6 @@ end;
 }
 procedure TZAdoSQLTokenizer.CreateTokenStates;
 begin
-  EscapeState := TZEscapeState.Create;
   NumberState := TZNumberState.Create;
   QuoteState := TZAdoSQLQuoteState.Create;
   WhitespaceState := TZWhitespaceState.Create;
@@ -190,4 +198,5 @@ begin
   SetCharacterState('/', '/', CommentState);
 end;
 
+{$ENDIF ENABLE_ADO}
 end.

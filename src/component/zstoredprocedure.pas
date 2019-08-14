@@ -98,7 +98,7 @@ type
 
     procedure FirstResultSet;
     procedure PreviousResultSet;
-    procedure NextResultSet;
+    function NextResultSet: Boolean; override;
     procedure LastResultSet;
     procedure SetResultSet(const Index: Integer);
     function ResultSetCount: Integer;
@@ -150,6 +150,7 @@ begin
     else
     begin //i need allways all types to cast and there names
       SplitQualifiedObjectName(Trim(SQL), Catalog, Schema, ObjectName);
+      Schema := Connection.DbcConnection.GetMetadata.AddEscapeCharToWildcards(Schema);
       ObjectName := Connection.DbcConnection.GetMetadata.AddEscapeCharToWildcards(ObjectName);
       FMetaResultSet := Connection.DbcConnection.GetMetadata.GetProcedureColumns(Catalog, Schema, ObjectName, '');
     end;
@@ -347,6 +348,7 @@ begin
           Connection.DbcConnection.GetMetadata.GetDatabaseInfo.SupportsCatalogsInProcedureCalls,
           Connection.DbcConnection.GetMetadata.GetDatabaseInfo.SupportsSchemasInProcedureCalls,
           Catalog, Schema, ObjectName);
+        Schema := Connection.DbcConnection.GetMetadata.AddEscapeCharToWildcards(Schema);
         ObjectName := Connection.DbcConnection.GetMetadata.AddEscapeCharToWildcards(ObjectName);
         FMetaResultSet := Connection.DbcConnection.GetMetadata.GetProcedureColumns(Catalog, Schema, ObjectName, '');
         OldParams := TParams.Create;
@@ -394,7 +396,7 @@ end;
 procedure TZStoredProc.FirstResultSet;
 begin
   if Assigned(Statement) then
-    if (Statement as IZCallableStatement).HasMoreResultSets then
+    if Statement.GetMoreResults then
       SetAnotherResultset((Statement as IZCallableStatement).GetFirstResultSet);
 end;
 
@@ -404,18 +406,21 @@ end;
 procedure TZStoredProc.PreviousResultSet;
 begin
   if Assigned(Statement) then
-    if (Statement as IZCallableStatement).HasMoreResultSets then
+    if Statement.GetMoreResults then
       SetAnotherResultset((Statement as IZCallableStatement).GetPreviousResultSet);
 end;
 
 {**
   Procedure the Next retrieved resultset if the givens
 }
-procedure TZStoredProc.NextResultSet;
+function TZStoredProc.NextResultSet: Boolean;
 begin
+  Result := False;
   if Assigned(Statement) then
-    if (Statement as IZCallableStatement).HasMoreResultSets then
+    if Statement.GetMoreResults then begin
+      Result := True;
       SetAnotherResultset((Statement as IZCallableStatement).GetNextResultSet);
+    end;
 end;
 
 {**
@@ -424,7 +429,7 @@ end;
 procedure TZStoredProc.LastResultSet;
 begin
   if Assigned(Statement) then
-    if (Statement as IZCallableStatement).HasMoreResultSets then
+    if Statement.GetMoreResults then
       SetAnotherResultset((Statement as IZCallableStatement).GetLastResultSet);
 end;
 
@@ -450,7 +455,7 @@ function TZStoredProc.ResultSetCount: Integer;
 begin
   Result := 0;
   if Assigned(Statement) then
-    if (Statement as IZCallableStatement).HasMoreResultSets then
+    if Statement.GetMoreResults then
       Result := (Statement as IZCallableStatement).GetResultSetCount;
 end;
 
@@ -462,7 +467,7 @@ function TZStoredProc.BOR: Boolean;
 begin
   Result := True;
   if Assigned(Statement) then
-    if (Statement as IZCallableStatement).HasMoreResultSets then
+    if Statement.GetMoreResults then
       Result := (Statement as IZCallableStatement).BOR;
 end;
 
@@ -474,7 +479,7 @@ function TZStoredProc.EOR: Boolean;
 begin
   Result := True;
   if Assigned(Statement) then
-    if (Statement as IZCallableStatement).HasMoreResultSets then
+    if Statement.GetMoreResults then
       Result := (Statement as IZCallableStatement).EOR;
 end;
 

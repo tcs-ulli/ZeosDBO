@@ -58,7 +58,8 @@ interface
 
 uses
   Types, Classes, {$IFDEF MSEgui}mclasses,{$ENDIF} SysUtils,
-  ZClasses, ZSysUtils, ZDbcIntfs, ZDbcMetadata, ZCompatibility;
+  {%H-}ZClasses, ZSysUtils, ZDbcIntfs, ZDbcMetadata, ZCompatibility,
+  ZURL, ZDbcConnection;
 
 type
 
@@ -98,7 +99,7 @@ type
     function SupportsGroupByUnrelated: Boolean; override;
     function SupportsGroupByBeyondSelect: Boolean; override;
 //    function SupportsLikeEscapeClause: Boolean; override; -> Not implemented
-//    function SupportsMultipleResultSets: Boolean; override; -> Not implemented
+    function SupportsMultipleResultSets: Boolean; override;
 //    function SupportsMultipleTransactions: Boolean; override; -> Not implemented
 //    function SupportsNonNullableColumns: Boolean; override; -> Not implemented
 //    function SupportsMinimumSQLGrammar: Boolean; override; -> Not implemented
@@ -137,8 +138,7 @@ type
     function SupportsOpenStatementsAcrossCommit: Boolean; override;
     function SupportsOpenStatementsAcrossRollback: Boolean; override;
 //    function SupportsTransactions: Boolean; override; -> Not implemented
-//    function SupportsTransactionIsolationLevel(Level: TZTransactIsolationLevel):
-//      Boolean; override; -> Not implemented
+    function SupportsTransactionIsolationLevel(const Level: TZTransactIsolationLevel): Boolean; override;
     function SupportsDataDefinitionAndDataManipulationTransactions: Boolean; override;
     function SupportsDataManipulationTransactionsOnly: Boolean; override;
 //    function SupportsResultSetType(_Type: TZResultSetType): Boolean; override; -> Not implemented
@@ -181,7 +181,7 @@ type
 //    function UsesLocalFiles: Boolean; override; -> Not implemented
     function UsesLocalFilePerTable: Boolean; override;
 //    function StoresUpperCaseIdentifiers: Boolean; override; -> Not implemented
-//    function StoresLowerCaseIdentifiers: Boolean; override; -> Not implemented
+    function StoresLowerCaseIdentifiers: Boolean; override;
     function StoresMixedCaseIdentifiers: Boolean; override;
 //    function StoresUpperCaseQuotedIdentifiers: Boolean; override; -> Not implemented
 //    function StoresLowerCaseQuotedIdentifiers: Boolean; override; -> Not implemented
@@ -204,8 +204,17 @@ type
     function GetExtraNameCharacters: string; override;
   end;
 
+  IZMySQLDatabaseMetadata = interface(IZDatabaseMetadata)
+    ['{204A7ABF-36B2-4753-9F48-4942619C31FA}']
+    procedure SetMySQL_FieldType_Bit_1_IsBoolean(Value: Boolean);
+    procedure SetDataBaseName(const Value: String);
+  end;
   {** Implements MySQL Database Metadata. }
-  TZMySQLDatabaseMetadata = class(TZAbstractDatabaseMetadata)
+  TZMySQLDatabaseMetadata = class(TZAbstractDatabaseMetadata, IZMySQLDatabaseMetadata)
+  private
+    FInfo: TStrings;
+    FMySQL_FieldType_Bit_1_IsBoolean: Boolean;
+    FBoolCachedResultSets: IZCollection;
   protected
     function CreateDatabaseInfo: IZDatabaseInfo; override; // technobot 2008-06-26
 
@@ -249,14 +258,20 @@ type
       TableNamePattern, ColumnNamePattern: string): IZResultSet; override; //EgonHugeist
     function UncachedGetCharacterSets: IZResultSet; override; //EgonHugeist
   public
+    constructor Create(Connection: TZAbstractConnection; const Url: TZURL); override;
     destructor Destroy; override;
+  public
+    procedure SetMySQL_FieldType_Bit_1_IsBoolean(Value: Boolean);
+    procedure SetDataBaseName(const Value: String);
+    procedure ClearCache; override;
   end;
 
 implementation
 
 uses
   Math,
-  ZFastCode, ZMessages, ZDbcMySqlUtils;
+  ZFastCode, ZMessages, ZDbcMySqlUtils, ZDbcUtils, ZDbcMySql, ZCollections,
+  ZSelectSchema;
 
 { TZMySQLDatabaseInfo }
 
@@ -328,12 +343,22 @@ end;
 
 {**
   Does the database treat mixed case unquoted SQL identifiers as
+  case insensitive and store them in lower case?
+  @return <code>true</code> if so; <code>false</code> otherwise
+}
+function TZMySQLDatabaseInfo.StoresLowerCaseIdentifiers: Boolean;
+begin
+  Result := True; //https://dev.mysql.com/doc/refman/5.7/en/identifier-case-sensitivity.html
+end;
+
+{**
+  Does the database treat mixed case unquoted SQL identifiers as
   case insensitive and store them in mixed case?
   @return <code>true</code> if so; <code>false</code> otherwise
 }
 function TZMySQLDatabaseInfo.StoresMixedCaseIdentifiers: Boolean;
 begin
-  Result := True;
+  Result := False; //https://dev.mysql.com/doc/refman/5.7/en/identifier-case-sensitivity.html
 end;
 
 {**
@@ -346,18 +371,17 @@ begin
   Result := 'AUTO_INCREMENT,BINARY,BLOB,ENUM,INFILE,LOAD,MEDIUMINT,OPTION,'
     + 'OUTFILE,REPLACE,SET,TEXT,UNSIGNED,ZEROFILL';
   { mdaems : added all reserved words indicated by mysql documentation (up to mysql 5.1)}
-  Result := Result + 'ACCESSIBLE,ADD,ALL,ALTER,ANALYZE,AND,ASC,ASENSITIVE,'
+  Result := Result + 'ACCESSIBLE,ADD,ALL,ANALYZE,AND,ASC,ASENSITIVE,'
     + ' BEFORE,BETWEEN,BIGINT,BOTH,CALL,CASCADE,CASE,CHANGE,CHARACTER,CHECK,'
-    + 'COLLATE,COLUMN,CONDITION,CONSTRAINT,CONTINUE,CONVERT,CROSS,'
-    + 'CURRENT_DATE,CURRENT_TIME,CURRENT_TIMESTAMP,CURRENT_USER,CURSOR,'
+    + 'COLLATE,CONDITION,CONSTRAINT,CONTINUE,CONVERT,CROSS,CURSOR,'
     + 'DATABASE,DATABASES,DAY_HOUR,DAY_MICROSECOND,DAY_MINUTE,DAY_SECOND,'
     + 'DEC,DECIMAL,DECLARE,DEFAULT,DELAYED,DESC,DESCRIBE,DETERMINISTIC,'
     + 'DISTINCT,DISTINCTROW,DIV,DOUBLE,DUAL,EACH,ELSE,ELSEIF,ENCLOSED,'
-    + 'ESCAPED,EXISTS,EXIT,EXPLAIN,FALSE,FETCH,FLOAT,FLOAT4,FLOAT8,FOR,'
+    + 'ESCAPED,EXISTS,EXIT,EXPLAIN,FALSE,FETCH,FLOAT,FLOAT4,FLOAT8,'
     + 'FORCE,FOREIGN,FULLTEXT,GENERAL,GRANT,HIGH_PRIORITY,HOUR_MICROSECOND,'
     + 'HOUR_MINUTE,HOUR_SECOND,IF,IGNORE,IGNORE_SERVER_IDS,IN,INNER,INOUT,INSENSITIVE,INT,'
     + 'INT1,INT2,INT3,INT4,INT8,INTERVAL,ITERATE,JOIN,KEYS,KILL,LEADING,'
-    + 'LEAVE,LEFT,LIKE,LIMIT,LINEAR,LINES,LOCALTIME,LOCALTIMESTAMP,LOCK,'
+    + 'LEAVE,LEFT,LIKE,LIMIT,LINEAR,LINES,LOCK,'
     + 'LONG,LONGBLOB,LONGTEXT,LOOP,LOW_PRIORITY,MASTER_HEARTBEAT_PERIOD,MASTER_SSL_VERIFY_SERVER_CERT,'
     + 'MATCH,MAXVALUE,MEDIUMBLOB,MEDIUMTEXT,MIDDLEINT,MINUTE_MICROSECOND,MINUTE_SECOND,'
     + 'MOD,MODIFIES,NATURAL,NOT,NO_WRITE_TO_BINLOG,NUMERIC,OPTIMIZE,'
@@ -398,7 +422,7 @@ end;
 function TZMySQLDatabaseInfo.GetStringFunctions: string;
 begin
   Result := 'ASCII,CHAR,CHAR_LENGTH,CHARACTER_LENGTH,CONCAT,ELT,FIELD,'
-    + 'FIND_IN_SET,INSERT,INSTR,INTERVAL,LCASE,LEFT,LENGTH,LOCATE,LOWER,LTRIM,'
+    + 'FIND_IN_SET,INSTR,INTERVAL,LCASE,LEFT,LENGTH,LOCATE,LOWER,LTRIM,'
     + 'MID,POSITION,OCTET_LENGTH,REPEAT,REPLACE,REVERSE,RIGHT,RTRIM,SPACE,'
     + 'SOUNDEX,SUBSTRING,SUBSTRING_INDEX,TRIM,UCASE,UPPER';
   { mdaems : added all string functions indicated by mysql documentation (up to mysql 5.1)}
@@ -417,7 +441,7 @@ end;
 }
 function TZMySQLDatabaseInfo.GetSystemFunctions: string;
 begin
-  Result := 'DATABASE,USER,SYSTEM_USER,SESSION_USER,PASSWORD,ENCRYPT,'
+  Result := 'USER,SYSTEM_USER,SESSION_USER,PASSWORD,'
     + 'LAST_INSERT_ID,VERSION';
   { mdaems : added all system functions indicated by mysql documentation (up to mysql 5.1)}
   Result := Result + 'BENCHMARK,CONNECTION_ID,CURRENT_USER,DEFAULT,FOUND_ROWS,'
@@ -437,8 +461,8 @@ begin
     + 'CURRENT_TIME,NOW,SYSDATE,CURRENT_TIMESTAMP,UNIX_TIMESTAMP,FROM_UNIXTIME,'
     + 'SEC_TO_TIME,TIME_TO_SEC';
   { mdaems : added all time and date functions indicated by mysql documentation (up to mysql 5.1)}
-  Result := Result + 'ADDDATE,ADDTIME,CONVERT_TZ,CURRENT_TIMESTAMP,DATE_ADD,'
-    + 'DATE_SUB,DATE,DATEDIFF,DAYOFWEEK,GET_FORMAT,LAST_DAY,LOCALTIME,'
+  Result := Result + 'ADDDATE,ADDTIME,CONVERT_TZ,DATE_ADD,'
+    + 'DATE_SUB,DATE,DATEDIFF,GET_FORMAT,LAST_DAY,LOCALTIME,'
     + 'LOCALTIMESTAMP,MAKEDATE,MAKETIME,MICROSECOND,STR_TO_DATE,SUBDATE,SUBTIME,'
     + 'TIMEDIFF,TIMESTAMP,TIMESTAMPADD,TIMESTAMPDIFF,UTC_DATE,UTC_TIME,'
     + 'UTC_TIMESTAMP,WEEKOFYEAR,YEARWEEK';
@@ -572,6 +596,19 @@ end;
 function TZMySQLDatabaseInfo.SupportsSubqueriesInComparisons: Boolean;
 begin
   Result := True;
+end;
+
+{**
+  Does this database support the given transaction isolation level?
+  @param level the values are defined in <code>java.sql.Connection</code>
+  @return <code>true</code> if so; <code>false</code> otherwise
+  @see Connection
+}
+function TZMySQLDatabaseInfo.SupportsTransactionIsolationLevel(
+  const Level: TZTransactIsolationLevel): Boolean;
+begin
+  Result := Level in [tiReadUncommitted, tiReadCommitted,
+    tiRepeatableRead, tiSerializable]
 end;
 
 {**
@@ -817,7 +854,8 @@ end;
 function TZMySQLDatabaseInfo.GetDefaultTransactionIsolation:
   TZTransactIsolationLevel;
 begin
-  Result := tiNone;
+  //https://dev.mysql.com/doc/refman/5.7/en/innodb-transaction-isolation-levels.html
+  Result := tiRepeatableRead;
 end;
 
 {**
@@ -825,8 +863,7 @@ end;
   within a transaction supported?
   @return <code>true</code> if so; <code>false</code> otherwise
 }
-function TZMySQLDatabaseInfo.
-  SupportsDataDefinitionAndDataManipulationTransactions: Boolean;
+function TZMySQLDatabaseInfo.SupportsDataDefinitionAndDataManipulationTransactions: Boolean;
 begin
   Result := True;
 end;
@@ -852,6 +889,16 @@ function TZMySQLDatabaseInfo.SupportsMilliSeconds: Boolean;
 begin
   Result := False;
 end;
+
+{**
+  Are multiple <code>ResultSet</code> from a single execute supported?
+  @return <code>true</code> if so; <code>false</code> otherwise
+}
+function TZMySQLDatabaseInfo.SupportsMultipleResultSets: Boolean;
+begin
+  Result := True;
+end;
+
 {**
   Gets the MySQL version info.
   @param MajorVesion the major version of MySQL server.
@@ -865,10 +912,10 @@ var
 begin
   DecodeSqlVersioning(Metadata.GetConnection.GetHostVersion,
     MajorVersion,MinorVersion, Subversion);
-  if (Majorversion < 4) or ((majorversion=4) and (Minorversion = 0)) then
+  if (Majorversion < 4) or ((MajorVersion=4) and (MinorVersion = 0)) then
    with Metadata.GetConnection.CreateStatement.ExecuteQuery('SELECT VERSION()') do
     begin
-      VersionList := SplitString(String(GetString(1)), '.-');
+      VersionList := SplitString(String(GetString(FirstDbcIndex)), '.-');
       try
         if VersionList.Count >= 2 then
         begin
@@ -884,11 +931,28 @@ end;
 
 { TZMySQLDatabaseMetadata }
 
+procedure TZMySQLDatabaseMetadata.ClearCache;
+begin
+  FBoolCachedResultSets.Clear;
+  inherited ClearCache;
+end;
+
+constructor TZMySQLDatabaseMetadata.Create(Connection: TZAbstractConnection;
+  const Url: TZURL);
+begin
+  inherited Create(Connection, Url);
+  FInfo := TStringList.Create;
+  FInfo.Assign(Url.Properties);
+  FInfo.Values['UseResult'] := 'True';
+  FBoolCachedResultSets := TZCollection.Create;
+end;
+
 {**
   Destroys this object and cleanups the memory.
 }
 destructor TZMySQLDatabaseMetadata.Destroy;
 begin
+  FreeAndNil(FInfo);
   inherited Destroy;
 end;
 
@@ -919,6 +983,25 @@ begin
     OutNamePattern := '%'
   else
     OutNamePattern := NormalizePatternCase(NamePattern);
+end;
+
+procedure TZMySQLDatabaseMetadata.SetDataBaseName(const Value: String);
+begin
+  FDatabase := Value;
+end;
+
+procedure TZMySQLDatabaseMetadata.SetMySQL_FieldType_Bit_1_IsBoolean(Value: Boolean);
+var I, Idx: Integer;
+begin
+  if Value <> FMySQL_FieldType_Bit_1_IsBoolean then begin
+    FMySQL_FieldType_Bit_1_IsBoolean := Value;
+    for i := FBoolCachedResultSets.Count -1 downto 0 do begin
+      Idx := CachedResultSets.Values.IndexOf(FBoolCachedResultSets[i]);
+      if Idx > -1 then
+        CachedResultSets.Remove(CachedResultSets.Keys[idx]);
+      FBoolCachedResultSets.Delete(i);
+    end;
+  end;
 end;
 
 {**
@@ -954,8 +1037,6 @@ end;
 function TZMySQLDatabaseMetadata.UncachedGetTables(const Catalog: string;
   const SchemaPattern: string; const TableNamePattern: string;
   const Types: TStringDynArray): IZResultSet;
-const
-  TABLES_TABLE_NAME_Index = {$IFDEF GENERIC_INDEX}0{$ELSE}1{$ENDIF};
 var
   Len: NativeUInt;
   LCatalog, LTableNamePattern: string;
@@ -965,7 +1046,7 @@ begin
     GetCatalogAndNamePattern(Catalog, SchemaPattern, TableNamePattern,
       LCatalog, LTableNamePattern);
 
-    with GetConnection.CreateStatement.ExecuteQuery(
+    with GetConnection.CreateStatementWithParams(FInfo).ExecuteQuery(
       Format('SHOW TABLES FROM %s LIKE ''%s''',
       [IC.Quote(LCatalog), LTableNamePattern])) do
     begin
@@ -973,7 +1054,7 @@ begin
       begin
         Result.MoveToInsertRow;
         Result.UpdateString(CatalogNameIndex, LCatalog);
-        Result.UpdatePAnsiChar(TableNameIndex, GetPAnsiChar(TABLES_TABLE_NAME_Index, Len), @Len);
+        Result.UpdatePAnsiChar(TableNameIndex, GetPAnsiChar(FirstDbcIndex, Len), @Len);
         Result.UpdateString(TableColumnsSQLType, 'TABLE');
         Result.InsertRow;
       end;
@@ -986,7 +1067,7 @@ begin
       try
         EnterSilentMySQLError;
         try
-          if GetConnection.CreateStatement.ExecuteQuery(
+          if GetConnection.CreateStatementWithParams(FInfo).ExecuteQuery(
             Format('SHOW COLUMNS FROM %s.%s',
             [IC.Quote(LCatalog),
              IC.Quote(LTableNamePattern)])).Next then
@@ -1025,7 +1106,7 @@ var
 begin
     Result:=inherited UncachedGetCatalogs;
 
-    with GetConnection.CreateStatement.ExecuteQuery('SHOW DATABASES') do
+    with GetConnection.CreateStatementWithParams(FInfo).ExecuteQuery('SHOW DATABASES') do
     begin
       while Next do
       begin
@@ -1120,9 +1201,9 @@ var
   MySQLType: TZSQLType;
   TempCatalog, TempColumnNamePattern, TempTableNamePattern: string;
 
-  TypeName, TypeInfoSecond: String;
-  Nullable, DefaultValue: String;
-  HasDefaultValue: Boolean;
+  TypeName, TypeInfoSecond, DefaultValue: RawByteString;
+  Nullable: String;
+  HasDefaultValue, AddToBoolCache: Boolean;
   ColumnSize, ColumnDecimals: Integer;
   OrdPosition: Integer;
 
@@ -1138,11 +1219,10 @@ begin
 
     TableNameLength := 0;
     TableNameList := TStringList.Create;
+    AddToBoolCache := False;
     try
-      with GetTables(Catalog, SchemaPattern, TableNamePattern, nil) do
-      begin
-        while Next do
-        begin
+      with GetTables(Catalog, SchemaPattern, TableNamePattern, nil) do begin
+        while Next do begin
           TableNameList.Add(GetString(TableNameIndex)); //TABLE_NAME
           TableNameLength := Max(TableNameLength, Length(TableNameList[TableNameList.Count - 1]));
         end;
@@ -1154,7 +1234,7 @@ begin
         OrdPosition := 1;
         TempTableNamePattern := TableNameList.Strings[I];
 
-        with GetConnection.CreateStatement.ExecuteQuery(
+        with GetConnection.CreateStatementWithParams(FInfo).ExecuteQuery(
           Format('SHOW FULL COLUMNS FROM %s.%s LIKE ''%s''',
           [IC.Quote(TempCatalog),
           IC.Quote(TempTableNamePattern),
@@ -1175,13 +1255,18 @@ begin
             Result.UpdateString(TableNameIndex, TempTableNamePattern) ;
             Result.UpdatePAnsiChar(ColumnNameIndex, GetPAnsiChar(ColumnIndexes[1], Len), @Len);
 
-            ConvertMySQLColumnInfoFromString(GetString(ColumnIndexes[2]),
-              ConSettings, TypeName,
-              TypeInfoSecond, MySQLType, ColumnSize, ColumnDecimals);
+            TypeName := GetRawByteString(ColumnIndexes[2]);
+            ConvertMySQLColumnInfoFromString(TypeName, ConSettings,
+              TypeInfoSecond, MySQLType, ColumnSize, ColumnDecimals, fMySQL_FieldType_Bit_1_IsBoolean);
+            if TypeName = 'enum'
+            then AddToBoolCache := AddToBoolCache or ((TypeInfoSecond = '''Y'''#0'''N''') or (TypeInfoSecond = '''N'''#0'''Y'''))
+            else if TypeName = 'bit'
+            then AddToBoolCache := AddToBoolCache or (TypeInfoSecond = '1');
+
             Result.UpdateInt(TableColColumnTypeIndex, Ord(MySQLType));
-            Result.UpdateString(TableColColumnTypeNameIndex, TypeName);
+            Result.UpdateRawByteString(TableColColumnTypeNameIndex, TypeName);
             Result.UpdateInt(TableColColumnSizeIndex, ColumnSize);
-            Result.UpdateInt(TableColColumnBufLengthIndex, MAXBUF);
+
             Result.UpdateInt(TableColColumnDecimalDigitsIndex, ColumnDecimals);
             Result.UpdateNull(TableColColumnNumPrecRadixIndex);
 
@@ -1213,14 +1298,11 @@ begin
               // So we just ignore this, the field gets set to NULL if nothing was specified...
               HasDefaultValue := false;
               DefaultValue := '';
-            end
-            else
-            begin
-              DefaultValue := GetString(ColumnIndexes[5]);
+            end else begin
+              DefaultValue := GetRawByteString(ColumnIndexes[5]);
               if not (DefaultValue = '') then
                  HasDefaultValue := true
-              else
-              begin
+              else begin
                 // MySQL bizarity 2:
                 // For CHAR, BLOB, TEXT and SET types, '' either means: default value is '' or: no default value
                 // There's absolutely no way of telling when using SHOW COLUMNS FROM,
@@ -1229,16 +1311,14 @@ begin
                 // For ENUM types, '' means: default value is first value in enum set
                 // For other types, '' means: no default value
                 HasDefaultValue := false;
-                if ZFastCode.Pos('blob', TypeName) > 0 then HasDefaultValue := true;
-                if ZFastCode.Pos('text', TypeName) > 0 then HasDefaultValue := true;
-                if ZFastCode.Pos('char', TypeName) > 0 then HasDefaultValue := true;
+                if MySQLType in [stAsciiStream, stUnicodeStream, stBinaryStream] then HasDefaultValue := true;
+                if EndsWith(TypeName, RawByteString('char')) then HasDefaultValue := true;
                 if 'set' = TypeName then HasDefaultValue := true;
-                if 'enum' =  TypeName then
-                  begin
-                    HasDefaultValue := true;
-                    DefaultValue := Copy(TypeInfoSecond, 2,length(TypeInfoSecond)-1);
-                    DefaultValue := Copy(DefaultValue, 1, ZFastCode.Pos('''', DefaultValue) - 1);
-                  end;
+                if 'enum' = TypeName then begin
+                  HasDefaultValue := true;
+                  DefaultValue := Copy(TypeInfoSecond, 2,length(TypeInfoSecond)-1);
+                  DefaultValue := Copy(DefaultValue, 1, ZFastCode.Pos({$IFDEF UNICODE}RawByteString{$ENDIF}(''''), DefaultValue) - 1);
+                end;
               end;
             end;
             if HasDefaultValue then
@@ -1260,22 +1340,28 @@ begin
               end
               else if (MySQLType = stBoolean) and (TypeName = 'enum') then
               begin
-                if (DefaultValue = 'y') or (DefaultValue = 'Y') then
-                  DefaultValue := '1'
-                else
-                  DefaultValue := '0';
+                DefaultValue := BoolStrIntsRaw[ (DefaultValue = 'y') or (DefaultValue = 'Y') ];
               end;
+              Result.UpdateRawByteString(TableColColumnColDefIndex, DefaultValue);
             end;
-            Result.UpdateString(TableColColumnColDefIndex, DefaultValue);
+            if MySQLType = stString then begin
+              Result.UpdateInt(TableColColumnBufLengthIndex, ColumnSize * ConSettings^.ClientCodePage^.CharWidth +1);
+              Result.UpdateInt(TableColColumnCharOctetLengthIndex, ColumnSize * ConSettings^.ClientCodePage^.CharWidth);
+            end else if MySQLType = stUnicodeString then begin
+              Result.UpdateInt(TableColColumnBufLengthIndex, (ColumnSize+1) shl 1);
+              Result.UpdateInt(TableColColumnCharOctetLengthIndex, ColumnSize shl 1);
+            end else if MySQLType in [stBytes, stAsciiStream, stUnicodeStream, stBinaryStream] then
+              Result.UpdateInt(TableColColumnBufLengthIndex, ColumnSize)
+            else
+              Result.UpdateInt(TableColColumnBufLengthIndex, ZSQLTypeToBuffSize(MySQLType));
             //Result.UpdateNull(TableColColumnSQLDataTypeIndex);
             //Result.UpdateNull(TableColColumnSQLDateTimeSubIndex);
-            //Result.UpdateNull(TableColColumnCharOctetLengthIndex);
             Result.UpdateInt(TableColColumnOrdPosIndex, OrdPosition);
 
             Result.UpdateBoolean(TableColColumnAutoIncIndex, //AUTO_INCREMENT
               Trim(LowerCase(GetString(ColumnIndexes[4]))) = 'auto_increment'); //Extra
             Result.UpdateBoolean(TableColColumnCaseSensitiveIndex, //CASE_SENSITIVE
-              IC.IsCaseSensitive(GetString(ColumnIndexes[1]))); //Field
+              IC.IsCaseSensitive(GetString(ColumnIndexes[1])));//Field
             Result.UpdateBoolean(TableColColumnSearchableIndex, True);  //SEARCHABLE
             Result.UpdateBoolean(TableColColumnWritableIndex, True);  //WRITABLE
             Result.UpdateBoolean(TableColColumnDefinitelyWritableIndex, True);  //DEFINITELYWRITABLE
@@ -1287,6 +1373,8 @@ begin
           Close;
         end;
       end;
+      if AddToBoolCache then
+        FBoolCachedResultSets.Add(Result);
     finally
       TableNameList.Free;
     end;
@@ -1323,13 +1411,13 @@ end;
 function TZMySQLDatabaseMetadata.UncachedGetColumnPrivileges(const Catalog: string;
   const Schema: string; const Table: string; const ColumnNamePattern: string): IZResultSet;
 const
-  host_Index = {$IFDEF GENERIC_INDEX}0{$ELSE}1{$ENDIF};
-  db_Index = {$IFDEF GENERIC_INDEX}1{$ELSE}2{$ENDIF};
-  grantor_Index = {$IFDEF GENERIC_INDEX}2{$ELSE}3{$ENDIF};
-  user_Index = {$IFDEF GENERIC_INDEX}3{$ELSE}4{$ENDIF};
-  {%H-}table_name_Index = {$IFDEF GENERIC_INDEX}4{$ELSE}5{$ENDIF};
-  column_name_Index = {$IFDEF GENERIC_INDEX}5{$ELSE}6{$ENDIF};
-  column_priv_Index = {$IFDEF GENERIC_INDEX}6{$ELSE}7{$ENDIF};
+  host_Index            = FirstDbcIndex + 0;
+  db_Index              = FirstDbcIndex + 1;
+  grantor_Index         = FirstDbcIndex + 2;
+  user_Index            = FirstDbcIndex + 3;
+  {%H-}table_name_Index = FirstDbcIndex + 4;
+  column_name_Index     = FirstDbcIndex + 5;
+  column_priv_Index     = FirstDbcIndex + 6;
 var
   Len: NativeUInt;
   I: Integer;
@@ -1358,7 +1446,7 @@ begin
 
     PrivilegesList := TStringList.Create;
     try
-      with GetConnection.CreateStatement.ExecuteQuery(
+      with GetConnection.CreateStatementWithParams(FInfo).ExecuteQuery(
         'SELECT c.host, c.db, t.grantor, c.user, c.table_name,'
         + ' c.column_name, c.column_priv FROM mysql.columns_priv c,'
         + ' mysql.tables_priv t WHERE c.host=t.host AND c.db=t.db'
@@ -1435,12 +1523,12 @@ end;
 function TZMySQLDatabaseMetadata.UncachedGetTablePrivileges(const Catalog: string;
   const SchemaPattern: string; const TableNamePattern: string): IZResultSet;
 const
-  host_Index = {$IFDEF GENERIC_INDEX}0{$ELSE}1{$ENDIF};
-  db_Index = {$IFDEF GENERIC_INDEX}1{$ELSE}2{$ENDIF};
-  table_name_Index = {$IFDEF GENERIC_INDEX}2{$ELSE}3{$ENDIF};
-  grantor_Index = {$IFDEF GENERIC_INDEX}3{$ELSE}4{$ENDIF};
-  user_Index = {$IFDEF GENERIC_INDEX}4{$ELSE}5{$ENDIF};
-  column_priv_Index = {$IFDEF GENERIC_INDEX}5{$ELSE}6{$ENDIF};
+  host_Index        = FirstDbcIndex + 0;
+  db_Index          = FirstDbcIndex + 1;
+  table_name_Index  = FirstDbcIndex + 2;
+  grantor_Index     = FirstDbcIndex + 3;
+  user_Index        = FirstDbcIndex + 4;
+  column_priv_Index = FirstDbcIndex + 5;
 var
   I: Integer;
   Len: NativeUInt;
@@ -1466,7 +1554,7 @@ begin
 
     PrivilegesList := TStringList.Create;
     try
-      with GetConnection.CreateStatement.ExecuteQuery(
+      with GetConnection.CreateStatementWithParams(FInfo).ExecuteQuery(
         'SELECT host,db,table_name,grantor,user,table_priv'
         + ' from mysql.tables_priv WHERE 1=1'
         + SchemaCondition + TableNameCondition
@@ -1543,7 +1631,7 @@ begin
     GetCatalogAndNamePattern(Catalog, Schema, Table,
       LCatalog, LTable);
 
-    with GetConnection.CreateStatement.ExecuteQuery(
+    with GetConnection.CreateStatementWithParams(FInfo).ExecuteQuery(
       Format('SHOW KEYS FROM %s.%s',
       [IC.Quote(LCatalog),
       IC.Quote(LTable)])) do
@@ -1659,7 +1747,7 @@ begin
     KeyList := TStringList.Create;
     CommentList := TStringList.Create;
     try
-      with GetConnection.CreateStatement.ExecuteQuery(
+      with GetConnection.CreateStatementWithParams(FInfo).ExecuteQuery(
         Format('SHOW TABLE STATUS FROM %s LIKE ''%s''',
         [IC.Quote(LCatalog), LTable])) do
       begin
@@ -1801,7 +1889,7 @@ begin
     KeyList := TStringList.Create;
     CommentList := TStringList.Create;
     try
-      with GetConnection.CreateStatement.ExecuteQuery(
+      with GetConnection.CreateStatementWithParams(FInfo).ExecuteQuery(
         Format('SHOW TABLE STATUS FROM %s',
         [IC.Quote(LCatalog)])) do
       begin
@@ -1950,7 +2038,7 @@ begin
     KeyList := TStringList.Create;
     CommentList := TStringList.Create;
     try
-      with GetConnection.CreateStatement.ExecuteQuery(
+      with GetConnection.CreateStatementWithParams(FInfo).ExecuteQuery(
         Format('SHOW TABLE STATUS FROM %s',
         [IC.Quote(LForeignCatalog)])) do
       begin
@@ -2194,7 +2282,7 @@ begin
     GetCatalogAndNamePattern(Catalog, Schema, Table,
       LCatalog, LTable);
 
-    with GetConnection.CreateStatement.ExecuteQuery(
+    with GetConnection.CreateStatementWithParams(FInfo).ExecuteQuery(
       Format('SHOW INDEX FROM %s.%s',
       [IC.Quote(LCatalog),
       IC.Quote(LTable)])) do
@@ -2271,10 +2359,9 @@ var
   ProcedureNameCondition, SchemaCondition: string;
 begin
   If Catalog = '' then
-    If SchemaPattern <> '' then
-    SchemaCondition := ConstructNameCondition(SchemaPattern,'p.db')
-    else
-    SchemaCondition := ConstructNameCondition(FDatabase,'p.db')
+    If SchemaPattern <> ''
+    then SchemaCondition := ConstructNameCondition(SchemaPattern,'p.db')
+    else SchemaCondition := ConstructNameCondition(FDatabase,'p.db')
   else
     SchemaCondition := ConstructNameCondition(Catalog,'p.db');
   ProcedureNameCondition := ConstructNameCondition(ProcedureNamePattern,'p.name');
@@ -2354,16 +2441,17 @@ function TZMySQLDatabaseMetadata.UncachedGetProcedureColumns(const Catalog: stri
   const SchemaPattern: string; const ProcedureNamePattern: string;
   const ColumnNamePattern: string): IZResultSet;
 const
-  {%H-}PROCEDURE_CAT_index = {$IFDEF GENERIC_INDEX}0{$ELSE}1{$ENDIF};
-  PROCEDURE_SCHEM_index = {$IFDEF GENERIC_INDEX}1{$ELSE}2{$ENDIF};
-  PROCEDURE_NAME_Index = {$IFDEF GENERIC_INDEX}2{$ELSE}3{$ENDIF};
-  PARAMS_Index = {$IFDEF GENERIC_INDEX}3{$ELSE}4{$ENDIF};
-  {%H-}REMARKS_Index = {$IFDEF GENERIC_INDEX}4{$ELSE}5{$ENDIF};
-  {%H-}PROCEDURE_TYPE_Index = {$IFDEF GENERIC_INDEX}5{$ELSE}6{$ENDIF};
-  RETURN_VALUES_Index = {$IFDEF GENERIC_INDEX}6{$ELSE}7{$ENDIF};
+  {%H-}PROCEDURE_CAT_index  = FirstDbcIndex + 0;
+  PROCEDURE_SCHEM_index     = FirstDbcIndex + 1;
+  PROCEDURE_NAME_Index      = FirstDbcIndex + 2;
+  PARAMS_Index              = FirstDbcIndex + 3;
+  {%H-}REMARKS_Index        = FirstDbcIndex + 4;
+  {%H-}PROCEDURE_TYPE_Index = FirstDbcIndex + 5;
+  RETURN_VALUES_Index       = FirstDbcIndex + 6;
 var
   Len: NativeUInt;
-  SQL, TypeName, Temp: string;
+  SQL: String;
+  TypeName, Temp: RawByteString;
   ParamList, Params, Names, Returns: TStrings;
   I, ColumnSize, Precision: Integer;
   FieldType: TZSQLType;
@@ -2390,7 +2478,7 @@ var
   function DecomposeParamFromList(AList: TStrings): String;
   var
     J, I, N: Integer;
-    Temp: String;
+    Temp, TypeName: String;
     procedure AddTempString(Const Value: String);
     begin
       if Temp = '' then
@@ -2461,7 +2549,7 @@ begin
     ' ORDER BY p.db, p.name';
 
     try
-      with GetConnection.CreateStatement.ExecuteQuery(SQL) do
+      with GetConnection.CreateStatementWithParams(FInfo).ExecuteQuery(SQL) do
       begin
         ParamList := TStringList.Create;
         Params := TStringList.Create;
@@ -2499,9 +2587,9 @@ begin
             Result.UpdatePAnsiChar(CatalogNameIndex, GetPAnsiChar(PROCEDURE_SCHEM_index, Len), @Len); //PROCEDURE_CAT
             //Result.UpdateNull(SchemaNameIndex); //PROCEDURE_SCHEM
             Result.UpdatePAnsiChar(ProcColProcedureNameIndex, GetPAnsiChar(PROCEDURE_NAME_Index, Len), @Len); //PROCEDURE_NAME
-            ConvertMySQLColumnInfoFromString(Params[2],
-              ConSettings, TypeName, Temp,
-              FieldType, ColumnSize, Precision);
+            TypeName := ConSettings^.ConvFuncs.ZStringToRaw(Params[2], ConSettings^.CTRL_CP, ConSettings^.ClientCodePage^.CP);
+            ConvertMySQLColumnInfoFromString(TypeName, ConSettings, Temp, FieldType, ColumnSize, Precision,
+              fMySQL_FieldType_Bit_1_IsBoolean);
             { process COLUMN_NAME }
             if Params[1] = '' then
               if Params[0] = 'RETURNS' then
@@ -2509,10 +2597,7 @@ begin
               else
                 Result.UpdateString(ProcColColumnNameIndex, GetNextName('$', True))
             else
-              if IC.IsQuoted(Params[1]) then
-                Result.UpdateString(ProcColColumnNameIndex, GetNextName(Copy(Params[1], 2, Length(Params[1])-2), (Length(Params[1])=2)))
-              else
-                Result.UpdateString(ProcColColumnNameIndex, GetNextName(Params[1]));
+              Result.UpdateString(ProcColColumnNameIndex, GetNextName(DecomposeObjectString(Params[1])));
             { COLUMN_TYPE }
             if UpperCase(Params[0]) = 'OUT' then
               Result.UpdateByte(ProcColColumnTypeIndex, Ord(pctOut))
@@ -2531,7 +2616,7 @@ begin
             { DATA_TYPE }
             Result.UpdateByte(ProcColDataTypeIndex, Ord(FieldType));
             { TYPE_NAME }
-            Result.UpdateString(ProcColTypeNameIndex, TypeName);
+            Result.UpdateRawByteString(ProcColTypeNameIndex, TypeName);
             { PRECISION }
             Result.UpdateInt(ProcColPrecisionIndex, ColumnSize);
             { LENGTH }
@@ -2590,14 +2675,14 @@ begin
     Result:=inherited UncachedGetVersionColumns(Catalog, Schema, Table);
 
     Result.MoveToInsertRow;
-    Result.UpdateNull(1);
-    Result.UpdateString(2, 'ctid');
-  //  Result.UpdateInt(3, GetSQLType('tid')); //FIX IT
-    Result.UpdateString(4, 'tid');
-    Result.UpdateNull(5);
-    Result.UpdateNull(6);
-    Result.UpdateNull(7);
-    Result.UpdateInt(4, Ord(vcPseudo));
+    Result.UpdateNull(FirstDbcIndex);
+    Result.UpdateString(FirstDbcIndex + 1, 'ctid');
+  //  Result.UpdateInt(FirstDbcIndex + 2, GetSQLType('tid')); //FIX IT
+    Result.UpdateString(FirstDbcIndex + 3, 'tid');
+    Result.UpdateNull(FirstDbcIndex + 4);
+    Result.UpdateNull(FirstDbcIndex + 5);
+    Result.UpdateNull(FirstDbcIndex + 6);
+    Result.UpdateInt(FirstDbcIndex + 7, Ord(vcPseudo));
     Result.InsertRow;
 end;
 
@@ -2617,6 +2702,10 @@ end;
 }
 function TZMySQLDatabaseMetadata.UncachedGetCollationAndCharSet(const Catalog, SchemaPattern,
   TableNamePattern, ColumnNamePattern: string): IZResultSet; //EgonHugeist
+const
+  COLLATION_NAME_Index     = FirstDbcIndex + 0;
+  CHARACTER_SET_NAME_Index = FirstDbcIndex + 1;
+  MAXLEN_Index             = FirstDbcIndex + 2;
 var
   Len: NativeUInt;
   SQL, LCatalog: string;
@@ -2660,7 +2749,7 @@ begin
           'LEFT JOIN INFORMATION_SCHEMA.CHARACTER_SETS CS '+
           'ON CS.DEFAULT_COLLATE_NAME = CLMS.COLLATION_NAME '+
           'WHERE 1=1'+ SchemaCondition + TableNameCondition + ColumnNameCondition;
-        with GetConnection.CreateStatement.ExecuteQuery(SQL) do
+        with GetConnection.CreateStatementWithParams(FInfo).ExecuteQuery(SQL) do
         begin
           if Next then
           begin
@@ -2669,9 +2758,9 @@ begin
             Result.UpdateString(SchemaNameIndex, LCatalog);   //COLLATION_SCHEMA
             Result.UpdateString(TableNameIndex, TableNamePattern); //COLLATION_TABLE
             Result.UpdateString(ColumnNameIndex, ColumnNamePattern);//COLLATION_COLUMN
-            Result.UpdatePAnsiChar(CollationNameIndex, GetPAnsiCharByName('COLLATION_NAME', Len), @Len); //COLLATION_NAME
-            Result.UpdatePAnsiChar(CharacterSetNameIndex, GetPAnsiCharByName('CHARACTER_SET_NAME', Len), @Len); //CHARACTER_SET_NAME
-            Result.UpdateSmall(CharacterSetSizeIndex, GetSmallByName('MAXLEN')); //CHARACTER_SET_SIZE
+            Result.UpdatePAnsiChar(CollationNameIndex, GetPAnsiChar(COLLATION_NAME_Index, Len), @Len); //COLLATION_NAME
+            Result.UpdatePAnsiChar(CharacterSetNameIndex, GetPAnsiChar(CHARACTER_SET_NAME_Index, Len), @Len); //CHARACTER_SET_NAME
+            Result.UpdateSmall(CharacterSetSizeIndex, GetSmall(MAXLEN_Index)); //CHARACTER_SET_SIZE
             Result.InsertRow;
           end;
           Close;
@@ -2684,7 +2773,7 @@ begin
           'INFORMATION_SCHEMA.CHARACTER_SETS CS ON '+
           'TBLS.TABLE_COLLATION = CS.DEFAULT_COLLATE_NAME '+
           'WHERE 1=1'+ SchemaCondition + TableNameCondition;
-        with GetConnection.CreateStatement.ExecuteQuery(SQL) do
+        with GetConnection.CreateStatementWithParams(FInfo).ExecuteQuery(SQL) do
         begin
           if Next then
           begin
@@ -2692,9 +2781,9 @@ begin
             Result.UpdateString(CatalogNameIndex, LCatalog);
             Result.UpdateString(SchemaNameIndex, LCatalog);
             Result.UpdateString(TableNameIndex, TableNamePattern);
-            Result.UpdatePAnsiChar(CollationNameIndex, GetPAnsiCharByName('TABLE_COLLATION', Len), @Len);
-            Result.UpdatePAnsiChar(CharacterSetNameIndex, GetPAnsiCharByName('CHARACTER_SET_NAME', Len), @Len);
-            Result.UpdateSmall(CharacterSetSizeIndex, GetSmallByName('MAXLEN'));
+            Result.UpdatePAnsiChar(CollationNameIndex, GetPAnsiChar(COLLATION_NAME_Index, Len), @Len);  //COLLATION_NAME
+            Result.UpdatePAnsiChar(CharacterSetNameIndex, GetPAnsiChar(CHARACTER_SET_NAME_Index, Len), @Len); //CHARACTER_SET_NAME
+            Result.UpdateSmall(CharacterSetSizeIndex, GetSmall(MAXLEN_Index)); //CHARACTER_SET_SIZE
             Result.InsertRow;
           end;
           Close;
@@ -2709,17 +2798,17 @@ begin
         'LEFT JOIN INFORMATION_SCHEMA.CHARACTER_SETS CS '+
         'ON CS.DEFAULT_COLLATE_NAME = S.DEFAULT_COLLATION_NAME '+
         'WHERE 1=1 '+ SchemaCondition;
-      with GetConnection.CreateStatement.ExecuteQuery(SQL) do
+      with GetConnection.CreateStatementWithParams(FInfo).ExecuteQuery(SQL) do
       begin
         if Next then
         begin
           Result.MoveToInsertRow;
           Result.UpdateString(CatalogNameIndex, LCatalog);
           Result.UpdateString(SchemaNameIndex, LCatalog);
-          Result.UpdatePAnsiChar(CollationNameIndex, GetPAnsiCharByName('DEFAULT_COLLATION_NAME', Len), @Len);
-          Result.UpdatePAnsiChar(CharacterSetNameIndex, GetPAnsiCharByName('DEFAULT_CHARACTER_SET_NAME', Len), @Len);
+          Result.UpdatePAnsiChar(CollationNameIndex, GetPAnsiChar(COLLATION_NAME_Index, Len), @Len);
+          Result.UpdatePAnsiChar(CharacterSetNameIndex, GetPAnsiChar(CHARACTER_SET_NAME_Index, Len), @Len);
           Result.UpdateNull(CharacterSetIDIndex); //CHARACTER_SET_ID
-          Result.UpdateSmall(CharacterSetSizeIndex, GetSmall(FindColumn('MAXLEN'))); //CHARACTER_SET_SIZE
+          Result.UpdateSmall(CharacterSetSizeIndex, GetSmall(MAXLEN_Index)); //CHARACTER_SET_SIZE
           Result.InsertRow;
         end;
         Close;
@@ -2737,23 +2826,18 @@ var Len: NativeUInt;
 begin
   Result:=inherited UncachedGetCharacterSets;
 
-  with GetConnection.CreateStatement.ExecuteQuery(
+  with GetConnection.CreateStatementWithParams(FInfo).ExecuteQuery(
     'SELECT CHARACTER_SET_NAME '+
     'FROM INFORMATION_SCHEMA.CHARACTER_SETS') do
   begin
     while Next do
     begin
       Result.MoveToInsertRow;
-      Result.UpdatePAnsiChar(CharacterSetsNameIndex, GetPAnsiCharByName('CHARACTER_SET_NAME', Len), @Len);
+      Result.UpdatePAnsiChar(CharacterSetsNameIndex, GetPAnsiChar(FirstDbcIndex, Len), @Len);
       Result.InsertRow;
     end;
     Close;
   end;
 end;
 
-
-
 end.
-
-
-

@@ -54,10 +54,12 @@ unit ZDbcAdo;
 interface
 
 {$I ZDbc.inc}
+{.$DEFINE ENABLE_ADO}
+{$IFDEF ENABLE_ADO}
 
 uses
-  Types, Classes, SysUtils,
-  ZDbcConnection, ZDbcIntfs, ZCompatibility, ZPlainDriver, ZPlainAdoDriver,
+  Classes, {$IFDEF MSEgui}mclasses,{$ENDIF} SysUtils,
+  ZDbcConnection, ZDbcIntfs, ZCompatibility, ZPlainAdoDriver,
   ZPlainAdo, ZURL, ZTokenizer;
 
 type
@@ -78,7 +80,6 @@ type
     ['{50D1AF76-0174-41CD-B90B-4FB770EFB14F}']
     function GetAdoConnection: ZPlainAdo.Connection;
     procedure InternalExecuteStatement(const SQL: ZWideString);
-    procedure CheckAdoError;
   end;
 
   {** Implements a generic Ado Connection. }
@@ -89,7 +90,6 @@ type
     FAdoConnection: ZPlainAdo.Connection;
     function GetAdoConnection: ZPlainAdo.Connection;
     procedure InternalExecuteStatement(const SQL: ZWideString);
-    procedure CheckAdoError;
     procedure StartTransaction;
     procedure InternalCreate; override;
   public
@@ -103,16 +103,14 @@ type
     function CreateCallableStatement(const SQL: string; Info: TStrings):
       IZCallableStatement; override;
 
-    function NativeSQL(const SQL: string): string; override;
-
-    procedure SetAutoCommit(AutoCommit: Boolean); override;
+    procedure SetAutoCommit(Value: Boolean); override;
     procedure SetTransactionIsolation(Level: TZTransactIsolationLevel); override;
 
     procedure Commit; override;
     procedure Rollback; override;
 
     procedure Open; override;
-    procedure Close; override;
+    procedure InternalClose; override;
 
     procedure SetReadOnly(ReadOnly: Boolean); override;
 
@@ -130,9 +128,9 @@ var
 implementation
 
 uses
-  Variants, ActiveX,
+  Variants, ActiveX, {$IFDEF FPC}ZOleDB{$ELSE}OleDB{$ENDIF},
   ZDbcUtils, ZDbcLogging, ZAdoToken, ZSysUtils, ZMessages,
-  ZDbcAdoStatement, ZDbcAdoMetaData, ZEncoding;
+  ZDbcAdoStatement, ZDbcAdoMetadata, ZEncoding, ZDbcAdoUtils;
 
 const                                                //adXactUnspecified
   IL: array[TZTransactIsolationLevel] of TOleEnum = (adXactChaos, adXactReadUncommitted, adXactReadCommitted, adXactRepeatableRead, adXactSerializable);
@@ -178,19 +176,33 @@ end;
 
 function TZAdoDriver.GetTokenizer: IZTokenizer;
 begin
-  if Tokenizer = nil then
-    Tokenizer := TZAdoSQLTokenizer.Create;
-  Result := Tokenizer;
+  Result := TZAdoSQLTokenizer.Create; { thread save! Allways return a new Tokenizer! }
 end;
 
+threadvar
+  AdoCoInitialized: integer;
+
+procedure CoInit;
+begin
+  inc(AdoCoInitialized);
+  if AdoCoInitialized=1 then
+    CoInitialize(nil);
+end;
+
+procedure CoUninit;
+begin
+  assert(AdoCoInitialized>0);
+  dec(AdoCoInitialized);
+  if AdoCoInitialized=0 then
+    CoUninitialize;
+end;
 { TZAdoConnection }
 
 procedure TZAdoConnection.InternalCreate;
 begin
+  CoInit;
   FAdoConnection := CoConnection.Create;
   Self.FMetadata := TZAdoDatabaseMetadata.Create(Self, URL);
-  CheckCharEncoding('CP_ADO');
-  Open;
 end;
 
 {**
@@ -201,6 +213,7 @@ begin
   Close;
   FAdoConnection := nil;
   inherited Destroy;
+  CoUninit;
 end;
 
 {**
@@ -220,19 +233,15 @@ var
 begin
   try
     FAdoConnection.Execute(SQL, RowsAffected, adExecuteNoRecords);
-    DriverManager.LogMessage(lcExecute, ConSettings^.Protocol, ConSettings^.ConvFuncs.ZUnicodeToRaw(SQL, ZDefaultSystemCodePage));
+    DriverManager.LogMessage(lcExecute, ConSettings^.Protocol, ConSettings^.ConvFuncs.ZUnicodeToRaw(SQL, ZOSCodePage));
   except
     on E: Exception do
     begin
-      DriverManager.LogError(lcExecute, ConSettings^.Protocol, ConSettings^.ConvFuncs.ZUnicodeToRaw(SQL, ZDefaultSystemCodePage), 0,
+      DriverManager.LogError(lcExecute, ConSettings^.Protocol, ConSettings^.ConvFuncs.ZUnicodeToRaw(SQL, ZOSCodePage), 0,
         ConvertEMsgToRaw(E.Message, ConSettings^.ClientCodePage^.CP));
       raise;
     end;
   end;
-end;
-
-procedure TZAdoConnection.CheckAdoError;
-begin
 end;
 
 {**
@@ -242,7 +251,7 @@ procedure TZAdoConnection.ReStartTransactionSupport;
 begin
   if Closed then Exit;
 
-  if not (AutoCommit or (GetTransactionIsolation = tiNone)) then
+  if not (AutoCommit) then
     StartTransaction;
 end;
 
@@ -252,6 +261,10 @@ end;
 procedure TZAdoConnection.Open;
 var
   LogMessage: RawByteString;
+  DBInitialize: IDBInitialize;
+  Command: ZPlainAdo.Command;
+  DBCreateCommand: IDBCreateCommand;
+  GetDataSource: IGetDataSource;
 begin
   if not Closed then Exit;
 
@@ -261,10 +274,11 @@ begin
       FAdoConnection.Set_Mode(adModeRead)
     else
       FAdoConnection.Set_Mode(adModeUnknown);
-    FAdoConnection.Open(Database, User, Password, -1{adConnectUnspecified});
+    FAdoConnection.Open(WideString(Database), WideString(User), WideString(Password), -1{adConnectUnspecified});
     FAdoConnection.Set_CursorLocation(adUseClient);
     DriverManager.LogMessage(lcConnect, ConSettings^.Protocol, LogMessage);
-    if FClientCodePage <> 'CP_ADO' then CheckCharEncoding('CP_ADO', True)
+    ConSettings^.AutoEncode := {$IFDEF UNICODE}False{$ELSE}True{$ENDIF};
+    CheckCharEncoding('CP_UTF16');
   except
     on E: Exception do
     begin
@@ -276,6 +290,16 @@ begin
 
   inherited Open;
 
+  {EH: the only way to get back to generic Ole is using the command ... }
+  Command := CoCommand.Create;
+  Command.Set_ActiveConnection(FAdoConnection);
+  if Succeeded(((Command as ADOCommandConstruction).OLEDBCommand as ICommand).GetDBSession(IID_IDBCreateCommand, IInterface(DBCreateCommand))) then
+    if DBCreateCommand.QueryInterface(IID_IGetDataSource, GetDataSource) = S_OK then
+      if Succeeded(GetDataSource.GetDataSource(IID_IDBInitialize, IInterFace(DBInitialize))) then
+        (GetMetadata.GetDatabaseInfo as IZOleDBDatabaseInfo).InitilizePropertiesFromDBInfo(DBInitialize, ZAdoMalloc);
+
+  if not GetMetadata.GetDatabaseInfo.SupportsTransactionIsolationLevel(GetTransactionIsolation) then
+    inherited SetTransactionIsolation(GetMetadata.GetDatabaseInfo.GetDefaultTransactionIsolation);
   FAdoConnection.IsolationLevel := IL[GetTransactionIsolation];
   ReStartTransactionSupport;
 end;
@@ -283,15 +307,11 @@ end;
 function TZAdoConnection.GetBinaryEscapeString(const Value: TBytes): String;
 begin
   Result := GetSQLHexString(PAnsiChar(Value), Length(Value), True);
-  if GetAutoEncodeStrings then
-    Result := GetDriver.GetTokenizer.GetEscapeString(Result)
 end;
 
 function TZAdoConnection.GetBinaryEscapeString(const Value: RawByteString): String;
 begin
   Result := GetSQLHexString(PAnsiChar(Value), Length(Value), True);
-  if GetAutoEncodeStrings then
-    Result := GetDriver.GetTokenizer.GetEscapeString(Result)
 end;
 
 {**
@@ -311,7 +331,7 @@ end;
 function TZAdoConnection.CreateRegularStatement(Info: TStrings): IZStatement;
 begin
   if IsClosed then Open;
-  Result := TZAdoStatement.Create(PlainDriver, Self, '', Info);
+  Result := TZAdoStatement.Create(Self, Info);
 end;
 
 {**
@@ -346,7 +366,9 @@ function TZAdoConnection.CreatePreparedStatement(
   const SQL: string; Info: TStrings): IZPreparedStatement;
 begin
   if IsClosed then Open;
-  Result := TZAdoPreparedStatement.Create(PlainDriver, Self, SQL, Info);
+  if GetMetadata.GetDatabaseInfo.SupportsParameterBinding
+  then Result := TZAdoPreparedStatement.Create(Self, SQL, Info)
+  else Result := TZAdoEmulatedPreparedStatement.Create(Self, SQL, Info)
 end;
 
 {**
@@ -379,22 +401,7 @@ function TZAdoConnection.CreateCallableStatement(const SQL: string; Info: TStrin
   IZCallableStatement;
 begin
   if IsClosed then Open;
-  Result := TZAdoCallableStatement.Create(PlainDriver, Self, SQL, Info);
-end;
-
-{**
-  Converts the given SQL statement into the system's native SQL grammar.
-  A driver may convert the JDBC sql grammar into its system's
-  native SQL grammar prior to sending it; this method returns the
-  native form of the statement that the driver would have sent.
-
-  @param sql a SQL statement that may contain one or more '?'
-    parameter placeholders
-  @return the native form of this statement
-}
-function TZAdoConnection.NativeSQL(const SQL: string): string;
-begin
-  Result := SQL;
+  Result := TZAdoCallableStatement.Create(Self, SQL, Info);
 end;
 
 {**
@@ -417,10 +424,10 @@ end;
 
   @param autoCommit true enables auto-commit; false disables auto-commit.
 }
-procedure TZAdoConnection.SetAutoCommit(AutoCommit: Boolean);
+procedure TZAdoConnection.SetAutoCommit(Value: Boolean);
 begin
-  if GetAutoCommit = AutoCommit then  Exit;
-  if not Closed and AutoCommit then
+  if AutoCommit = Value then  Exit;
+  if not Closed and Value then
   begin
     if (FAdoConnection.State = adStateOpen) and
        (GetTransactionIsolation <> tiNone) then
@@ -548,7 +555,7 @@ end;
   garbage collected. Certain fatal errors also result in a closed
   Connection.
 }
-procedure TZAdoConnection.Close;
+procedure TZAdoConnection.InternalClose;
 var
   LogMessage: RawByteString;
 begin
@@ -556,22 +563,19 @@ begin
     Exit;
 
   SetAutoCommit(True);
-
-  LogMessage := 'CLOSE CONNECTION TO "'+ConSettings^.Database+'"';
   try
+    LogMessage := 'CLOSE CONNECTION TO "'+ConSettings^.Database+'"';
     if FAdoConnection.State = adStateOpen then
       FAdoConnection.Close;
+//      FAdoConnection := nil;
     DriverManager.LogMessage(lcExecute, ConSettings^.Protocol, LogMessage);
   except
-    on E: Exception do
-    begin
+    on E: Exception do begin
       DriverManager.LogError(lcExecute, ConSettings^.Protocol, LogMessage, 0,
        ConvertEMsgToRaw(E.Message, ConSettings^.ClientCodePage^.CP));
       raise;
     end;
   end;
-
-  inherited;
 end;
 
 {**
@@ -603,7 +607,8 @@ begin
 
   LogMessage := 'SET CATALOG '+ConSettings^.ConvFuncs.ZStringToRaw(Catalog, ConSettings^.CTRL_CP, ConSettings^.ClientCodePage^.CP);
   try
-    FAdoConnection.DefaultDatabase := Catalog;
+    if Catalog <> '' then //see https://sourceforge.net/p/zeoslib/tickets/117/
+      FAdoConnection.DefaultDatabase := WideString(Catalog);
     DriverManager.LogMessage(lcExecute, ConSettings^.Protocol, LogMessage);
   except
     on E: Exception do
@@ -621,7 +626,7 @@ end;
 }
 function TZAdoConnection.GetCatalog: string;
 begin
-  Result := FAdoConnection.DefaultDatabase;
+  Result := String(FAdoConnection.DefaultDatabase);
 end;
 
 {**
@@ -645,10 +650,14 @@ begin
 end;
 
 initialization
+  AdoCoInitialized := 0;
   AdoDriver := TZAdoDriver.Create;
   DriverManager.RegisterDriver(AdoDriver);
 finalization
   if Assigned(DriverManager) then
     DriverManager.DeregisterDriver(AdoDriver);
   AdoDriver := nil;
+{$ELSE}
+implementation
+{$ENDIF ENABLE_ADO}
 end.

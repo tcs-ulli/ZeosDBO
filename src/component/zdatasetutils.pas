@@ -59,7 +59,8 @@ uses
   Types, Classes, SysUtils, {$IFDEF MSEgui}mclasses, mdb{$ELSE}Db{$ENDIF},
   Contnrs, {$IFDEF WITH_UNITANSISTRINGS}AnsiStrings, {$ENDIF}
   {$IFDEF MSWINDOWS}Windows, {$ENDIF}
-  ZDbcIntfs, ZDbcCache, ZCompatibility, ZExpression, ZVariant, ZTokenizer;
+  ZDbcIntfs, ZDbcCache, ZCompatibility, ZExpression, ZVariant, ZTokenizer,
+  ZSelectSchema;
 
 {**
   Converts DBC Field Type to TDataset Field Type.
@@ -90,7 +91,7 @@ function ConvertFieldsToColumnInfo(Fields: TFields): TObjectList;
   @param RowAccessor a destination row accessor.
 }
 procedure FetchFromResultSet(ResultSet: IZResultSet;
-  const FieldsLookupTable: TIntegerDynArray; Fields: TFields;
+  const FieldsLookupTable: TPointerDynArray; Fields: TFields;
   RowAccessor: TZRowAccessor);
 
 {**
@@ -101,17 +102,17 @@ procedure FetchFromResultSet(ResultSet: IZResultSet;
   @param RowAccessor a destination row accessor.
 }
 procedure PostToResultSet(ResultSet: IZResultSet;
-  const FieldsLookupTable: TIntegerDynArray; Fields: TFields;
+  const FieldsLookupTable: TPointerDynArray; Fields: TFields;
   RowAccessor: TZRowAccessor);
 
 {**
   Defines fields indices for the specified dataset.
   @param DataSet a dataset object.
-  @param FieldNames a list of field names.
+  @param FieldNames a list of field names or field indices separated by ',' or ';'
   @param OnlyDataFields <code>True</code> if only data fields selected.
 }
 function DefineFields(DataSet: TDataset; const FieldNames: string;
-  var OnlyDataFields: Boolean): TObjectDynArray;
+  out OnlyDataFields: Boolean; const Tokenizer: IZTokenizer): TObjectDynArray;
 
 {**
   Defins a indices of filter fields.
@@ -192,9 +193,10 @@ function CompareFieldsFromResultSet(const FieldRefs: TObjectDynArray;
 {**
   Defines a list of key field names.
   @param Fields a collection of dataset fields.
+  @param IZIdentifierConvertor IdentifierConverter for the used database
   @return a list of key field names.
 }
-function DefineKeyFields(Fields: TFields): string;
+function DefineKeyFields(Fields: TFields; const IdConverter: IZIdentifierConvertor): string;
 
 {**
   Converts datetime value into TDataset internal presentation.
@@ -231,8 +233,8 @@ function CompareKeyFields(Field1: TField; ResultSet: IZResultSet;
   @param OnlyDataFields <code>True</code> if only data fields selected.
 }
 procedure DefineSortedFields(DataSet: TDataset;
-  const SortedFields: string; var FieldRefs: TObjectDynArray;
-  var CompareKinds: TComparisonKindArray; var OnlyDataFields: Boolean);
+  const SortedFields: string; out FieldRefs: TObjectDynArray;
+  out CompareKinds: TComparisonKindArray; out OnlyDataFields: Boolean);
 
 {**
   Creates a fields lookup table to define fixed position
@@ -240,7 +242,7 @@ procedure DefineSortedFields(DataSet: TDataset;
   @param Fields a collection of TDataset fields in initial order.
   @returns a fields lookup table.
 }
-function CreateFieldsLookupTable(Fields: TFields): TIntegerDynArray;
+function CreateFieldsLookupTable(Fields: TFields): TPointerDynArray;
 
 {**
   Defines an original field index in the dataset.
@@ -248,7 +250,7 @@ function CreateFieldsLookupTable(Fields: TFields): TIntegerDynArray;
   @param Field a TDataset field object.
   @returns an original fields index or -1 otherwise.
 }
-function DefineFieldIndex(const FieldsLookupTable: TIntegerDynArray;
+function DefineFieldIndex(const FieldsLookupTable: TPointerDynArray;
   Field: TField): Integer;
 
 {**
@@ -257,7 +259,7 @@ function DefineFieldIndex(const FieldsLookupTable: TIntegerDynArray;
   @param FieldRefs a TDataset field object references.
   @returns an array with original fields indices.
 }
-function DefineFieldIndices(const FieldsLookupTable: TIntegerDynArray;
+function DefineFieldIndices(const FieldsLookupTable: TPointerDynArray;
   const FieldRefs: TObjectDynArray): TIntegerDynArray;
 
 {**
@@ -475,7 +477,7 @@ end;
   @param RowAccessor a destination row accessor.
 }
 procedure FetchFromResultSet(ResultSet: IZResultSet;
-  const FieldsLookupTable: TIntegerDynArray; Fields: TFields;
+  const FieldsLookupTable: TPointerDynArray; Fields: TFields;
   RowAccessor: TZRowAccessor);
 var
   I, FieldIndex: Integer;
@@ -533,7 +535,7 @@ begin
       ftCurrency:
         RowAccessor.SetCurrency(FieldIndex, ResultSet.GetCurrency(ColumnIndex));
       ftString, ftWideString:
-        if ResultSet.GetConSettings^.ClientCodePage^.IsStringFieldCPConsistent then
+        if RowAccessor.IsRaw then
           RowAccessor.SetPAnsiChar(FieldIndex, ResultSet.GetPAnsiChar(ColumnIndex, Len), @Len)
         else
           RowAccessor.SetPWideChar(FieldIndex, ResultSet.GetPWideChar(ColumnIndex, Len), @Len);
@@ -566,7 +568,7 @@ end;
   @param RowAccessor a destination row accessor.
 }
 procedure PostToResultSet(ResultSet: IZResultSet;
-  const FieldsLookupTable: TIntegerDynArray; Fields: TFields;
+  const FieldsLookupTable: TPointerDynArray; Fields: TFields;
   RowAccessor: TZRowAccessor);
 var
   I, FieldIndex: Integer;
@@ -630,7 +632,7 @@ begin
         ResultSet.UpdateCurrency(ColumnIndex,
           RowAccessor.GetCurrency(FieldIndex, WasNull));
       ftString, ftWidestring:
-        if ResultSet.GetConSettings^.ClientCodePage^.IsStringFieldCPConsistent then
+        if RowAccessor.IsRaw then
           ResultSet.UpdatePAnsiChar(ColumnIndex,
             RowAccessor.GetPAnsiChar(FieldIndex, WasNull, Len), @Len)
         else
@@ -677,9 +679,9 @@ end;
   @param OnlyDataFields <code>True</code> if only data fields selected.
 }
 function DefineFields(DataSet: TDataset; const FieldNames: string;
-  var OnlyDataFields: Boolean): TObjectDynArray;
+  out OnlyDataFields: Boolean; const Tokenizer: IZTokenizer): TObjectDynArray;
 var
-  I: Integer;
+  I, TokenValueInt: Integer;
   Tokens: TStrings;
   TokenType: TZTokenType;
   TokenValue: string;
@@ -689,29 +691,33 @@ begin
   OnlyDataFields := True;
   FieldCount := 0;
   SetLength(Result, FieldCount);
-  Tokens := CommonTokenizer.TokenizeBufferToList(FieldNames,
+  Tokens := Tokenizer.TokenizeBufferToList(FieldNames,
     [toSkipEOF, toSkipWhitespaces, toUnifyNumbers, toDecodeStrings]);
 
   try
     for I := 0 to Tokens.Count - 1 do
     begin
-      TokenType := TZTokenType({$IFDEF oldFPC}Pointer({$ENDIF}
-        Tokens.Objects[I]{$IFDEF oldFPC}){$ENDIF});
+      TokenType := TZTokenType({$IFDEF oldFPC}Pointer{$ENDIF}(Tokens.Objects[I]));
       TokenValue := Tokens[I];
       Field := nil;
 
-      if TokenType in [ttWord, ttQuoted] then
-      begin
-        Field := DataSet.FieldByName(TokenValue);
-      end
-      else if (TokenType = ttNumber)
-        and (StrToIntDef(TokenValue, 0) < Dataset.Fields.Count) then
-      begin
-        Field := Dataset.Fields[StrToIntDef(TokenValue, 0)];
-      end
-      else if (TokenValue <> ',') and (TokenValue <> ';') then
-      begin
-        raise EZDatabaseError.Create(Format(SIncorrectSymbol, [TokenValue]));
+      case TokenType of
+        ttQuoted, ttQuotedIdentifier,// - shouldn't be returned as toDecodeStrings is used
+        ttWord:
+          Field := DataSet.FieldByName(TokenValue); // Will raise exception if field not present
+        ttNumber:
+          begin
+            TokenValueInt := StrToInt(TokenValue);
+            // Tokenizer always returns numbers > 0
+            if TokenValueInt >= Dataset.Fields.Count then
+              raise EZDatabaseError.CreateFmt(SFieldNotFound2, [TokenValueInt]);
+            Field := Dataset.Fields[TokenValueInt];
+          end;
+        ttSymbol:
+          if (TokenValue <> ',') and (TokenValue <> ';') then
+            raise EZDatabaseError.CreateFmt(SIncorrectSymbol, [TokenValue]);
+        else
+          raise EZDatabaseError.CreateFmt(SIncorrectSymbol, [TokenValue]);
       end;
 
       if Field <> nil then
@@ -725,9 +731,6 @@ begin
   finally
     Tokens.Free;
   end;
-
-  if Length(Result) = 0 then
-    Result := nil;
 end;
 
 {**
@@ -1273,24 +1276,16 @@ end;
   @param Fields a collection of dataset fields.
   @return a list of key field names.
 }
-function DefineKeyFields(Fields: TFields): string;
+function DefineKeyFields(Fields: TFields; const IdConverter: IZIdentifierConvertor): string;
 var
   I: Integer;
-  Temp: string;
 begin
   Result := '';
   for I := 0 to Fields.Count - 1 do
   begin
     if (Fields[I].FieldKind = fkData)
       and not (Fields[I].DataType in [ftBlob, ftMemo, ftBytes {$IFDEF WITH_WIDEMEMO}, ftWideMemo{$ENDIF}]) then
-    begin
-      if Result <> '' then
-        Result := Result + ',';
-      Temp := Fields[I].FieldName;
-      if (ZFastCode.Pos(' ', Temp) > 0) or (ZFastCode.Pos('-', Temp) > 0) or (ZFastCode.Pos('.', Temp) > 0) then
-        Temp := '"' + Temp + '"';
-      Result := Result + Temp;
-    end;
+      AppendSepString(Result, IdConverter.Quote(Fields[I].FieldName), ',');
   end;
 end;
 
@@ -1440,18 +1435,20 @@ end;
   @param OnlyDataFields <code>True</code> if only data fields selected.
 }
 procedure DefineSortedFields(DataSet: TDataset;
-  const SortedFields: string; var FieldRefs: TObjectDynArray;
-  var CompareKinds: TComparisonKindArray; var OnlyDataFields: Boolean);
+  const SortedFields: string; out FieldRefs: TObjectDynArray;
+  out CompareKinds: TComparisonKindArray; out OnlyDataFields: Boolean);
 var
-  I: Integer;
+  I, TokenValueInt: Integer;
   Tokens: TStrings;
   TokenType: TZTokenType;
   TokenValue: string;
   Field: TField;
   FieldCount: Integer;
+  PrevTokenWasField: Boolean;
 begin
   OnlyDataFields := True;
   FieldCount := 0;
+  PrevTokenWasField := False;
   SetLength(FieldRefs, FieldCount);
   SetLength(CompareKinds, FieldCount);
   Tokens := CommonTokenizer.TokenizeBufferToList(SortedFields,
@@ -1460,33 +1457,49 @@ begin
   try
     for I := 0 to Tokens.Count - 1 do
     begin
-      TokenType := TZTokenType({$IFDEF OLDFPC}Pointer({$ENDIF}
-        Tokens.Objects[I]{$IFDEF OLDFPC}){$ENDIF});
+      TokenType := TZTokenType({$IFDEF oldFPC}Pointer{$ENDIF}(Tokens.Objects[I]));
       TokenValue := Tokens[I];
       Field := nil;
 
-      if ((UpperCase(TokenValue) = 'DESC')
-        or (UpperCase(TokenValue) = 'ASC')) and (FieldCount > 0) then
-      begin
-        if UpperCase(TokenValue) = 'DESC' then
-          CompareKinds[FieldCount - 1] := ckDescending
+      case TokenType of
+        ttQuoted, ttQuotedIdentifier,
+        ttWord:
+          begin
+            // Check if current token is a sort order marker
+            // Note that ASC/DESC are valid field identifiers! So we must check
+            // if previous token was a field and then set sort order
+            // Otherwise - add current token as a field ("Field1 desc, Asc, Field2 desc")
+
+            // Could this be a sort order marker?
+            if PrevTokenWasField then
+            begin
+              if SameText(TokenValue, 'DESC') then
+                CompareKinds[FieldCount - 1] := ckDescending
+              else if SameText(TokenValue, 'ASC') then
+                CompareKinds[FieldCount - 1] := ckAscending
+              else
+                raise EZDatabaseError.CreateFmt(SIncorrectSymbol, [TokenValue]);
+            end
+            else
+            // No, this is a field
+              Field := DataSet.FieldByName(TokenValue);  // Will raise exception if field not present
+          end;
+        ttNumber:
+          begin
+            TokenValueInt := StrToInt(TokenValue);
+            // Tokenizer always returns numbers > 0
+            if TokenValueInt >= Dataset.Fields.Count then
+              raise EZDatabaseError.CreateFmt(SFieldNotFound2, [TokenValueInt]);
+            Field := Dataset.Fields[TokenValueInt];
+          end;
+        ttSymbol:
+          if (TokenValue <> ',') and (TokenValue <> ';') then
+            raise EZDatabaseError.CreateFmt(SIncorrectSymbol, [TokenValue]);
         else
-          CompareKinds[FieldCount - 1] := ckAscending;
-      end
-      else if TokenType in [ttWord, ttQuoted] then
-      begin
-        Field := DataSet.FieldByName(TokenValue)
-      end
-      else if (TokenType = ttNumber)
-        and (StrToIntDef(TokenValue, 0) < Dataset.Fields.Count) then
-      begin
-        Field := Dataset.Fields[StrToIntDef(TokenValue, 0)];
-      end
-      else if (TokenValue <> ',') and (TokenValue <> ';') then
-      begin
-        raise EZDatabaseError.Create(Format(SIncorrectSymbol, [TokenValue]));
+          raise EZDatabaseError.CreateFmt(SIncorrectSymbol, [TokenValue]);
       end;
 
+      PrevTokenWasField := (Field <> nil);
       if Field <> nil then
       begin
         OnlyDataFields := OnlyDataFields and (Field.FieldKind = fkData);
@@ -1510,14 +1523,14 @@ end;
 }
 type
   THackZField = Class(TZField); //access protected property
-function CreateFieldsLookupTable(Fields: TFields): TIntegerDynArray;
+function CreateFieldsLookupTable(Fields: TFields): TPointerDynArray;
 var
   I: Integer;
 begin
   SetLength(Result, Fields.Count);
   for I := 0 to Fields.Count - 1 do
   begin
-    Result[I] := Integer(Fields[I]);
+    Result[I] := Fields[I];
     if Fields[i] is TZField then
       THackZField(Fields[i]).FieldIndex := I+1;
   end;
@@ -1529,14 +1542,14 @@ end;
   @param Field a TDataset field object.
   @returns an original fields index or -1 otherwise.
 }
-function DefineFieldIndex(const FieldsLookupTable: TIntegerDynArray;
+function DefineFieldIndex(const FieldsLookupTable: TPointerDynArray;
   Field: TField): Integer;
 var
   I: Integer;
 begin
   Result := -1;
   for I := 0 to High(FieldsLookupTable) do
-    if FieldsLookupTable[I] = Integer(Field) then
+    if FieldsLookupTable[I] = Field then
     begin
       Result := I{$IFNDEF GENERIC_INDEX}+1{$ENDIF};
       Break;
@@ -1549,7 +1562,7 @@ end;
   @param FieldRefs a TDataset field object references.
   @returns an array with original fields indices.
 }
-function DefineFieldIndices(const FieldsLookupTable: TIntegerDynArray;
+function DefineFieldIndices(const FieldsLookupTable: TPointerDynArray;
   const FieldRefs: TObjectDynArray): TIntegerDynArray;
 var
   I: Integer;
@@ -1837,8 +1850,9 @@ begin
         begin
           {$IFDEF TPARAM_HAS_ASBYTES}
           Bts := Param.AsBytes;
-          SetLength(TempBytes, High(Bts)+1);
-          System.Move(PAnsichar(Bts)^, PAnsichar(TempBytes)^, High(Bts)+1);
+          SetLength(TempBytes, Length(Bts));
+          if Length(Bts) > 0 then
+            {$IFDEF FAST_MOVE}ZFastCode{$ELSE}System{$ENDIF}.Move(Pointer(Bts)^, Pointer(TempBytes)^, Length(Bts));
           {$ELSE}
             {$IFDEF WITHOUT_VARBYTESASSTRING}
             V := Param.Value;
@@ -1893,7 +1907,7 @@ begin
           end;
         end;
       else
-        raise EZDatabaseError.Create(SUnKnownParamDataType + {$IFNDEF WITH_FASTCODE_INTTOSTR}ZFastCode.{$ENDIF}IntToStr(Ord(Param.DataType)));
+        raise EZDatabaseError.Create(SUnKnownParamDataType + ' ' + {$IFNDEF WITH_FASTCODE_INTTOSTR}ZFastCode.{$ENDIF}IntToStr(Ord(Param.DataType)));
     end;
   end;
 end;
@@ -1903,4 +1917,3 @@ initialization
 finalization
   CommonTokenizer := nil;
 end.
-

@@ -54,35 +54,33 @@ unit ZPlainAdoDriver;
 interface
 
 {$I ZPlain.inc}
+{$IFDEF ENABLE_ADO}
 
-uses ZClasses, ZPlainDriver;
+uses {$IFDEF OLDFPC}ZClasses,{$ENDIF} ZPlainDriver;
 
 type
   TZAdoPlainDriver = class (TZAbstractPlainDriver, IZPlainDriver)
   protected
-    function IsAnsiDriver: Boolean; override;
+    function GetUnicodeCodePageName: String; override;
   public
     constructor Create;
 
     procedure LoadCodePages; override;
     function GetProtocol: string; override;
     function GetDescription: string; override;
-    procedure Initialize(const Location: String = ''); override;
+    procedure Initialize(const {%H-}Location: String = ''); override;
     function Clone: IZPlainDriver; override;
   end;
 
+{$ENDIF ENABLE_ADO}
 implementation
+{$IFDEF ENABLE_ADO}
 
-uses ZCompatibility, ZEncoding;
+uses ZCompatibility, ZEncoding, Windows;
 
 procedure TZAdoPlainDriver.LoadCodePages;
 begin
-  AddCodePage('CP_ADO', 0, ceAnsi, ZDefaultSystemCodePage,'',1, False);
-end;
-
-function TZAdoPlainDriver.IsAnsiDriver: Boolean;
-begin
-  Result := False;
+  AddCodePage('CP_UTF16', 0, ceUTF16, GetACP,'', 1, True);
 end;
 
 constructor TZAdoPlainDriver.Create;
@@ -93,6 +91,11 @@ end;
 function TZAdoPlainDriver.GetProtocol: string;
 begin
   Result := 'ado';
+end;
+
+function TZAdoPlainDriver.GetUnicodeCodePageName: String;
+begin
+  Result := 'CP_UTF16';
 end;
 
 function TZAdoPlainDriver.GetDescription: string;
@@ -109,5 +112,6 @@ begin
   Result := Self;
 end;
 
+{$ENDIF ENABLE_ADO}
 end.
 

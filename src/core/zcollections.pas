@@ -126,7 +126,7 @@ type
   private
     procedure RaiseException;
   public
-    constructor Create(Collection: IZCollection);
+    constructor Create(const Collection: IZCollection);
     destructor Destroy; override;
 
     function Clone: IZInterface; override;
@@ -177,7 +177,7 @@ type
     function GetValues: IZCollection;
     function GetCount: Integer;
 
-    function Remove(Key: IZInterface): Boolean;
+    function Remove(const Key: IZInterface): Boolean;
     procedure Clear;
 
     property Count: Integer read GetCount;
@@ -198,7 +198,7 @@ type
 
     function Peek: IZInterface;
     function Pop: IZInterface;
-    procedure Push(Value: IZInterface);
+    procedure Push(const Value: IZInterface);
     function GetCount: Integer;
 
     property Count: Integer read GetCount;
@@ -206,7 +206,7 @@ type
 
 implementation
 
-uses SysUtils, ZMessages;
+uses SysUtils, ZMessages {$IFDEF FAST_MOVE}, ZFastCode{$ENDIF};
 
 {$IFDEF FPC}
   {$HINTS OFF}
@@ -320,7 +320,7 @@ begin
   begin
     ReallocMem(FList, NewCapacity * SizeOf(IZInterface));
     if NewCapacity > FCapacity then
-         FillChar(FList^[FCount], (NewCapacity - FCapacity) *
+      System.FillChar(FList^[FCount], (NewCapacity - FCapacity) *
             SizeOf(IZInterface), 0);
     FCapacity := NewCapacity;
   end;
@@ -449,7 +449,7 @@ begin
   Dec(FCount);
   if Index < FCount then
   begin
-    System.Move(FList^[Index + 1], FList^[Index],
+    {$IFDEF FAST_MOVE}ZFastCode{$ELSE}System{$ENDIF}.Move(FList^[Index + 1], FList^[Index],
       (FCount - Index) * SizeOf(IZInterface));
     {now nil pointer or on replacing the entry we'll get a bad interlockdecrement}
     Pointer(FList^[FCount]) := nil; //see http://sourceforge.net/p/zeoslib/tickets/100/
@@ -576,7 +576,7 @@ begin
     Grow;
   if Index < FCount then
   begin
-    System.Move(FList^[Index], FList^[Index + 1],
+    {$IFDEF FAST_MOVE}ZFastCode{$ELSE}System{$ENDIF}.Move(FList^[Index], FList^[Index + 1],
       (FCount - Index) * SizeOf(IZInterface));
     {now nil pointer or on replacing the entry we'll get a bad interlockdecrement}
     Pointer(Flist^[Index]) := nil; //see http://sourceforge.net/p/zeoslib/tickets/100/
@@ -661,7 +661,7 @@ end;
   Constructs this object and assignes main properties.
   @param Collection an initial modifiable list of interfaces.
 }
-constructor TZUnmodifiableCollection.Create(Collection: IZCollection);
+constructor TZUnmodifiableCollection.Create(const Collection: IZCollection);
 begin
   inherited Create;
   FCollection := Collection;
@@ -975,7 +975,7 @@ end;
   @param Key a key of the element.
   @return <code>true</code> of the hash map was changed.
 }
-function TZHashMap.Remove(Key: IZInterface): Boolean;
+function TZHashMap.Remove(const Key: IZInterface): Boolean;
 var
   Index: Integer;
 begin
@@ -1071,7 +1071,7 @@ end;
   Puts a new element to the top of this stack.
   @param Value a new element to be put.
 }
-procedure TZStack.Push(Value: IZInterface);
+procedure TZStack.Push(const Value: IZInterface);
 begin
   FValues.Add(Value);
 end;

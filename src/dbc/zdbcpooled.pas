@@ -129,6 +129,8 @@ type
     function GetConnection: IZConnection;
   protected // IZConnection
     FClientCodePage: String;
+    procedure RegisterStatement(const Value: IZStatement);
+    procedure DeregisterStatement(const Value: IZStatement);
     procedure CheckCharEncoding(CharSet: String;
       const DoArrange: Boolean = False);
     function GetClientCodePageInformations: PZCodePage; //EgonHugeist
@@ -152,7 +154,7 @@ type
     procedure CommitPrepared(const transactionid: string);
     procedure RollbackPrepared(const transactionid: string);
     function PingServer: Integer;
-    function EscapeString(Value : RawByteString) : RawByteString;
+    function EscapeString(const Value : RawByteString) : RawByteString;
     procedure Open;
     procedure Close;
     function IsClosed: Boolean;
@@ -264,10 +266,8 @@ var
   I: Integer;
 begin
   Result := nil;
-  I := 0;
 
-  while True do
-  begin
+  repeat
     FCriticalSection.Enter;
     try
       // Try to get an existing connection
@@ -331,10 +331,10 @@ begin
     if FWait then
       Sleep(100)
     else
-      raise Exception.Create(ClassName + '.Acquire'+LineEnding+'O pool de conexatingiu o limite maximo');
+      raise Exception.Create(ClassName + '.Acquire'+LineEnding+'Connection pool reached the maximum limit');
             //2013-10-13 mse: please replace non ASCII characters (>127) by the 
             //#nnn notation in order to have encoding independent sources
-  end;
+  until False;
 
   //
   // If there is no connection in the pool, create a new one.
@@ -424,6 +424,11 @@ begin
   {$ENDIF}
 end;
 
+procedure TZDbcPooledConnection.DeregisterStatement(const Value: IZStatement);
+begin
+  GetConnection.DeregisterStatement(Value);
+end;
+
 destructor TZDbcPooledConnection.Destroy;
 begin
   if FConnection <> nil then
@@ -499,7 +504,7 @@ begin
   Result := GetConnection.CreateStatementWithParams(Info);
 end;
 
-function TZDbcPooledConnection.EscapeString(Value: RawByteString): RawByteString;
+function TZDbcPooledConnection.EscapeString(const Value: RawByteString): RawByteString;
 begin
   Result := GetConnection.EscapeString(Value);
 end;
@@ -602,6 +607,11 @@ end;
 procedure TZDbcPooledConnection.PrepareTransaction(const transactionid: string);
 begin
   GetConnection.PrepareTransaction(transactionid);
+end;
+
+procedure TZDbcPooledConnection.RegisterStatement(const Value: IZStatement);
+begin
+  GetConnection.RegisterStatement(Value);
 end;
 
 procedure TZDbcPooledConnection.Rollback;
@@ -767,17 +777,14 @@ var
   TempURL: TZURL;
   I: Integer;
   ConnectionPool: TConnectionPool;
-  ConnetionTimeout: Integer;
+  ConnectionTimeout: Integer;
   MaxConnections: Integer;
   Wait: Boolean;
 begin
   Result := nil;
 
-  TempURL := TZURL.Create;
+  TempURL := TZURL.Create(GetEmbeddedURL(URL.URL), URL.Properties);
   try
-    TempURL.URL := GetEmbeddedURL(URL.URL);
-    TempURL.Properties.Text := URL.Properties.Text;
-
     ConnectionPool := nil;
 
 { TODO
@@ -800,10 +807,10 @@ begin
     //
     if ConnectionPool = nil then
     begin
-      ConnetionTimeout := StrToIntDef(TempURL.Properties.Values['ConnectionTimeout'], 0);
+      ConnectionTimeout := StrToIntDef(TempURL.Properties.Values['ConnectionTimeout'], 0);
       MaxConnections := StrToIntDef(TempURL.Properties.Values['MaxConnections'], 0);
       Wait := StrToBoolDef(TempURL.Properties.Values['Wait'], True);
-      ConnectionPool := TConnectionPool.Create(TempURL.URL, ConnetionTimeout, MaxConnections, Wait);
+      ConnectionPool := TConnectionPool.Create(TempURL.URL, ConnectionTimeout, MaxConnections, Wait);
       PoolList.Add(ConnectionPool);
       URLList.Add(TempURL.URL);
     end;

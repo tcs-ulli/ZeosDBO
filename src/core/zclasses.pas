@@ -61,9 +61,11 @@ uses
 const
   ZEOS_MAJOR_VERSION = 7;
   ZEOS_MINOR_VERSION = 2;
-  ZEOS_SUB_VERSION = 0;
-  ZEOS_STATUS = 'beta';
-  ZEOS_VERSION = '7.2.0-beta';
+  ZEOS_SUB_VERSION = 4;
+  ZEOS_STATUS = 'stable';
+  ZEOS_VERSION = Char(48+ZEOS_MAJOR_VERSION)+'.'+
+                 Char(48+ZEOS_MINOR_VERSION)+'.'+
+                 Char(48+ZEOS_SUB_VERSION)+'-'+ZEOS_STATUS;
 {$IFDEF ENABLE_POOLED}
   {Pooled Protocol Prefix, including final dot}
   PooledPrefix = 'pooled.';
@@ -174,7 +176,7 @@ type
     function GetValues: IZCollection;
     function GetCount: Integer;
 
-    function Remove(Key: IZInterface): Boolean;
+    function Remove(const Key: IZInterface): Boolean;
     procedure Clear;
 
     property Count: Integer read GetCount;
@@ -188,7 +190,7 @@ type
 
     function Peek: IZInterface;
     function Pop: IZInterface;
-    procedure Push(Value: IZInterface);
+    procedure Push(const Value: IZInterface);
     function GetCount: Integer;
 
     property Count: Integer read GetCount;
@@ -209,6 +211,19 @@ type
 {$IFDEF WITH_NEWTOBJECT}
   {$WARNINGS ON}
 {$ENDIF}
+
+  TZCharReaderStream = Class(TStream)
+  private
+    fEnd, fStart, fCurrent: PChar;
+  protected
+    function GetSize: Int64; override;
+  public
+    procedure SetBuffer(const Buffer: String);
+    function Read(var Buffer; Count: Longint): Longint; override;
+    function Write(const Buffer; Count: Longint): Longint; override;
+    function Seek(Offset: Longint; Origin: Word): Longint; override;
+    function Seek(const Offset: Int64; Origin: TSeekOrigin): Int64; override;
+  End;
 
 implementation
 
@@ -317,6 +332,67 @@ end;
 function TZAbstractObject.ToString: string;
 begin
   Result := Format('%s <%p>', [ClassName, Pointer(Self)])
+end;
+
+{ TZCharReaderStream }
+
+function TZCharReaderStream.GetSize: Int64;
+begin
+  Result := Int64(fEnd-fStart){%H-}-1
+end;
+
+function TZCharReaderStream.Read(var Buffer; Count: Integer): Longint;
+begin
+  if (Count = SizeOf(Char)) and (fCurrent < fEnd) then begin
+    //just a little byte/dword inline move instead of Move()
+    //skip all possible compiler magic
+    {$IFDEF UNICODE}
+    Word(Buffer) := PWord(fCurrent)^;
+    {$ELSE}
+    Byte(Buffer) := PByte(fCurrent)^;
+    {$ENDIF}
+    Inc(fCurrent);
+    Result := SizeOf(Char);
+  end else
+    Result := 0
+end;
+
+function TZCharReaderStream.Seek(Offset: Integer; Origin: Word): Longint;
+begin
+  case Origin of
+    soFromBeginning: fCurrent := {%H-}Pointer({%H-}NativeInt(fStart)+Offset);
+    soFromCurrent:   fCurrent := {%H-}Pointer({%H-}NativeInt(fCurrent)+Offset);
+    soFromEnd:       fCurrent := {%H-}Pointer({%H-}NativeInt(fEnd-1)+Offset);
+  end;
+  Result := origin; //make compiler happy: a true positoned processing is nowhere used in our code
+  //Result := LongInt(fCurrent-fStart);
+end;
+
+function TZCharReaderStream.Seek(const Offset: Int64; Origin: TSeekOrigin): Int64;
+begin
+  case Ord(Origin) of
+    soFromBeginning: fCurrent := {%H-}Pointer({%H-}NativeInt(fStart)+Offset);
+    soFromCurrent:   fCurrent := {%H-}Pointer({%H-}NativeInt(fCurrent)+Offset);
+    soFromEnd:       fCurrent := {%H-}Pointer({%H-}NativeInt(fEnd-1)+Offset);
+  end;
+  Result := Ord(origin); //make compiler happy: a true positoned processing is nowhere used in our code
+  //Result := Int64(fCurrent-fStart);
+end;
+
+procedure TZCharReaderStream.SetBuffer(const Buffer: String);
+begin
+  fStart := Pointer(Buffer);
+  fCurrent := fStart;
+  fEnd := fStart+Length(Buffer);
+end;
+
+function TZCharReaderStream.Write(const Buffer; Count: Integer): Longint;
+begin
+  //satisfy FPC:
+  {$IFDEF FPC}
+  Result := 0;
+  {$ENDIF}
+  raise Exception.Create(SUnsupportedOperation);
 end;
 
 end.
