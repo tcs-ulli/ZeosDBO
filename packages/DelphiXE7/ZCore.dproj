@@ -92,7 +92,7 @@
     </PropertyGroup>
     <PropertyGroup Condition="'$(Cfg_2_Win64)'!=''">
         <VerInfo_Locale>1033</VerInfo_Locale>
-        <VerInfo_Keys>CompanyName=;FileDescription=;FileVersion=1.0.0.0;InternalName=;LegalCopyright=;LegalTrademarks=;OriginalFilename=;ProductName=;ProductVersion=1.0.0.0;Comments=</VerInfo_Keys>
+        <VerInfo_Keys>CompanyName=;FileDescription=;FileVersion=1.0.0.0;InternalName=;LegalCopyright=;LegalTrademarks=;OriginalFilename=;ProductName=;ProductVersion=7.2.0.0;Comments=</VerInfo_Keys>
         <VerInfo_IncludeVerInfo>true</VerInfo_IncludeVerInfo>
     </PropertyGroup>
     <ItemGroup>
@@ -107,6 +107,7 @@
         <DCCReference Include="..\..\src\core\ZExpression.pas"/>
         <DCCReference Include="..\..\src\core\ZExprParser.pas"/>
         <DCCReference Include="..\..\src\core\ZExprToken.pas"/>
+        <DCCReference Include="..\..\src\core\ZFastCode.pas"/>
         <DCCReference Include="..\..\src\core\ZMatchPattern.pas"/>
         <DCCReference Include="..\..\src\core\ZSysUtils.pas"/>
         <DCCReference Include="..\..\src\core\ZTokenizer.pas"/>
